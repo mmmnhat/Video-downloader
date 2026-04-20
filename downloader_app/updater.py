@@ -70,6 +70,18 @@ class UpdateManager:
                 "isPlaceholder": False,
             }
 
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                # 404 usually means no releases have been created on this repository yet
+                return {
+                    "updateAvailable": False,
+                    "currentVersion": APP_VERSION,
+                    "latestVersion": APP_VERSION,
+                    "releaseNotes": "No public releases found on GitHub yet.",
+                    "downloadUrl": "",
+                    "isPlaceholder": False,
+                }
+            raise UpdateError(f"GitHub API returned error {e.code}: {e.reason}")
         except Exception as e:
             raise UpdateError(f"Failed to check for updates: {e}")
 

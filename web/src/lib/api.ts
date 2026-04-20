@@ -234,6 +234,14 @@ export async function refreshBrowserSession() {
   });
 }
 
+export async function scrapePlatformCookies(platform: string) {
+  return requestJson<{ cookies: string }>("/api/browser-session/scrape-platform-cookies", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ platform }),
+  });
+}
+
 export async function checkUpdate() {
   return requestJson<UpdateStatus>("/api/system/updater/check");
 }

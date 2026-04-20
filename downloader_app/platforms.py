@@ -10,6 +10,7 @@ class PlatformMatch:
     name: str
     domain: str
     supported: bool
+    normalized_url: str
 
 
 @dataclass(frozen=True)
@@ -61,13 +62,30 @@ PLATFORM_RULES = {
                 "threads.com",
             }
         ),
-        supported=False,
+        supported=True,
     ),
     "reddit": PlatformRule(
         domains=frozenset(
             {
                 "reddit.com",
                 "redd.it",
+            }
+        )
+    ),
+    "telegram": PlatformRule(
+        domains=frozenset(
+            {
+                "t.me",
+                "telegram.me",
+                "telegram.dog",
+            }
+        )
+    ),
+    "dailymotion": PlatformRule(
+        domains=frozenset(
+            {
+                "dailymotion.com",
+                "dai.ly",
             }
         )
     ),
@@ -79,7 +97,22 @@ def normalize_hostname(url: str) -> str:
     hostname = (parsed.hostname or "").lower()
     if hostname.startswith("mobile."):
         hostname = hostname[len("mobile.") :]
+    if hostname == "threads.com":
+        hostname = "threads.net"
     return hostname
+
+
+def normalize_video_url(url: str) -> str:
+    """True URL rewriting/normalization for engine compatibility."""
+    parsed = urlparse(url.strip())
+    hostname = (parsed.hostname or "").lower()
+
+    if hostname == "threads.com":
+        # Force rewriting threads.com to threads.net for yt-dlp compatibility
+        new_netloc = parsed.netloc.lower().replace("threads.com", "threads.net")
+        return parsed._replace(netloc=new_netloc).geturl()
+
+    return url
 
 
 def hostname_matches_domain(hostname: str, domain: str) -> bool:
@@ -87,7 +120,8 @@ def hostname_matches_domain(hostname: str, domain: str) -> bool:
 
 
 def detect_platform(url: str) -> PlatformMatch:
-    hostname = normalize_hostname(url)
+    normalized_url = normalize_video_url(url)
+    hostname = normalize_hostname(normalized_url)
 
     for platform_name, rule in PLATFORM_RULES.items():
         for domain in rule.domains:
@@ -96,12 +130,14 @@ def detect_platform(url: str) -> PlatformMatch:
                     name=platform_name,
                     domain=hostname,
                     supported=rule.supported,
+                    normalized_url=normalized_url,
                 )
 
     return PlatformMatch(
         name="unsupported",
         domain=hostname or "unknown",
         supported=False,
+        normalized_url=url,
     )
 
 

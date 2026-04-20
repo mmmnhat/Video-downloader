@@ -37,6 +37,8 @@ COOKIE_DOMAIN_HINTS = {
     "x": ["x.com", "twitter.com"],
     "threads": ["threads.net", "instagram.com"],
     "reddit": ["reddit.com", "redd.it"],
+    "telegram": ["t.me", "telegram.me", "telegram.dog"],
+    "dailymotion": ["dailymotion.com", "dai.ly"],
 }
 FINAL_BATCH_STATUSES = {"completed", "completed_with_errors", "cancelled"}
 MAX_EVENT_BACKLOG = 500
@@ -135,6 +137,7 @@ class DownloadManager:
         self._ffprobe_cmd = resolve_binary("ffprobe", env_var="VIDEO_DOWNLOADER_FFPROBE_BIN")
         self._impersonate_target = self._resolve_impersonate_target()
         self._settings = DownloadSettings(output_dir=str(DEFAULT_OUTPUT_DIR))
+        self._direct_url_cache: dict[str, str] = {}
         # Shared cookie file per batch (built once, reused by all worker threads)
         self._batch_shared_cookie: dict[str, str | None] = {}
         # Locks to prevent multiple threads from trampling on the same output file
@@ -331,7 +334,7 @@ class DownloadManager:
                     "rowNumber": entry.row_index + 1,
                     "platform": match.name,
                     "supported": match.supported,
-                    "sourceUrl": entry.url,
+                    "sourceUrl": match.normalized_url,
                     "clipRange": None,
                 }
             )
@@ -400,7 +403,7 @@ class DownloadManager:
             items.append(
                 DownloadItem(
                     id=str(uuid.uuid4()),
-                    source_url=entry.url,
+                    source_url=match.normalized_url,
                     platform=match.name,
                     domain=match.domain,
                     status="queued" if match.supported else "unsupported",
@@ -697,6 +700,26 @@ class DownloadManager:
                         attempt_url = direct_url
                         print(f"[DEBUG] Dumpert scraper found direct URL: {attempt_url}", flush=True)
 
+                    if attempt.label == "threads_html_scraping_fallback":
+                        direct_url = self._resolve_threads_direct_url(item.source_url, cookie_file_path=cookie_file_path)
+                        if not direct_url:
+                            last_error = "Could not scrape direct MP4 URL from Threads HTML."
+                            continue
+                        attempt_url = direct_url
+                        print(f"[DEBUG] Threads scraper found direct URL: {attempt_url}", flush=True)
+
+                    if attempt.label == "dailymotion_no_impersonate_fallback":
+                        # This is a standard yt-dlp attempt but with no-impersonate
+                        attempt_url = item.source_url
+
+                    if attempt.label == "dailymotion_html_scraping_fallback":
+                        direct_url = self._resolve_dailymotion_direct_url(item.source_url, cookie_file_path=cookie_file_path)
+                        if not direct_url:
+                            last_error = "Could not scrape direct stream from Dailymotion metadata."
+                            continue
+                        attempt_url = direct_url
+                        print(f"[DEBUG] Dailymotion scraper found direct URL: {attempt_url}", flush=True)
+
                     command = self._build_yt_dlp_command(
                         item=item,
                         attempt_url=attempt_url,
@@ -720,6 +743,11 @@ class DownloadManager:
                         final_output_path = lines[-1] if lines else str(target_dir / item.output_name)
                         final_output_path = self._ensure_h264_output(batch_id, item, final_output_path, cancel_event)
                         return self._auto_cut_file(batch_id, item, final_output_path, cancel_event)
+
+                    if attempt.label == "threads_html_scraping_fallback":
+                        # If the scraped direct URL also failed in yt-dlp, 
+                        # there's not much else we can do with it.
+                        pass
 
                     last_error = (stderr or stdout or "yt-dlp failed").strip()
 
@@ -838,6 +866,31 @@ class DownloadManager:
                         "--extractor-args",
                         f"tiktok:app_info={TIKTOK_APP_INFO_FALLBACK}",
                     ),
+                )
+            )
+        if item.platform == "threads":
+            # Attempt 1: Standard yt-dlp extractor (with our current dependencies/cookies)
+            attempts.append(YtDlpAttempt(label="default"))
+            # Attempt 2: Custom HTML/JSON scraper as a robust fallback
+            attempts.append(
+                YtDlpAttempt(
+                    label="threads_html_scraping_fallback",
+                    extra_args=(),
+                )
+            )
+        if item.platform == "dailymotion":
+            attempts.append(YtDlpAttempt(label="default"))
+            # High Priority Fallback for Windows dependency issues
+            attempts.append(
+                YtDlpAttempt(
+                    label="dailymotion_no_impersonate_fallback",
+                    extra_args=("--no-impersonate",),
+                )
+            )
+            attempts.append(
+                YtDlpAttempt(
+                    label="dailymotion_html_scraping_fallback",
+                    extra_args=(),
                 )
             )
         return attempts
@@ -1004,6 +1057,174 @@ class DownloadManager:
             url = match.group(0)
             if "dumpert.nl" in url:
                 return url
+        return None
+
+    def _curl_fetch_text(self, url: str, cookie_file_path: str | None = None, impersonate: str = "chrome") -> str | None:
+        try:
+            from curl_cffi import requests
+        except ImportError:
+            return None
+
+        cookies = {}
+        if cookie_file_path and os.path.exists(cookie_file_path):
+            try:
+                import http.cookiejar
+                jar = http.cookiejar.MozillaCookieJar(cookie_file_path)
+                jar.load(ignore_discard=True, ignore_expires=True)
+                for cookie in jar:
+                    cookies[cookie.name] = cookie.value
+            except Exception as exc:
+                print(f"[DEBUG] Failed to load cookies for curl-cffi: {exc}", flush=True)
+
+        try:
+            # Use curl-cffi to mimic a real browser perfectly
+            response = requests.get(
+                url,
+                cookies=cookies,
+                impersonate=impersonate,
+                timeout=20,
+                verify=True
+            )
+            if response.status_code == 200:
+                return response.text
+            print(f"[DEBUG] curl-cffi fetch failed with status {response.status_code}", flush=True)
+        except Exception as exc:
+            print(f"[DEBUG] curl-cffi fetch exception: {exc}", flush=True)
+        
+        return None
+
+    def _resolve_threads_direct_url(self, source_url: str, cookie_file_path: str | None = None) -> str | None:
+        import re
+        import json
+
+        # 1. Check Cache first (Threads links usually don't expire for a few hours)
+        if source_url in self._direct_url_cache:
+            return self._direct_url_cache[source_url]
+
+        # 2. Try curl-cffi first for stealth
+        html = self._curl_fetch_text(source_url, cookie_file_path, impersonate="safari_ios")
+        
+        if not html:
+            import urllib.request
+            import http.cookiejar
+            jar = http.cookiejar.MozillaCookieJar()
+            if cookie_file_path and os.path.exists(cookie_file_path):
+                try: jar.load(cookie_file_path, ignore_discard=True, ignore_expires=True)
+                except Exception: pass
+            opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+            try:
+                req = urllib.request.Request(source_url, headers={"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"})
+                html = opener.open(req, timeout=15).read().decode("utf-8", errors="replace")
+            except Exception:
+                return None
+
+        # Level 2 — chuẩn bài (detect private posts)
+        if "This account is private" in html or "Hãy theo dõi để xem ảnh và video" in html:
+            print(f"[DEBUG] Threads post is private. Need fresh cookies and follower access.", flush=True)
+            return None
+
+        # Fix JSON escaping in the full HTML
+        html_unquoted = html.replace('\\/', '/')
+        
+        # Level 2 — Standard JSON embedded parsing
+        json_blobs = re.findall(r'<script type="application/json"[^>]*>(.*?)</script>', html)
+        for blob in json_blobs:
+            if "video_versions" not in blob:
+                continue
+            
+            try:
+                data = json.loads(blob)
+                def find_videos(obj):
+                    urls = []
+                    if isinstance(obj, dict):
+                        if "video_versions" in obj and isinstance(obj["video_versions"], list):
+                            for v in obj["video_versions"]:
+                                if isinstance(v, dict) and "url" in v:
+                                    urls.append((v.get("width", 0), v["url"]))
+                        for k, v in obj.items():
+                            urls.extend(find_videos(v))
+                    elif isinstance(obj, list):
+                        for item in obj:
+                            urls.extend(find_videos(item))
+                    return urls
+                
+                all_videos = find_videos(data)
+                if all_videos:
+                    # Sort by resolution (descending) to get the best quality source
+                    all_videos.sort(key=lambda x: x[0], reverse=True)
+                    url = all_videos[0][1]
+                    self._direct_url_cache[source_url] = url
+                    return url
+            except Exception:
+                pass
+
+            # Level 1 Fallback inside the blob
+            video_matches = re.finditer(r'{"type":\s*\d+,\s*"width":\s*(\d+),\s*"height":\s*\d+,\s*"url":\s*"(https?://[^"]+?\.mp4[^"]*)"}', blob.replace('\\/', '/'))
+            best_video = None
+            max_width = 0
+            for match in video_matches:
+                width = int(match.group(1))
+                url = match.group(2)
+                if "threads.net" in url or "fbcdn.net" in url:
+                    if width > max_width:
+                        max_width = width
+                        best_video = url
+            if best_video:
+                self._direct_url_cache[source_url] = best_video
+                return best_video
+
+        # 2. Fallback to broad regex
+        match = re.search(r'https?://[^\s\"\'\>\\]+?\.mp4[^\s\"\'\>\\]*', html_unquoted)
+        if match:
+            url = match.group(0).split('"')[0].split("'")[0]
+            if "fbcdn.net" in url:
+                return url.rstrip(')"\'\\')
+
+        return None
+
+    def _resolve_dailymotion_direct_url(self, source_url: str, cookie_file_path: str | None = None) -> str | None:
+        import re
+        import json
+
+        # Extract ID
+        matched = re.search(r'/video/([a-zA-Z0-9]+)', source_url)
+        if not matched:
+            matched = re.search(r'dai\.ly/([a-zA-Z0-9]+)', source_url)
+        
+        if not matched: return None
+        
+        video_id = matched.group(1)
+        metadata_url = f"https://www.dailymotion.com/player/metadata/video/{video_id}"
+
+        # Fetch using curl-cffi for impersonation
+        content = self._curl_fetch_text(metadata_url, cookie_file_path, impersonate="chrome")
+        
+        if not content:
+            # Fallback to urllib
+            import urllib.request
+            import http.cookiejar
+            jar = http.cookiejar.MozillaCookieJar()
+            if cookie_file_path and os.path.exists(cookie_file_path):
+                try: jar.load(cookie_file_path, ignore_discard=True, ignore_expires=True)
+                except Exception: pass
+            opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+            try:
+                req = urllib.request.Request(metadata_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"})
+                content = opener.open(req, timeout=10).read().decode("utf-8")
+            except Exception:
+                return None
+
+        try:
+            data = json.loads(content)
+            qualities = data.get("qualities", {})
+            for q_key in ["auto", "1080", "720", "480", "380"]:
+                streams = qualities.get(q_key, [])
+                for stream in streams:
+                    if "url" in stream:
+                        return stream["url"]
+        except Exception:
+            pass
+        
         return None
 
     def _build_cookie_file(

@@ -3,3 +3,6 @@ google-auth-oauthlib>=1.2.1
 browser-cookie3>=0.20.1
 yt-dlp>=2025.10.14
 curl-cffi>=0.13.0
+brotli>=1.1.0
+certifi>=2024.0.0
+websockets>=12.0

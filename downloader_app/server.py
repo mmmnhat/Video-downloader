@@ -151,6 +151,20 @@ class AppHandler(BaseHTTPRequestHandler):
             self._send_json(browser_session.status())
             return
 
+        if path == "/api/browser-session/scrape-platform-cookies":
+            try:
+                payload = self._read_json_body()
+                platform_id = str(payload.get("platform", "")).strip()
+                if not platform_id:
+                    self._send_json({"error": "platform is required."}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                
+                cookies = browser_session.extract_platform_cookies(platform_id)
+                self._send_json({"cookies": cookies})
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
         if path == "/api/system/choose-folder":
             try:
                 folder_path = self._choose_folder()

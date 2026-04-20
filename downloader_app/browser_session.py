@@ -151,6 +151,57 @@ class BrowserSessionManager:
         cookie_file.save(ignore_discard=True, ignore_expires=True)
         return file_path
 
+    def extract_platform_cookies(self, platform_id: str) -> str:
+        """Find cookies for a specific platform in the browser and return Netscape string."""
+        import time
+        import io
+        from downloader_app.jobs import COOKIE_DOMAIN_HINTS
+
+        # Refresh candidate/cookiejar if needed
+        self.status()
+
+        source_jar = self._cookiejar_cache
+        if source_jar is None:
+            # Try once more to find a working browser if cache is empty
+            try:
+                self._find_working_browser()
+                source_jar = self._cookiejar_cache
+            except Exception:
+                return ""
+
+        if source_jar is None:
+            return ""
+
+        domains = COOKIE_DOMAIN_HINTS.get(platform_id, [f"{platform_id}.com"])
+        
+        # We need a Netscape format string. 
+        # MozillaCookieJar expects a file path to save to. 
+        # We'll use a temporary file then delete it.
+        import tempfile
+        from pathlib import Path
+
+        tmp = tempfile.NamedTemporaryFile(suffix=".txt", delete=False)
+        tmp.close()
+        try:
+            target = http.cookiejar.MozillaCookieJar(tmp.name)
+            seen: set[tuple[str, str, str]] = set()
+            found_count = 0
+
+            for cookie in source_jar:
+                if any(cookie.domain.lstrip(".").endswith(d.lstrip(".")) for d in domains):
+                    key = (cookie.domain, cookie.path, cookie.name)
+                    if key not in seen:
+                        seen.add(key)
+                        target.set_cookie(cookie)
+                        found_count += 1
+
+            if found_count > 0:
+                target.save(ignore_discard=True, ignore_expires=True)
+                return Path(tmp.name).read_text(encoding="utf-8", errors="replace")
+            return ""
+        finally:
+            Path(tmp.name).unlink(missing_ok=True)
+
     def fetch_text(self, url: str) -> str:
         import time
 
