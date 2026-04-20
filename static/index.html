@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Video Downloader Control Room</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <div class="backdrop"></div>
+    <main class="shell">
+      <section class="hero">
+        <p class="eyebrow">Google Sheets to Multi-Platform Downloader</p>
+        <h1>Paste sheet. Map STT. Control the queue.</h1>
+        <p class="lede">
+          App sẽ đọc Google Sheets, lấy URL video theo từng dòng, đặt tên file theo STT trong
+          bảng, auto-cut theo cột <code>Time</code>/<code>Thời lượng</code> hoặc time range trong
+          dòng, rồi tải về một thư mục mẹ duy nhất với các control thực dụng hơn.
+        </p>
+      </section>
+
+      <section class="panel auth-panel">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Private Sheets Access</p>
+            <h2>Browser Session Login</h2>
+          </div>
+        </div>
+        <div class="auth-row">
+          <div class="auth-copy">
+            <p id="auth-status-label" class="auth-status">Checking Google connection...</p>
+            <p id="auth-status-detail" class="hint">
+              Khong can tao Google Cloud project. Chi can dang nhap Google tren browser local.
+            </p>
+          </div>
+          <div class="auth-actions">
+            <button id="browser-login-button" type="button">Open Google Login</button>
+            <button id="refresh-session-button" class="ghost" type="button">Refresh Session</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel settings-panel">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Downloader Settings</p>
+            <h2>Output, quality, threads, cookies</h2>
+          </div>
+          <div class="settings-actions">
+            <button id="save-settings-button" class="ghost" type="button">Save Settings</button>
+          </div>
+        </div>
+
+        <form id="settings-form" class="settings-form">
+          <div class="field-grid">
+            <div class="field-span">
+              <label for="output-dir">Output Folder</label>
+              <div class="input-row input-row-tight">
+                <input
+                  id="output-dir"
+                  name="output_dir"
+                  type="text"
+                  placeholder="/Volumes/External/Video downloader/downloads"
+                  required
+                />
+                <button id="choose-folder-button" class="ghost" type="button">Choose Folder</button>
+                <button id="open-folder-button" class="ghost" type="button">Open Folder</button>
+              </div>
+              <p class="hint">Video sẽ gom hết vào thư mục mẹ này, không tách theo platform/uploader.</p>
+            </div>
+
+            <div>
+              <label for="quality">Quality</label>
+              <select id="quality" name="quality">
+                <option value="auto">Auto / best available</option>
+                <option value="1080">Up to 1080p</option>
+                <option value="720">Up to 720p</option>
+                <option value="480">Up to 480p</option>
+                <option value="360">Up to 360p</option>
+              </select>
+            </div>
+
+            <div>
+              <label for="concurrent-downloads">Threads Download</label>
+              <input id="concurrent-downloads" name="concurrent_downloads" type="number" min="1" max="20" />
+            </div>
+
+            <div>
+              <label for="retry-count">Retry</label>
+              <input id="retry-count" name="retry_count" type="number" min="0" max="10" />
+            </div>
+
+            <div class="field-span checkbox-row">
+              <label class="checkbox-label">
+                <input id="use-browser-cookies" name="use_browser_cookies" type="checkbox" />
+                <span>Dùng browser cookies nếu có</span>
+              </label>
+              <p class="hint">
+                App sẽ cố gắng gộp cookie browser với cookies bạn dán tay để tăng khả năng tải.
+              </p>
+            </div>
+
+            <div class="field-span">
+              <label for="cookies-text">Cookies (Netscape text hoặc path tới file cookie)</label>
+              <textarea
+                id="cookies-text"
+                name="cookies_text"
+                rows="6"
+                placeholder="# Netscape HTTP Cookie File&#10;.youtube.com	TRUE	/	TRUE	0	SID	..."
+              ></textarea>
+            </div>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel form-panel">
+        <form id="batch-form">
+          <label for="sheet-url">Google Sheets URL</label>
+          <div class="input-row">
+            <input
+              id="sheet-url"
+              name="sheet_url"
+              type="url"
+              placeholder="https://docs.google.com/spreadsheets/d/..."
+              required
+            />
+            <button type="submit">Scan &amp; Download</button>
+          </div>
+          <p class="hint">
+            App sẽ ưu tiên lấy tên file từ cột <code>STT</code> trong sheet. Nếu không thấy, app
+            sẽ fallback theo thứ tự xuất hiện URL. Nếu cột <code>Time</code>,
+            <code>Thời lượng</code> hoặc một ô trong dòng có range thời lượng hợp lệ, app sẽ tự cut
+            lệch trước 1s và sau 1s. Nếu một dòng có nhiều range ngăn bằng dấu phẩy, app sẽ tách
+            thành các clip như <code>2.1</code>, <code>2.2</code>, <code>2.3</code>.
+          </p>
+        </form>
+        <div id="flash" class="flash hidden"></div>
+      </section>
+
+      <section class="panel">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Live Queue</p>
+            <h2>Download batches</h2>
+          </div>
+          <button id="refresh-button" class="ghost" type="button">Refresh</button>
+        </div>
+        <div id="batch-list" class="batch-list empty">
+          Chưa có batch nào. Dán link sheet để bắt đầu.
+        </div>
+      </section>
+    </main>
+
+    <template id="batch-template">
+      <article class="batch-card">
+        <header class="batch-header">
+          <div>
+            <p class="batch-status"></p>
+            <h3 class="batch-title"></h3>
+          </div>
+          <div class="batch-head-side">
+            <p class="batch-time"></p>
+            <div class="batch-controls">
+              <button class="ghost batch-open-folder" type="button">Open Folder</button>
+              <button class="ghost batch-retry" type="button">Retry Failed</button>
+              <button class="ghost danger batch-cancel" type="button">Stop</button>
+            </div>
+          </div>
+        </header>
+        <div class="stats"></div>
+        <div class="items"></div>
+      </article>
+    </template>
+
+    <template id="item-template">
+      <div class="item-row">
+        <div class="item-meta">
+          <div class="item-topline">
+            <p class="platform-badge"></p>
+            <p class="sequence-badge"></p>
+          </div>
+          <a class="source-link" target="_blank" rel="noreferrer"></a>
+        </div>
+        <div class="item-side">
+          <p class="item-status"></p>
+          <p class="item-output"></p>
+        </div>
+      </div>
+    </template>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

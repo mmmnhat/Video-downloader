@@ -1,0 +1,532 @@
+from __future__ import annotations
+
+import json
+import mimetypes
+import os
+import subprocess
+import sys
+import threading
+import webbrowser
+from http import HTTPStatus
+import traceback
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+from downloader_app.browser_session import browser_session
+from downloader_app.google_auth import GoogleAuthError, google_oauth
+from downloader_app.jobs import manager
+from downloader_app.runtime import bundled_path
+from downloader_app.updater import updater, UpdateError
+
+
+STATIC_DIR = bundled_path("static")
+WEB_DIST_DIR = bundled_path("web", "dist")
+
+
+class AppHandler(BaseHTTPRequestHandler):
+    server_version = "VideoDownloader/0.2"
+
+    def do_GET(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        path = parsed.path
+        query = parse_qs(parsed.query)
+
+        if path == "/":
+            self._serve_app_index()
+            return
+
+        if path == "/api/bootstrap":
+            self._send_json(
+                {
+                    "authStatus": browser_session.status(),
+                    "settings": manager.get_settings(),
+                    "batchSummaries": manager.list_batch_summaries(),
+                    "activeBatchId": manager.get_active_batch_id(),
+                }
+            )
+            return
+
+        if path == "/api/events":
+            self._serve_events(query)
+            return
+
+        if path == "/api/batches":
+            self._send_json(
+                manager.list_batch_summaries(
+                    status=self._single_query_value(query, "status"),
+                    query=self._single_query_value(query, "q"),
+                    limit=self._query_int(query, "limit"),
+                )
+            )
+            return
+
+        if path == "/api/settings":
+            self._send_json(manager.get_settings())
+            return
+
+        if path == "/api/google/auth-status":
+            self._send_json(google_oauth.status())
+            return
+
+        if path == "/api/browser-session/status":
+            self._send_json(browser_session.status())
+            return
+
+        if path == "/api/system/updater/check":
+            try:
+                self._send_json(updater.check_for_updates())
+            except UpdateError as e:
+                self._send_json({"error": str(e)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path.startswith("/api/batches/"):
+            batch_id = path.split("/")[-1]
+            batch = manager.get_batch_detail(batch_id)
+            if batch is None:
+                self._send_json({"error": "Batch not found."}, status=HTTPStatus.NOT_FOUND)
+                return
+            self._send_json(batch)
+            return
+
+        if path == "/oauth2/callback":
+            self._handle_google_callback(parsed.query)
+            return
+
+        if self._serve_frontend_asset(path):
+            return
+
+        self._send_json({"error": "Not found."}, status=HTTPStatus.NOT_FOUND)
+
+    def do_POST(self) -> None:  # noqa: N802
+        path = urlparse(self.path).path
+
+        if path == "/api/google/login":
+            try:
+                authorization_url = google_oauth.start_auth(self._base_url())
+            except GoogleAuthError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                return
+            self._send_json({"authorization_url": authorization_url})
+            return
+
+        if path == "/api/google/logout":
+            google_oauth.logout()
+            self._send_json({"ok": True})
+            return
+
+        if path == "/api/settings":
+            try:
+                payload = self._read_json_body()
+            except json.JSONDecodeError:
+                self._send_json({"error": "Body must be valid JSON."}, status=HTTPStatus.BAD_REQUEST)
+                return
+            self._send_json(manager.update_settings(payload))
+            return
+
+        if path == "/api/sheets/preview":
+            try:
+                payload = self._read_json_body()
+            except json.JSONDecodeError:
+                self._send_json({"error": "Body must be valid JSON."}, status=HTTPStatus.BAD_REQUEST)
+                return
+
+            sheet_url = str(payload.get("sheet_url", "")).strip()
+            if not sheet_url:
+                self._send_json({"error": "sheet_url is required."}, status=HTTPStatus.BAD_REQUEST)
+                return
+
+            try:
+                self._send_json(manager.preview_sheet(sheet_url))
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/browser-session/open-login":
+            self._send_json(browser_session.open_login())
+            return
+
+        if path == "/api/browser-session/refresh":
+            browser_session.invalidate_cache()
+            self._send_json(browser_session.status())
+            return
+
+        if path == "/api/system/choose-folder":
+            try:
+                folder_path = self._choose_folder()
+            except RuntimeError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                return
+            self._send_json({"path": folder_path})
+            return
+
+        if path == "/api/system/updater/apply":
+            try:
+                payload = self._read_json_body()
+            except json.JSONDecodeError:
+                self._send_json({"error": "Body must be valid JSON."}, status=HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                updater.apply_update(payload.get("downloadUrl", ""))
+                self._send_json({"status": "ok"})
+            except UpdateError as e:
+                self._send_json({"error": str(e)}, status=HTTPStatus.BAD_REQUEST)
+            except Exception as e:
+                self._send_json({"error": str(e)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/system/open-folder":
+            try:
+                payload = self._read_json_body()
+            except json.JSONDecodeError:
+                self._send_json({"error": "Body must be valid JSON."}, status=HTTPStatus.BAD_REQUEST)
+                return
+            folder_path = str(payload.get("path", "")).strip()
+            if not folder_path:
+                self._send_json({"error": "path is required."}, status=HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                self._open_folder(folder_path)
+            except RuntimeError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                return
+            self._send_json({"ok": True})
+            return
+
+        if path.startswith("/api/batches/") and path.endswith("/cancel"):
+            batch_id = path.split("/")[-2]
+            try:
+                self._send_json(manager.cancel_batch(batch_id))
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path.startswith("/api/batches/") and path.endswith("/retry-failed"):
+            batch_id = path.split("/")[-2]
+            try:
+                self._send_json(manager.retry_failed(batch_id))
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path != "/api/batches":
+            self._send_json({"error": "Not found."}, status=HTTPStatus.NOT_FOUND)
+            return
+
+        try:
+            payload = self._read_json_body()
+        except json.JSONDecodeError:
+            self._send_json({"error": "Body must be valid JSON."}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        sheet_url = str(payload.get("sheet_url", "")).strip()
+        if not sheet_url:
+            self._send_json({"error": "sheet_url is required."}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        try:
+            batch = manager.create_batch(sheet_url, settings_payload=payload.get("settings"))
+        except Exception as exc:
+            self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        self._send_json(manager.get_batch_detail(batch.id), status=HTTPStatus.CREATED)
+
+    def log_message(self, format: str, *args) -> None:  # noqa: A003
+        return
+
+    def _read_json_body(self) -> dict:
+        length = int(self.headers.get("Content-Length", "0"))
+        raw_body = self.rfile.read(length).decode("utf-8", errors="replace")
+        return json.loads(raw_body or "{}")
+
+    def _single_query_value(self, query: dict[str, list[str]], key: str) -> str | None:
+        values = query.get(key)
+        if not values:
+            return None
+        value = str(values[0]).strip()
+        return value or None
+
+    def _query_int(self, query: dict[str, list[str]], key: str) -> int | None:
+        value = self._single_query_value(query, key)
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except ValueError:
+            return None
+
+    def _base_url(self) -> str:
+        host = self.headers.get("Host", "127.0.0.1:8765")
+        return f"http://{host}"
+
+    def _handle_google_callback(self, raw_query: str) -> None:
+        query = parse_qs(raw_query)
+        if "error" in query and query["error"]:
+            message = query["error"][0]
+            self._send_html(
+                self._oauth_result_html(False, f"Dang nhap Google that bai: {message}"),
+                status=HTTPStatus.BAD_REQUEST,
+            )
+            return
+
+        try:
+            result = google_oauth.handle_callback(
+                current_url=f"{self._base_url()}{self.path}",
+                base_url=self._base_url(),
+            )
+        except GoogleAuthError as exc:
+            self._send_html(
+                self._oauth_result_html(False, str(exc)),
+                status=HTTPStatus.BAD_REQUEST,
+            )
+            return
+
+        email = result.get("email")
+        message = (
+            f"Dang nhap thanh cong voi {email}. Dang quay lai app..."
+            if email
+            else "Dang nhap Google thanh cong. Dang quay lai app..."
+        )
+        self._send_html(self._oauth_result_html(True, message))
+
+    def _serve_file(self, file_path: Path, content_type: str) -> None:
+        if not file_path.exists():
+            self._send_json({"error": "Not found."}, status=HTTPStatus.NOT_FOUND)
+            return
+
+        body = file_path.read_bytes()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _serve_app_index(self) -> None:
+        if (WEB_DIST_DIR / "index.html").exists():
+            self._serve_file(WEB_DIST_DIR / "index.html", "text/html; charset=utf-8")
+            return
+        self._serve_file(STATIC_DIR / "index.html", "text/html; charset=utf-8")
+
+    def _serve_frontend_asset(self, path: str) -> bool:
+        if path.startswith("/api/"):
+            return False
+
+        for root in (WEB_DIST_DIR, STATIC_DIR):
+            if not root.exists():
+                continue
+
+            candidate = (root / path.lstrip("/")).resolve()
+            try:
+                candidate.relative_to(root.resolve())
+            except ValueError:
+                continue
+
+            if candidate.exists() and candidate.is_file():
+                content_type, _ = mimetypes.guess_type(str(candidate))
+                if content_type and content_type.startswith("text/"):
+                    content_type = f"{content_type}; charset=utf-8"
+                self._serve_file(candidate, content_type or "application/octet-stream")
+                return True
+
+        if WEB_DIST_DIR.exists():
+            self._serve_app_index()
+            return True
+        return False
+
+    def _serve_events(self, query: dict[str, list[str]]) -> None:
+        last_event_id = self._query_int(query, "lastEventId") or 0
+
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+
+        try:
+            self._write_sse_event(
+                {
+                    "type": "connected",
+                    "activeBatchId": manager.get_active_batch_id(),
+                },
+                event_id=last_event_id,
+            )
+            while True:
+                events = manager.wait_for_events(after_id=last_event_id, timeout=15.0)
+                if not events:
+                    try:
+                        self.wfile.write(b": heartbeat\n\n")
+                        self.wfile.flush()
+                    except OSError:
+                        return
+                    continue
+
+                for event in events:
+                    last_event_id = int(event["id"])
+                    self._write_sse_event(event, event_id=last_event_id)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
+            return
+
+    def _write_sse_event(self, payload: dict, event_id: int) -> None:
+        body = json.dumps(payload, ensure_ascii=False)
+        self.wfile.write(f"id: {event_id}\n".encode("utf-8"))
+        self.wfile.write(f"event: {payload.get('type', 'message')}\n".encode("utf-8"))
+        self.wfile.write(f"data: {body}\n\n".encode("utf-8"))
+        self.wfile.flush()
+
+    def _send_html(self, html: str, status: HTTPStatus = HTTPStatus.OK) -> None:
+        body = html.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_json(self, data: object, status: HTTPStatus = HTTPStatus.OK) -> None:
+        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _oauth_result_html(self, success: bool, message: str) -> str:
+        title = "Google Connected" if success else "Google Auth Failed"
+        tone = "#6fe3a1" if success else "#ff6b6b"
+        return f"""<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta http-equiv="refresh" content="2;url=/" />
+    <style>
+      body {{
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: #101114;
+        color: #f4f3ef;
+        font-family: "Avenir Next", "Trebuchet MS", sans-serif;
+      }}
+      .card {{
+        width: min(520px, calc(100vw - 32px));
+        padding: 28px;
+        border-radius: 24px;
+        background: rgba(18, 20, 25, 0.94);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+      }}
+      .pill {{
+        display: inline-block;
+        padding: 8px 12px;
+        border-radius: 999px;
+        background: {tone};
+        color: #151515;
+        font-weight: 700;
+      }}
+      a {{
+        color: #d6e3ff;
+      }}
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <p class="pill">{title}</p>
+      <h1>{message}</h1>
+      <p>Neu trang khong tu quay lai, hay bam <a href="/">ve app</a>.</p>
+    </div>
+  </body>
+</html>"""
+
+    def _choose_folder(self) -> str:
+        if sys.platform == "darwin":
+            completed = subprocess.run(
+                [
+                    "osascript",
+                    "-e",
+                    'POSIX path of (choose folder with prompt "Chon thu muc luu video")',
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if completed.returncode != 0:
+                message = (completed.stderr or completed.stdout or "Khong chon duoc folder.").strip()
+                raise RuntimeError(message)
+
+            folder = completed.stdout.strip()
+            if not folder:
+                raise RuntimeError("Khong nhan duoc duong dan folder.")
+            return folder
+
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+        except Exception as exc:
+            raise RuntimeError("Khong mo duoc folder picker. Hay nhap duong dan thu cong.") from exc
+
+        root = tk.Tk()
+        root.withdraw()
+        root.update_idletasks()
+        try:
+            root.attributes("-topmost", True)
+        except Exception:
+            pass
+
+        try:
+            folder = filedialog.askdirectory(title="Chon thu muc luu video")
+        finally:
+            root.destroy()
+
+        if not folder:
+            raise RuntimeError("Khong nhan duoc duong dan folder.")
+        return folder
+
+    def _open_folder(self, folder_path: str) -> None:
+        path = Path(folder_path).expanduser()
+        if not path.exists():
+            raise RuntimeError("Folder khong ton tai.")
+
+        if sys.platform == "darwin":
+            command = ["open", str(path)]
+        elif sys.platform.startswith("linux"):
+            command = ["xdg-open", str(path)]
+        elif sys.platform == "win32":
+            command = ["explorer", str(path)]
+        else:
+            raise RuntimeError("Nen tang hien tai chua ho tro open folder.")
+
+        completed = subprocess.run(command, capture_output=True, text=True, check=False)
+        if completed.returncode != 0:
+            message = (completed.stderr or completed.stdout or "Khong the mo folder.").strip()
+            raise RuntimeError(message)
+
+
+# Expected errors when a client disconnects mid-stream (Windows/Linux/Mac).
+_CLIENT_DISCONNECT_ERRORS = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
+
+
+class _QuietHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer that suppresses noisy client-disconnect tracebacks."""
+
+    def handle_error(self, request, client_address):  # noqa: ARG002
+        exc = sys.exc_info()[1]
+        if isinstance(exc, _CLIENT_DISCONNECT_ERRORS):
+            return
+        # For genuine unexpected errors, keep the default behaviour.
+        traceback.print_exc()
+
+
+def run(host: str = "127.0.0.1", port: int = 8765) -> None:
+    server = _QuietHTTPServer((host, port), AppHandler)
+    app_url = f"http://{host}:{port}"
+    print(f"Server running at {app_url}")
+    if os.environ.get("VIDEO_DOWNLOADER_NO_BROWSER", "").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        threading.Timer(0.6, lambda: webbrowser.open(app_url, new=2)).start()
+    server.serve_forever()
