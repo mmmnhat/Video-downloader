@@ -32,7 +32,7 @@ Flowgen là một công cụ mạnh mẽ, giao diện hiện đại (React/PyQt6
 Nếu bạn không muốn cài đặt mã nguồn, hãy sử dụng bản đóng gói sẵn:
 
 1. Truy cập [Releases](https://github.com/mmmnhat/Video-downloader/releases).
-2. Tải file `VideoDownloader_v1.0.0.zip`.
+2. Tải file `VideoDownloader_v1.0.1.zip`.
 3. Giải nén và chạy `VideoDownloader.exe`.
 
 ---
