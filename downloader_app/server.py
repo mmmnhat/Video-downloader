@@ -631,6 +631,18 @@ class AppHandler(BaseHTTPRequestHandler):
 </html>"""
 
     def _choose_folder(self) -> str:
+        from downloader_app.runtime import get_ui_bridge
+        bridge = get_ui_bridge()
+        if bridge:
+            try:
+                folder = bridge.choose_folder()
+                if not folder:
+                    raise RuntimeError("Khong chon duoc folder.")
+                return folder
+            except Exception as exc:
+                print(f"Bridge choose_folder error: {exc}")
+                # Fallback to other methods
+
         if sys.platform == "darwin":
             completed = subprocess.run(
                 [

@@ -82,3 +82,14 @@ def resolve_binary(name: str, env_var: str | None = None) -> str | None:
         return path_binary
 
     return None
+
+
+# Global UI Bridge for thread-safe GUI interaction (e.g. from server to desktop)
+_ui_bridge: object | None = None
+
+def set_ui_bridge(bridge: object) -> None:
+    global _ui_bridge
+    _ui_bridge = bridge
+
+def get_ui_bridge() -> object | None:
+    return _ui_bridge
