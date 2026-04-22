@@ -1,127 +1,122 @@
-# Multi-Platform Video Downloader
+# Flowgen - Video Downloader & TTS Studio
 
-Tool local chạy trên máy bạn để:
+Flowgen là một công cụ local mạnh mẽ chạy trên máy cá nhân với giao diện Web UI hiện đại (React/Vite/Tailwind) được tích hợp sẵn làm mặc định. Tool giúp bạn tự động hóa việc tải video từ nhiều nền tảng và tạo giọng đọc AI (Text-to-Speech) hàng loạt.
 
-- Dán link Google Sheets chứa URL video
-- Quét toàn bộ cell trong sheet
-- Tự nhận diện nền tảng
-- Đặt tên file theo `STT` trong bảng
-- Auto-cut theo cột `Time` / `Thời lượng` nếu có range hợp lệ, hoặc fallback sheet cũ
-- Tải tất cả video về một thư mục mẹ duy nhất
-- Theo dõi batch, stop, retry failed, và giữ state sau khi reload app
+## Tính năng chính
 
-## Platform đang hỗ trợ
+### 1. Trình tải Video tự động (Video Downloader)
+- **Tự động hóa qua Google Sheets:** Chỉ cần dán link sheet chứa danh sách URL video.
+- **Tự nhận diện nền tảng:** Hỗ trợ tải từ YouTube, Facebook, Instagram, TikTok, Pinterest, X, Reddit, Dumpert, v.v.
+- **Xử lý tên & cắt video (Auto-cut):**
+  - Đặt tên file đầu ra theo cột `STT` trong sheet.
+  - Tự động cắt video theo cột `Time` / `Thời lượng` (ví dụ: `00:52-01:04`).
+  - Hỗ trợ cắt thành nhiều đoạn trong cùng 1 video (ví dụ: `0.3-0.5, 0.10-0.12`).
+- **Quản lý Download chặt chẽ:** 
+  - Lưu tất cả video vào chung một thư mục, file được chuẩn hóa về định dạng MP4 H.264 dễ dàng chèn vào các phần mềm edit.
+  - Theo dõi tiến trình tải realtime (batch tracker), Stop nhanh đoạn đang tải, Retry các task lỗi. 
+  - Lưu trạng thái (state) nội bộ ngay cả khi tắt nguồn hay tải lại trang web.
+  - Có thể nạp cookies hoặc đọc trực tiếp từ trình duyệt (Cốc Cốc, Chrome...) để tải các video Private bị khoá.
 
-- YouTube
-- Facebook
-- Instagram
-- TikTok
-- Pinterest
-- Dumpert
-- X
-- Reddit
+### 2. Studio lồng tiếng (TTS Studio) - MỚI
+- **Tích hợp sâu ElevenLabs qua Playwright:** Cho phép trình giả lập trình duyệt đăng nhập vào tài khoản ElevenLabs giúp cá nhân hoá giọng đọc cực nhanh mà không vướng các hạn mức API thông thường. 
+- **Thiết lập theo cấu hình:**
+  - Hỗ trợ nạp kịch bản (Text) thông qua Google Sheets.
+  - Chọn Giọng đọc (Voice) hoặc chỉnh các thông số giọng nói trực tiếp từ Studio.
+- **Xử lý hàng loạt âm thanh:** Hệ thống chạy đa luồng để gọi tạo file âm thanh (TTS) cho toàn bộ sheet một cách tự động và ổn định, xuất thẳng ra thư mục của bạn.
 
-## Yêu cầu
+---
 
-- Python 3.9+
+## Yêu cầu hệ thống
+
+- Hệ điều hành: Windows, macOS hoặc Linux
+- **Python 3.9+**
 - `yt-dlp`
-- `ffmpeg`
-- `browser-cookie3`
-- `curl-cffi`
+- `ffmpeg`, `ffprobe`
+- (Tuỳ chọn) Node.js nếu muốn tự build lại giao diện Web UI.
 
-Nếu máy chưa có `yt-dlp`, bạn có thể cài:
-
+Nếu máy chưa cài `yt-dlp`, hãy chạy:
 ```bash
 python3 -m pip install --user yt-dlp
 ```
 
-## Cài dependency
+## Cài đặt chi tiết
 
+Dưới đây là từng bước cài đặt cụ thể để khởi chạy ứng dụng từ mã nguồn gốc:
+
+**Bước 1: Tải mã nguồn**
 ```bash
-pip3 install -r requirements.txt
+git clone https://github.com/mmmnhat/Video-downloader.git
+cd Video-downloader
 ```
 
-## Chạy app
+**Bước 2: Tạo và kích hoạt môi trường ảo (Virtual Environment)**
+Việc này giúp các thư viện của app không xung đột với máy tính của bạn.
+- **Trên Mac/Linux:**
+  ```bash
+  python3 -m venv .venv
+  source .venv/bin/activate
+  ```
+- **Trên Windows:**
+  ```cmd
+  python -m venv .venv
+  .venv\Scripts\activate
+  ```
 
+**Bước 3: Cài đặt các thư viện lõi (Python Dependencies)**
+```bash
+pip install -r requirements.txt
+```
+*(Nếu hệ thống chưa cài được `yt-dlp`, có thể chạy thêm lệnh độc lập: `pip install yt-dlp`)*
+
+**Bước 4: Cài đặt trình duyệt tự động (Playwright Browsers)**
+Vì trình **TTS Studio** cần trình duyệt ảo để lấy giọng nói từ ElevenLabs, bạn bắt buộc phải cấp phép cài Chromium giả lập:
+```bash
+playwright install chromium
+```
+
+*(Giao diện web hiện đại đã được build tĩnh sẵn trong mục `web/dist`. Bạn hoàn toàn bỏ qua phần cài đặt NPM/NodeJS trừ phi có nhu cầu thay đổi, lập trình lại UI lúc đó hãy vào thư mục `web` để `npm install` và `npm run build`.)*
+
+## Sử dụng
+
+Khởi động ứng dụng bằng terminal:
 ```bash
 python3 main.py
 ```
 
-App sẽ tự mở browser ở:
-
+Ứng dụng sẽ chạy máy chủ FastAPI mượt mà và tự động mở giao diện Web UI hiện đại hiển thị trên trình duyệt mặc định ở địa chỉ:
 ```text
 http://127.0.0.1:8765
 ```
 
-Nếu muốn tắt auto-open browser:
-
+Nếu bạn đang chạy tool trên thiết bị cắm máy/server và **không muốn** tool cố mở trình duyệt:
 ```bash
 VIDEO_DOWNLOADER_NO_BROWSER=1 python3 main.py
 ```
 
-## Đóng gói Windows
+---
 
-Có thể đóng gói theo kiểu gửi nguyên thư mục cho máy Windows khác, máy nhận chỉ cần mở
-`VideoDownloader.exe`, không cần cài Python.
+## Đóng gói chạy trực tiếp không cần cài đặt (Windows Portable .exe)
 
-### Kết quả build
+Nếu bạn muốn tạo một bản `.exe` di động mang chép sang bất kỳ máy tính Windows nào để dùng mà không cần cài mã nguồn hay Python:
 
-- Build ra thư mục `dist/VideoDownloader`
-- Gửi nguyên thư mục này cho máy Windows
-- Máy nhận chỉ cần double-click `VideoDownloader.exe`
-
-### Chuẩn bị trên máy build Windows
-
-1. Cài Python 3.9+.
-2. Nếu muốn frontend mới nhất, cài thêm Node.js để chạy `npm run build` trong `web/`.
-3. Chép `ffmpeg.exe` và `ffprobe.exe` vào `vendor/windows/bin/`.
-
-### Build
-
-Chạy PowerShell trên Windows:
-
+1. Phải chuẩn bị một máy build chạy hệ điều hành Windows và đã cài Python 3.9+.
+2. (Tuỳ chọn) Có Node.js để build frontend mới nhất.
+3. Tải và chép file `ffmpeg.exe` / `ffprobe.exe` vào thư mục `vendor/windows/bin/` trong source code này.
+4. Mở PowerShell trong thư mục của Project và chạy:
 ```powershell
 .\packaging\windows\build.ps1
 ```
 
-Script sẽ:
+Hoàn tất, Script sẽ gộp nguyên bộ source thành một khối trong thư mục `dist/VideoDownloader`. File gửi đi sẽ đủ mọi chức năng và máy người nhận chỉ việc click khởi chạy file `VideoDownloader.exe`.
 
-- cài Python dependencies
-- cài `pyinstaller`
-- build `web/dist` nếu có `npm`
-- tạo app bundle tại `dist/VideoDownloader`
+---
 
-### Lưu ý runtime của bản Windows
+## Khắc phục lỗi thường gặp / Tháo gỡ khó khăn
 
-- App bundle tự mang theo Python runtime, nên máy nhận không cần cài dependency.
-- `yt-dlp` được gọi nội bộ từ chính file app bundle.
-- `ffmpeg` và `ffprobe` sẽ được lấy từ `dist/VideoDownloader/bin/`.
-- `app_state.json`, `.google_token.json`, `google_oauth_client.json` sẽ nằm cạnh file `.exe` để dễ copy cả folder sang máy khác.
+- **Web từ chối/bắt Captcha chặn tải:** Tính năng Auto-fallback qua lớp HTTP scraper được bật giúp tải từ những luồng như Threads/Dailymotion. Với video cần xem được mới tải được (Private Mode), bạn buộc phải thêm Cookies vào mục cài đặt trên màn hình UI. App tự bật cơ chế mạo danh `--impersonate chrome` để qua mặt Cloudflare chặn web.
+- **Trạng thái lịch sử Download và TTS:** Các thông số đã tải, cấu hình giọng đều được ứng dụng tự lưu đệm ở những tệp `app_state.json` và `tts_state.json`. Hãy để nguyên các tệp này, chúng là nơi lưu bộ nhớ hệ thống.
+- **Tải TikTok bị thất bại:** Máy chủ TikTok thỉnh thoảng update bộ máy chặn thuật toán. Tool sẽ thay đổi qua Mobile API nội bộ, nhưng đối với những nội dung khó, vui lòng ấn nút Retry từ giao diện tracker hoặc chèn Cookies.
+- **Youtube Shorts không thể tải được:** Trường hợp thường liên quan bị lỗi bảo mật phân quyền do Youtube triển khai gọi là `PO Token / GVS access`. Đây là giới hạn từ `yt-dlp` đang được tiếp tục phân tích, bạn có thể thử cấp Cookie cho phần mềm xử lý.
 
-## Flow hiện tại
-
-1. Đăng nhập Google trong browser local nếu sheet private.
-2. Chọn hoặc nhập `Output Folder`.
-3. Chọn `Quality`, `Threads Download`, `Retry`.
-4. Nếu cần, dán `Cookies` theo format Netscape hoặc path tới file cookies.
-5. Dán link Google Sheets và bấm `Scan & Download`.
-6. Theo dõi batch trên dashboard, dùng `Stop`, `Retry Failed`, `Open Folder`.
-
-## Ghi chú
-
-- App ưu tiên lấy tên file từ cột `STT`. Nếu không tìm thấy cột này, app fallback theo thứ tự URL trong sheet.
-- Nếu sheet có cột `Time`, `Thời lượng`, `Duration`... chứa range như `00:52-01:04`, `00:52-1:04`, hoặc `0.52-1.04`, app sẽ auto-cut video thành `00:51-01:05`.
-- Với sheet cũ không có cột time riêng, app vẫn fallback đọc range ở ô đầu tiên hoặc ô chứa time range trong cùng dòng.
-- Nếu một dòng có nhiều range phân tách bằng dấu phẩy, app sẽ tách thành nhiều clip từ cùng link. Ví dụ `STT = 2` với `0.3-0.5, 0.10-0.12` sẽ ra `2.1`, `2.2`.
-- Video được gom trực tiếp vào thư mục mẹ bạn chọn, không tự tạo thư mục con theo platform/uploader.
-- Video đầu ra mặc định sẽ được chuẩn hóa về MP4 H.264 để dễ dựng/cắt và tương thích hơn.
-- Settings và lịch sử batch được lưu vào `app_state.json` để app nhớ sau khi reload.
-- Nút `Choose Folder` dùng picker native trên macOS và fallback dialog trên Windows/Linux.
-- Browser session hiện ưu tiên đọc cookie từ Cốc Cốc nếu có, sau đó mới fallback sang các Chromium browser khác.
-- App sẽ cố gắng gộp browser cookies với cookies bạn nhập tay trước khi gọi `yt-dlp`.
-- App tự bật `--impersonate chrome` khi `curl-cffi` có sẵn, giúp một số site như Dumpert ổn định hơn.
-- Link Threads (`threads.net`, `threads.com`) sẽ thử extractor mặc định trước, rồi fallback sang HTML scraper để lấy direct MP4 khi có thể. Với post private hoặc trang bắt đăng nhập, hãy bật browser cookies và dùng account có quyền xem.
-- Link Dailymotion sẽ thử extractor mặc định trước, rồi fallback sang request không impersonation hoặc direct metadata stream nếu cần.
-- Một số YouTube Shorts hiện vẫn có thể fail do `PO token / GVS access` từ phía YouTube, ngay cả khi đã có cookies.
-- Một số TikTok có thể fail do `yt-dlp` không còn tách được dữ liệu trang; app đã thử thêm mobile API fallback nhưng vẫn phụ thuộc extractor upstream.
-- Tool này không xử lý nội dung DRM hoặc nội dung bạn không có quyền tải xuống.
+## Tuyên bố từ chối trách nhiệm
+Công cụ được xây dựng nhằm hỗ trợ công việc tự động hoá theo kịch bản (automation-flow), không dùng để mở khoá nội dung mã hoá khoá luồng (DRM DRM-protected media). Người sử dụng hoàn toàn tự mình chịu các trách nhiệm liên đới với việc tuân thủ Điều khoản sử dụng & Bản quyền gốc ở mọi trang cung cấp video âm thanh cá nhân liên quan.
