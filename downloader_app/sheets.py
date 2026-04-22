@@ -904,7 +904,7 @@ def _candidate_account_indices(sheet_url: str) -> list[str | None]:
 
     candidates.append(None)
 
-    for index in range(6):
+    for index in range(2):
         value = str(index)
         if value == preferred:
             continue

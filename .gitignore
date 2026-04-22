@@ -11,11 +11,18 @@ downloads-test/
 .google_token.json
 google_oauth_client.json
 app_state.json
-*.exe
-*.spec
+voices_cache.json
+
+# Vendor binaries (too large for git — downloaded by auto_build.py)
+vendor/windows/bin/*.exe
+
 build/
 packaging/windows/build/
 packaging/windows/dist/
+
+# Ignore compiled exe artifacts in dist (not spec files)
+dist/*.exe
+dist/
 
 # TTS runtime & browser profiles (all of tts_profiles is local/runtime data)
 tts_profiles/
@@ -28,3 +35,7 @@ tts_state.json
 
 # Tests output
 tests/
+
+# Scratch test videos
+scratch/*.mp4
+scratch/*.webm

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -89,6 +90,28 @@ PLATFORM_RULES = {
             }
         )
     ),
+    "yandex": PlatformRule(
+        domains=frozenset(
+            {
+                "yandex.ru",
+                "yandex.com",
+                "yandex.by",
+                "yandex.kz",
+                "yandex.ua",
+                "yandex.com.tr",
+                "zen.yandex.ru",
+                "dzen.ru",
+            }
+        )
+    ),
+    "nicovideo": PlatformRule(
+        domains=frozenset(
+            {
+                "nicovideo.jp",
+                "nico.ms",
+            }
+        )
+    ),
 }
 
 
@@ -97,8 +120,8 @@ def normalize_hostname(url: str) -> str:
     hostname = (parsed.hostname or "").lower()
     if hostname.startswith("mobile."):
         hostname = hostname[len("mobile.") :]
-    if hostname == "threads.com":
-        hostname = "threads.net"
+    if hostname == "threads.com" or hostname.endswith(".threads.com"):
+        hostname = hostname.replace("threads.com", "threads.net")
     return hostname
 
 
@@ -107,10 +130,17 @@ def normalize_video_url(url: str) -> str:
     parsed = urlparse(url.strip())
     hostname = (parsed.hostname or "").lower()
 
-    if hostname == "threads.com":
+    if hostname == "threads.com" or hostname.endswith(".threads.com"):
         # Force rewriting threads.com to threads.net for yt-dlp compatibility
         new_netloc = parsed.netloc.lower().replace("threads.com", "threads.net")
         return parsed._replace(netloc=new_netloc).geturl()
+
+    if "yandex." in hostname or "dzen.ru" in hostname:
+        if not hostname.endswith("yandex.ru") and not hostname.endswith("dzen.ru"):
+            # Force rewriting international yandex domains (e.g. yandex.kz) to yandex.ru for yt-dlp compatibility
+            new_netloc = parsed.netloc.lower()
+            new_netloc = re.sub(r"yandex\.(com\.tr|com|by|kz|ua)", "yandex.ru", new_netloc)
+            return parsed._replace(netloc=new_netloc).geturl()
 
     return url
 

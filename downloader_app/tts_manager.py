@@ -36,7 +36,6 @@ TTS_PROFILE_ITEMS = (
     "Cookies",
     "Local Storage",
     "Session Storage",
-    "IndexedDB",
     "Preferences",
     "Secure Preferences",
     "Network Persistent State",
@@ -70,32 +69,77 @@ class TtsBrowserProfile:
         return self.profile_dir.name
 
 
-TTS_BROWSER_CANDIDATES = [
-    TtsBrowserCandidate(
-        name="CocCoc",
-        app_path=Path("/Volumes/External/Ứng dụng/CocCoc.app"),
-        executable_path=Path("/Volumes/External/Ứng dụng/CocCoc.app/Contents/MacOS/CocCoc"),
-        user_data_dir=Path.home() / "Library/Application Support/CocCoc/Browser",
-    ),
-    TtsBrowserCandidate(
-        name="CocCoc",
-        app_path=Path("/Applications/CocCoc.app"),
-        executable_path=Path("/Applications/CocCoc.app/Contents/MacOS/CocCoc"),
-        user_data_dir=Path.home() / "Library/Application Support/CocCoc/Browser",
-    ),
-    TtsBrowserCandidate(
-        name="Chrome",
-        app_path=Path("/Applications/Google Chrome.app"),
-        executable_path=Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
-        user_data_dir=Path.home() / "Library/Application Support/Google/Chrome",
-    ),
-    TtsBrowserCandidate(
-        name="Edge",
-        app_path=Path("/Applications/Microsoft Edge.app"),
-        executable_path=Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
-        user_data_dir=Path.home() / "Library/Application Support/Microsoft Edge",
-    ),
-]
+def _get_browser_candidates() -> list[TtsBrowserCandidate]:
+    candidates = []
+    if sys.platform == "win32":
+        local_app_data = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData/Local")))
+        program_files = Path(os.environ.get("ProgramFiles", "C:\\Program Files"))
+        program_files_x86 = Path(os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)"))
+
+        # CocCoc
+        candidates.append(
+            TtsBrowserCandidate(
+                name="CocCoc",
+                app_path=program_files_x86 / "CocCoc/Browser/Application",
+                executable_path=program_files_x86 / "CocCoc/Browser/Application/browser.exe",
+                user_data_dir=local_app_data / "CocCoc/Browser/User Data",
+            )
+        )
+        # Chrome
+        chrome_paths = [
+            (program_files / "Google/Chrome/Application", program_files / "Google/Chrome/Application/chrome.exe"),
+            (program_files_x86 / "Google/Chrome/Application", program_files_x86 / "Google/Chrome/Application/chrome.exe"),
+            (local_app_data / "Google/Chrome/Application", local_app_data / "Google/Chrome/Application/chrome.exe"),
+        ]
+        for app_p, exe_p in chrome_paths:
+            candidates.append(
+                TtsBrowserCandidate(
+                    name="Chrome",
+                    app_path=app_p,
+                    executable_path=exe_p,
+                    user_data_dir=local_app_data / "Google/Chrome/User Data",
+                )
+            )
+        # Edge
+        edge_paths = [
+            (program_files_x86 / "Microsoft/Edge/Application", program_files_x86 / "Microsoft/Edge/Application/msedge.exe"),
+            (program_files / "Microsoft/Edge/Application", program_files / "Microsoft/Edge/Application/msedge.exe"),
+        ]
+        for app_p, exe_p in edge_paths:
+            candidates.append(
+                TtsBrowserCandidate(
+                    name="Edge",
+                    app_path=app_p,
+                    executable_path=exe_p,
+                    user_data_dir=local_app_data / "Microsoft/Edge/User Data",
+                )
+            )
+    else:
+        # macOS paths
+        candidates.extend([
+            TtsBrowserCandidate(
+                name="CocCoc",
+                app_path=Path("/Applications/CocCoc.app"),
+                executable_path=Path("/Applications/CocCoc.app/Contents/MacOS/CocCoc"),
+                user_data_dir=Path.home() / "Library/Application Support/CocCoc/Browser",
+            ),
+            TtsBrowserCandidate(
+                name="Chrome",
+                app_path=Path("/Applications/Google Chrome.app"),
+                executable_path=Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+                user_data_dir=Path.home() / "Library/Application Support/Google/Chrome",
+            ),
+            TtsBrowserCandidate(
+                name="Edge",
+                app_path=Path("/Applications/Microsoft Edge.app"),
+                executable_path=Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+                user_data_dir=Path.home() / "Library/Application Support/Microsoft Edge",
+            ),
+        ])
+    return candidates
+
+
+TTS_BROWSER_CANDIDATES = _get_browser_candidates()
 
 
 class ElevenLabsError(RuntimeError):
@@ -298,11 +342,18 @@ def _tts_debug(message: str) -> None:
 
 
 def _available_browser_candidates() -> list[TtsBrowserCandidate]:
-    return [
-        candidate
-        for candidate in TTS_BROWSER_CANDIDATES
-        if candidate.app_path.exists() and candidate.executable_path.exists() and candidate.user_data_dir.exists()
-    ]
+    available = []
+    for candidate in TTS_BROWSER_CANDIDATES:
+        app_exists = candidate.app_path.exists()
+        exe_exists = candidate.executable_path.exists()
+        data_exists = candidate.user_data_dir.exists()
+        _tts_debug(f"Checking browser {candidate.name}: app={app_exists}, exe={exe_exists}, data={data_exists}")
+        _tts_debug(f"  App: {candidate.app_path}")
+        _tts_debug(f"  Exe: {candidate.executable_path}")
+        _tts_debug(f"  Data: {candidate.user_data_dir}")
+        if app_exists and exe_exists and data_exists:
+            available.append(candidate)
+    return available
 
 
 def _iter_profile_dirs(user_data_dir: Path) -> list[Path]:
@@ -423,15 +474,24 @@ class ElevenLabsAutomation:
         self._browser_name = "Local browser"
         self._runtime_profile_dir: Path | None = None
         self._browser_profile: TtsBrowserProfile | None = None
-
+        self._xi_api_key: str | None = None  # Captured from ElevenLabs request headers
+        self._cached_custom_voices: list[dict] = []  # Captured directly from JSON responses during page load
     def __enter__(self) -> "ElevenLabsAutomation":
         try:
             from playwright.sync_api import Error as PlaywrightError, TimeoutError as PlaywrightTimeoutError, sync_playwright
         except ImportError as exc:  # pragma: no cover - dependency error
-            raise ElevenLabsError(
-                "Chua cai Playwright. Hay chay `./.venv/bin/pip install -r requirements.txt` "
-                "va `./.venv/bin/python -m playwright install chromium`."
-            ) from exc
+            if sys.platform == "win32":
+                msg = (
+                    f"Chua cai Playwright (Loi: {exc}). Hay chay `.venv\\Scripts\\pip install -r requirements.txt` "
+                    "va `.venv\\Scripts\\python -m playwright install chromium`.\n"
+                    "Luu y: Ban phai chay app bang python trong .venv (vi du: .venv\\Scripts\\python main.py)."
+                )
+            else:
+                msg = (
+                    f"Chua cai Playwright (Loi: {exc}). Hay chay `./.venv/bin/pip install -r requirements.txt` "
+                    "va `./.venv/bin/python -m playwright install chromium`."
+                )
+            raise ElevenLabsError(msg) from exc
 
         self._playwright_error = PlaywrightError
         self._playwright_timeout = PlaywrightTimeoutError
@@ -456,6 +516,17 @@ class ElevenLabsAutomation:
         self._browser_name = browser_name
         self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
         self._page.set_default_timeout(20_000)
+
+        # Capture xi-api-key from any ElevenLabs API request header
+        def _capture_xi_key(request) -> None:
+            if self._xi_api_key:
+                return
+            if "api.elevenlabs.io" in request.url:
+                key = request.headers.get("xi-api-key", "")
+                if key and len(key) > 10:
+                    self._xi_api_key = key
+        self._context.on("request", _capture_xi_key)
+
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
@@ -466,20 +537,74 @@ class ElevenLabsAutomation:
         if self._runtime_profile_dir is not None:
             shutil.rmtree(self._runtime_profile_dir, ignore_errors=True)
 
-    def ensure_authenticated(self) -> None:
+    def ensure_authenticated(self, wait_for_workspace: bool = True) -> None:
         assert self._page is not None
-        self._page.goto(ELEVENLABS_TTS_URL, wait_until="domcontentloaded")
-        deadline = time.monotonic() + 12
+        print(f"[TTS] Accessing ElevenLabs TTS page (Browser: {self.browser_name})...", flush=True)
+
+        # Attach request listener BEFORE navigation to capture xi-api-key from API calls during page load
+        def _capture_key_on_load(request) -> None:
+            if self._xi_api_key:
+                return
+            if "api.elevenlabs.io" in request.url:
+                key = request.headers.get("xi-api-key", "")
+                if key and len(key) > 10:
+                    self._xi_api_key = key
+                    print(f"[TTS] Captured xi-api-key from page load.", flush=True)
+
+        def _capture_voices_on_load(response) -> None:
+            try:
+                if response.status == 200 and response.request.resource_type in ["fetch", "xhr"]:
+                    if "api.elevenlabs.io/v1/voices" in response.url or "api.us.elevenlabs.io/v1/voices" in response.url:
+                        body = response.json()
+                        if isinstance(body, dict) and "voices" in body:
+                            voices = body["voices"]
+                            # Only capture custom voices (not premade) to simulate "My Voices"
+                            custom_voices = [v for v in voices if v.get("category") != "premade"]
+                            if custom_voices:
+                                self._cached_custom_voices = custom_voices
+                                print(f"[TTS] Captured {len(custom_voices)} custom voices from network.", flush=True)
+            except Exception:
+                pass
+
+        self._page.on("request", _capture_key_on_load)
+        self._page.on("response", _capture_voices_on_load)
+        try:
+            self._page.goto(ELEVENLABS_TTS_URL, wait_until="domcontentloaded", timeout=30_000)
+        except Exception as exc:
+            print(f"[TTS] Page load warning: {exc}", flush=True)
+
+        deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
-            if "/sign-in" in self._page.url:
+            current_url = self._page.url
+            if "/sign-in" in current_url:
                 raise ElevenLabsAuthError(
                     f"Chua tim thay session ElevenLabs trong {self.browser_name}. Hay dang nhap ElevenLabs trong {self.browser_name} roi bam Refresh Session."
                 )
+            
+            if hasattr(self, "_cached_custom_voices") and self._cached_custom_voices:
+                if not wait_for_workspace:
+                    print("[TTS] ElevenLabs cached voices ready, bypassing workspace wait.", flush=True)
+                    return
+
             if self._has_ready_tts_workspace():
-                self._wait_for_idle_ui(timeout_ms=3_000)
-                return
-            self._page.wait_for_timeout(500)
-        raise ElevenLabsError("Khong mo duoc giao dien Text to Speech cua ElevenLabs.")
+                if wait_for_workspace:
+                    self._wait_for_idle_ui(timeout_ms=1000)
+                    print("[TTS] ElevenLabs workspace ready.", flush=True)
+                    return
+                # If we are just fetching voices, wait a bit longer for the network to finish
+                # but if we run out of time, we'll return anyway.
+            
+            self._page.wait_for_timeout(1000)
+        
+        # On failure, try to capture what happened
+        try:
+            title = self._page.title()
+            print(f"[TTS] Failed to find workspace. Page title: '{title}', URL: {self._page.url}", flush=True)
+            # You could save a screenshot here for local debugging if needed
+        except Exception:
+            pass
+            
+        raise ElevenLabsError("Khong mo duoc giao dien Text to Speech cua ElevenLabs. Co the do mang cham hoac trang web thay doi giao dien.")
 
     @property
     def browser_name(self) -> str:
@@ -929,6 +1054,24 @@ class ElevenLabsAutomation:
 
     def _locate_voice_trigger(self):
         assert self._page is not None
+        # Prefer the new UI style: button with data-agent-id containing a voice name
+        # (ElevenLabs updated UI - voice button now shows selected voice name)
+        try:
+            # Strategy 1: Find a button containing a span with class truncate
+            # which holds the voice name e.g. "Liam - Energetic..."
+            agent_buttons = self._page.locator('button:has(span.truncate)')
+            count = agent_buttons.count()
+            for i in range(count):
+                btn = agent_buttons.nth(i)
+                try:
+                    if btn.is_visible():
+                        return btn
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        # Fallback: original selectors
         candidates = [
             self._page.locator('[data-testid="tts-voice-selector"]'),
             self._page.locator('button[aria-label*="Select voice"]'),
@@ -942,6 +1085,7 @@ class ElevenLabsAutomation:
                 return candidate
         return None
 
+
     def _open_voice_picker(self, trigger=None) -> None:
         assert self._page is not None
         self._wait_for_idle_ui()
@@ -949,7 +1093,11 @@ class ElevenLabsAutomation:
         if voice_trigger is None:
             raise ElevenLabsError("Khong tim thay nut chon voice tren ElevenLabs.")
         self._click_with_retries(voice_trigger, description="voice selector")
-        self._page.wait_for_timeout(800)
+        # Wait for picker to appear and animate
+        self._page.wait_for_timeout(1500)
+        search_input = self._find_voice_search_input()
+        if search_input:
+            search_input.wait_for(state="visible", timeout=3000)
 
     def _find_voice_search_input(self):
         assert self._page is not None
@@ -1044,14 +1192,108 @@ class ElevenLabsAutomation:
 
     def _fetch_available_voices(self, open_picker: bool = True) -> list[dict]:
         assert self._page is not None
+
+        # --- Strategy 0: Use cached custom voices intercepted during page load ---
+        # The user only wants to see voices in "My Voices" (not the default ElevenLabs voices)
+        if hasattr(self, "_cached_custom_voices") and self._cached_custom_voices:
+            print(f"[TTS] Returning {len(self._cached_custom_voices)} intercepted custom voices (My Voices).", flush=True)
+            return self._cached_custom_voices
+
+        # --- Strategy 1: Direct API call using xi-api-key captured from browser request headers ---
+        # This is the most reliable and gets ALL voices including My Voices (cloned/generated)
+        if self._xi_api_key:
+            try:
+                import urllib.request as _req
+                import json as _json
+                url = "https://api.elevenlabs.io/v1/voices?show_legacy=false"
+                request = _req.Request(url, headers={
+                    "xi-api-key": self._xi_api_key,
+                    "Accept": "application/json",
+                })
+                with _req.urlopen(request, timeout=15) as resp:
+                    data = _json.loads(resp.read().decode())
+                    voices = data.get("voices", [])
+                    custom_voices = [v for v in voices if v.get("category") != "premade"]
+                    if custom_voices:
+                        print(f"[TTS] Fetched {len(custom_voices)} custom voices via API (My Voices).", flush=True)
+                        return custom_voices
+            except Exception as exc:
+                print(f"[TTS] API call with xi-api-key failed: {exc}", flush=True)
+
+        # --- Strategy 2: Navigate page, intercept network, extract xi-api-key + voice data ---
+        try:
+            import json as _json
+            captured: list = []
+            captured_key: list[str] = []
+
+            def handle_request(request) -> None:
+                if not captured_key and "api.elevenlabs.io" in request.url:
+                    key = request.headers.get("xi-api-key", "")
+                    if key and len(key) > 10:
+                        captured_key.append(key)
+                        self._xi_api_key = key
+
+            def handle_response(response) -> None:
+                try:
+                    if "api.elevenlabs.io/v1/voices" in response.url or "api.us.elevenlabs.io/v1/voices" in response.url:
+                        if response.status == 200:
+                            body = response.json()
+                            if isinstance(body, dict) and "voices" in body:
+                                custom_voices = [v for v in body["voices"] if v.get("category") != "premade"]
+                                captured.extend(custom_voices)
+                except Exception:
+                    pass
+
+            self._page.on("request", handle_request)
+            self._page.on("response", handle_response)
+            try:
+                # Force a fresh load by navigating away first (prevents browser cache serving old data)
+                self._page.goto("about:blank", wait_until="load", timeout=5_000)
+                self._page.goto("https://elevenlabs.io/app/speech-synthesis/text-to-speech",
+                                wait_until="networkidle", timeout=25_000)
+                self._page.wait_for_timeout(2000)
+            except Exception:
+                pass
+            finally:
+                self._page.remove_listener("request", handle_request)
+                self._page.remove_listener("response", handle_response)
+
+            # If we captured the key, try a direct API call to get ALL voices including My Voices
+            if captured_key:
+                try:
+                    import urllib.request as _req2
+                    url = "https://api.elevenlabs.io/v1/voices?show_legacy=false"
+                    req2 = _req2.Request(url, headers={
+                        "xi-api-key": captured_key[0],
+                        "Accept": "application/json",
+                    })
+                    with _req2.urlopen(req2, timeout=15) as resp:
+                        data = _json.loads(resp.read().decode())
+                        voices = data.get("voices", [])
+                        if voices:
+                            print(f"[TTS] Fetched {len(voices)} voices via API (My Voices included).", flush=True)
+                            return voices
+                except Exception:
+                    pass
+
+            if captured:
+                return captured
+        except Exception:
+            pass
+
+        # --- Fallback: DOM scraping (original method) ---
         try:
             if open_picker:
                 self._open_voice_picker()
+            else:
+                self._page.wait_for_timeout(500)
+
             search_input = self._find_voice_search_input()
             if search_input is not None:
                 try:
+                    search_input.wait_for(state="visible", timeout=2000)
                     search_input.fill("")
-                    self._page.wait_for_timeout(250)
+                    self._page.wait_for_timeout(500)
                 except Exception:
                     pass
             voices = self._page.evaluate(
@@ -1062,51 +1304,33 @@ class ElevenLabsAutomation:
                         const style = window.getComputedStyle(el);
                         return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
                     };
-
                     const normalizeText = (value) => (value || '')
-                        .replace(/\\u00a0/g, ' ')
-                        .split(/\\n+/)
+                        .replace(/\u00a0/g, ' ')
+                        .split(/\n+/)
                         .map((line) => line.trim())
                         .filter(Boolean);
-
                     const searchSelectors = [
-                        'input[type="search"]',
-                        'input[placeholder*="Search"]',
-                        'input[placeholder*="search"]',
-                        'input[placeholder*="voice"]',
-                        'input[placeholder*="Voice"]',
-                        '[role="searchbox"]',
-                        '[cmdk-input]',
-                        '[data-slot="command-input"] input',
-                        '[data-slot="input"]',
-                        'input[type="text"]',
+                        'input[type="search"]', 'input[placeholder*="Search"]',
+                        'input[placeholder*="search"]', 'input[placeholder*="voice"]',
+                        'input[placeholder*="Voice"]', '[role="searchbox"]',
+                        '[cmdk-input]', '[data-slot="command-input"] input',
+                        '[data-slot="input"]', 'input[type="text"]',
                     ];
                     const searchInput = searchSelectors
                         .flatMap((selector) => Array.from(document.querySelectorAll(selector)))
                         .find((el) => isVisible(el));
-
                     const roots = [];
                     if (searchInput) {
                         const root = searchInput.closest('[role="dialog"], [cmdk-root], [data-slot="popover-content"], [data-radix-popper-content-wrapper]');
                         if (root) roots.push(root);
                     }
-                    if (!roots.length) {
-                        roots.push(document.body);
-                    }
-
+                    if (!roots.length) roots.push(document.body);
                     const candidateSelectors = [
-                        '[cmdk-item]',
-                        '[data-slot="command-item"]',
-                        '[data-slot="item"]',
-                        '[role="option"]',
-                        '[role="listitem"]',
-                        '[role="menuitem"]',
-                        'li',
-                        'button',
+                        '[cmdk-item]', '[data-slot="command-item"]', '[data-slot="item"]',
+                        '[role="option"]', '[role="listitem"]', '[role="menuitem"]', 'li', 'button',
                     ];
                     const results = [];
                     const seen = new Set();
-
                     for (const root of roots) {
                         const candidates = root.querySelectorAll(candidateSelectors.join(', '));
                         for (const el of candidates) {
@@ -1121,28 +1345,20 @@ class ElevenLabsAutomation:
                             if (seen.has(dedupeKey)) continue;
                             seen.add(dedupeKey);
                             const voiceId = (
-                                el.getAttribute('data-value') ||
-                                el.getAttribute('data-id') ||
-                                el.getAttribute('data-key') ||
-                                el.getAttribute('aria-label') ||
-                                name
+                                el.getAttribute('data-value') || el.getAttribute('data-id') ||
+                                el.getAttribute('data-key') || el.getAttribute('aria-label') || name
                             ).trim();
                             const description = lines.slice(1).join(', ');
-                            const payload = {
-                                voice_id: voiceId || name,
-                                name,
-                                labels: description ? { description } : {},
-                            };
-                            results.push(payload);
+                            results.push({ voice_id: voiceId || name, name, labels: description ? { description } : {} });
                         }
                     }
-
                     return results;
                 }"""
             )
             return voices if isinstance(voices, list) else []
         except Exception:
             return []
+
 
     def _has_ready_tts_workspace(self) -> bool:
         assert self._page is not None
@@ -1302,13 +1518,22 @@ class ElevenLabsSessionManager:
     def open_login(self) -> dict:
         browser = detect_tts_login_browser()
         try:
-            subprocess.Popen(
-                ["open", "-a", str(browser.app_path), ELEVENLABS_LOGIN_URL],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                stdin=subprocess.DEVNULL,
-                close_fds=True,
-            )
+            if sys.platform == "win32":
+                subprocess.Popen(
+                    [str(browser.executable_path), ELEVENLABS_LOGIN_URL],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                    close_fds=True,
+                )
+            else:
+                subprocess.Popen(
+                    ["open", "-a", str(browser.app_path), ELEVENLABS_LOGIN_URL],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                    close_fds=True,
+                )
         except Exception as exc:  # noqa: BLE001
             raise ElevenLabsError(f"Khong mo duoc cua so dang nhap ElevenLabs: {exc}") from exc
 
@@ -1336,6 +1561,8 @@ class TtsManager:
         self._cancel_events: dict[str, threading.Event] = {}
         self._session = ElevenLabsSessionManager()
         self._state_file = state_file or TTS_STATE_FILE
+        self._voice_cache: list[dict] | None = None
+        self._voice_cache_time: float = 0
         self._load_state()
 
     def get_bootstrap(self) -> dict:
@@ -1348,13 +1575,39 @@ class TtsManager:
     def get_session_status(self, refresh: bool = False) -> dict:
         return self._session.validate_session(cache_only=not refresh)
 
-    def list_available_voices(self) -> list[dict]:
-        with ElevenLabsAutomation(
-            TTS_BATCH_ROOT / "_scratch",
-            headless=True,
-        ) as automation:
-            automation.ensure_authenticated()
-            voices = automation._fetch_available_voices()
+    def list_available_voices(self, refresh: bool = False) -> list[dict]:
+        import time
+        import json
+        
+        cache_file = TTS_BATCH_ROOT.parent / "voices_cache.json"
+        
+        if refresh:
+            self._voice_cache = None
+            self._voice_cache_time = 0
+        
+        # Load from memory or disk cache
+        if self._voice_cache is None and cache_file.exists():
+            try:
+                cached_data = json.loads(cache_file.read_text(encoding="utf-8"))
+                if isinstance(cached_data, dict) and "voices" in cached_data and "time" in cached_data:
+                    self._voice_cache = cached_data["voices"]
+                    self._voice_cache_time = cached_data["time"]
+            except Exception:
+                pass
+
+        if not refresh and self._voice_cache is not None and (time.time() - self._voice_cache_time) < 3600:
+            return self._voice_cache
+
+        try:
+            with ElevenLabsAutomation(
+                TTS_BATCH_ROOT / "_scratch",
+                headless=True,
+            ) as automation:
+                automation.ensure_authenticated(wait_for_workspace=False)
+                voices = automation._fetch_available_voices(open_picker=False)
+        except Exception as exc:
+            print(f"[TTS] Failed to fetch voices: {exc}", flush=True)
+            return self._voice_cache or []
 
         results: list[dict] = []
         for voice in voices:
@@ -1379,6 +1632,19 @@ class TtsManager:
             if category:
                 payload["category"] = category
             results.append(payload)
+        
+        self._voice_cache = results
+        self._voice_cache_time = time.time()
+        
+        # Persist to disk
+        try:
+            cache_file.write_text(
+                json.dumps({"time": self._voice_cache_time, "voices": self._voice_cache}, ensure_ascii=False, indent=2),
+                encoding="utf-8"
+            )
+        except Exception:
+            pass
+            
         return results
 
     def open_login(self) -> dict:
@@ -2219,8 +2485,13 @@ class TtsManager:
 
 def run_login_window() -> None:
     browser = detect_tts_login_browser()
+    if sys.platform == "win32":
+        command = [str(browser.executable_path), ELEVENLABS_LOGIN_URL]
+    else:
+        command = ["open", "-a", str(browser.app_path), ELEVENLABS_LOGIN_URL]
+
     completed = subprocess.run(
-        ["open", "-a", str(browser.app_path), ELEVENLABS_LOGIN_URL],
+        command,
         capture_output=True,
         text=True,
         check=False,

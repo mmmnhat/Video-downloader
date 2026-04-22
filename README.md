@@ -1,122 +1,122 @@
-# Flowgen - Video Downloader & TTS Studio
+﻿# Flowgen - Video Downloader & TTS Studio
 
-Flowgen là một công cụ local mạnh mẽ chạy trên máy cá nhân với giao diện Web UI hiện đại (React/Vite/Tailwind) được tích hợp sẵn làm mặc định. Tool giúp bạn tự động hóa việc tải video từ nhiều nền tảng và tạo giọng đọc AI (Text-to-Speech) hàng loạt.
+Flowgen l├á mß╗Öt c├┤ng cß╗Ñ local mß║ính mß║╜ chß║íy tr├¬n m├íy c├í nh├ón vß╗¢i giao diß╗çn Web UI hiß╗çn ─æß║íi (React/Vite/Tailwind) ─æ╞░ß╗úc t├¡ch hß╗úp sß║╡n l├ám mß║╖c ─æß╗ïnh. Tool gi├║p bß║ín tß╗▒ ─æß╗Öng h├│a viß╗çc tß║úi video tß╗½ nhiß╗üu nß╗ün tß║úng v├á tß║ío giß╗ìng ─æß╗ìc AI (Text-to-Speech) h├áng loß║ít.
 
-## Tính năng chính
+## T├¡nh n─âng ch├¡nh
 
-### 1. Trình tải Video tự động (Video Downloader)
-- **Tự động hóa qua Google Sheets:** Chỉ cần dán link sheet chứa danh sách URL video.
-- **Tự nhận diện nền tảng:** Hỗ trợ tải từ YouTube, Facebook, Instagram, TikTok, Pinterest, X, Reddit, Dumpert, v.v.
-- **Xử lý tên & cắt video (Auto-cut):**
-  - Đặt tên file đầu ra theo cột `STT` trong sheet.
-  - Tự động cắt video theo cột `Time` / `Thời lượng` (ví dụ: `00:52-01:04`).
-  - Hỗ trợ cắt thành nhiều đoạn trong cùng 1 video (ví dụ: `0.3-0.5, 0.10-0.12`).
-- **Quản lý Download chặt chẽ:** 
-  - Lưu tất cả video vào chung một thư mục, file được chuẩn hóa về định dạng MP4 H.264 dễ dàng chèn vào các phần mềm edit.
-  - Theo dõi tiến trình tải realtime (batch tracker), Stop nhanh đoạn đang tải, Retry các task lỗi. 
-  - Lưu trạng thái (state) nội bộ ngay cả khi tắt nguồn hay tải lại trang web.
-  - Có thể nạp cookies hoặc đọc trực tiếp từ trình duyệt (Cốc Cốc, Chrome...) để tải các video Private bị khoá.
+### 1. Tr├¼nh tß║úi Video tß╗▒ ─æß╗Öng (Video Downloader)
+- **Tß╗▒ ─æß╗Öng h├│a qua Google Sheets:** Chß╗ë cß║ºn d├ín link sheet chß╗⌐a danh s├ích URL video.
+- **Tß╗▒ nhß║¡n diß╗çn nß╗ün tß║úng:** Hß╗ù trß╗ú tß║úi tß╗½ YouTube, Facebook, Instagram, TikTok, Pinterest, X, Reddit, Dumpert, v.v.
+- **Xß╗¡ l├╜ t├¬n & cß║»t video (Auto-cut):**
+  - ─Éß║╖t t├¬n file ─æß║ºu ra theo cß╗Öt `STT` trong sheet.
+  - Tß╗▒ ─æß╗Öng cß║»t video theo cß╗Öt `Time` / `Thß╗¥i l╞░ß╗úng` (v├¡ dß╗Ñ: `00:52-01:04`).
+  - Hß╗ù trß╗ú cß║»t th├ánh nhiß╗üu ─æoß║ín trong c├╣ng 1 video (v├¡ dß╗Ñ: `0.3-0.5, 0.10-0.12`).
+- **Quß║ún l├╜ Download chß║╖t chß║╜:** 
+  - L╞░u tß║Ñt cß║ú video v├áo chung mß╗Öt th╞░ mß╗Ñc, file ─æ╞░ß╗úc chuß║⌐n h├│a vß╗ü ─æß╗ïnh dß║íng MP4 H.264 dß╗à d├áng ch├¿n v├áo c├íc phß║ºn mß╗üm edit.
+  - Theo d├╡i tiß║┐n tr├¼nh tß║úi realtime (batch tracker), Stop nhanh ─æoß║ín ─æang tß║úi, Retry c├íc task lß╗ùi. 
+  - L╞░u trß║íng th├íi (state) nß╗Öi bß╗Ö ngay cß║ú khi tß║»t nguß╗ôn hay tß║úi lß║íi trang web.
+  - C├│ thß╗â nß║íp cookies hoß║╖c ─æß╗ìc trß╗▒c tiß║┐p tß╗½ tr├¼nh duyß╗çt (Cß╗æc Cß╗æc, Chrome...) ─æß╗â tß║úi c├íc video Private bß╗ï kho├í.
 
-### 2. Studio lồng tiếng (TTS Studio) - MỚI
-- **Tích hợp sâu ElevenLabs qua Playwright:** Cho phép trình giả lập trình duyệt đăng nhập vào tài khoản ElevenLabs giúp cá nhân hoá giọng đọc cực nhanh mà không vướng các hạn mức API thông thường. 
-- **Thiết lập theo cấu hình:**
-  - Hỗ trợ nạp kịch bản (Text) thông qua Google Sheets.
-  - Chọn Giọng đọc (Voice) hoặc chỉnh các thông số giọng nói trực tiếp từ Studio.
-- **Xử lý hàng loạt âm thanh:** Hệ thống chạy đa luồng để gọi tạo file âm thanh (TTS) cho toàn bộ sheet một cách tự động và ổn định, xuất thẳng ra thư mục của bạn.
+### 2. Studio lß╗ông tiß║┐ng (TTS Studio) - Mß╗ÜI
+- **T├¡ch hß╗úp s├óu ElevenLabs qua Playwright:** Cho ph├⌐p tr├¼nh giß║ú lß║¡p tr├¼nh duyß╗çt ─æ─âng nhß║¡p v├áo t├ái khoß║ún ElevenLabs gi├║p c├í nh├ón ho├í giß╗ìng ─æß╗ìc cß╗▒c nhanh m├á kh├┤ng v╞░ß╗¢ng c├íc hß║ín mß╗⌐c API th├┤ng th╞░ß╗¥ng. 
+- **Thiß║┐t lß║¡p theo cß║Ñu h├¼nh:**
+  - Hß╗ù trß╗ú nß║íp kß╗ïch bß║ún (Text) th├┤ng qua Google Sheets.
+  - Chß╗ìn Giß╗ìng ─æß╗ìc (Voice) hoß║╖c chß╗ënh c├íc th├┤ng sß╗æ giß╗ìng n├│i trß╗▒c tiß║┐p tß╗½ Studio.
+- **Xß╗¡ l├╜ h├áng loß║ít ├óm thanh:** Hß╗ç thß╗æng chß║íy ─æa luß╗ông ─æß╗â gß╗ìi tß║ío file ├óm thanh (TTS) cho to├án bß╗Ö sheet mß╗Öt c├ích tß╗▒ ─æß╗Öng v├á ß╗òn ─æß╗ïnh, xuß║Ñt thß║│ng ra th╞░ mß╗Ñc cß╗ºa bß║ín.
 
 ---
 
-## Yêu cầu hệ thống
+## Y├¬u cß║ºu hß╗ç thß╗æng
 
-- Hệ điều hành: Windows, macOS hoặc Linux
+- Hß╗ç ─æiß╗üu h├ánh: Windows, macOS hoß║╖c Linux
 - **Python 3.9+**
 - `yt-dlp`
 - `ffmpeg`, `ffprobe`
-- (Tuỳ chọn) Node.js nếu muốn tự build lại giao diện Web UI.
+- (Tuß╗│ chß╗ìn) Node.js nß║┐u muß╗æn tß╗▒ build lß║íi giao diß╗çn Web UI.
 
-Nếu máy chưa cài `yt-dlp`, hãy chạy:
+Nß║┐u m├íy ch╞░a c├ái `yt-dlp`, h├úy chß║íy:
 ```bash
 python3 -m pip install --user yt-dlp
 ```
 
-## Cài đặt chi tiết
+## C├ái ─æß║╖t chi tiß║┐t
 
-Dưới đây là từng bước cài đặt cụ thể để khởi chạy ứng dụng từ mã nguồn gốc:
+D╞░ß╗¢i ─æ├óy l├á tß╗½ng b╞░ß╗¢c c├ái ─æß║╖t cß╗Ñ thß╗â ─æß╗â khß╗ƒi chß║íy ß╗⌐ng dß╗Ñng tß╗½ m├ú nguß╗ôn gß╗æc:
 
-**Bước 1: Tải mã nguồn**
+**B╞░ß╗¢c 1: Tß║úi m├ú nguß╗ôn**
 ```bash
 git clone https://github.com/mmmnhat/Video-downloader.git
 cd Video-downloader
 ```
 
-**Bước 2: Tạo và kích hoạt môi trường ảo (Virtual Environment)**
-Việc này giúp các thư viện của app không xung đột với máy tính của bạn.
-- **Trên Mac/Linux:**
+**B╞░ß╗¢c 2: Tß║ío v├á k├¡ch hoß║ít m├┤i tr╞░ß╗¥ng ß║úo (Virtual Environment)**
+Viß╗çc n├áy gi├║p c├íc th╞░ viß╗çn cß╗ºa app kh├┤ng xung ─æß╗Öt vß╗¢i m├íy t├¡nh cß╗ºa bß║ín.
+- **Tr├¬n Mac/Linux:**
   ```bash
   python3 -m venv .venv
   source .venv/bin/activate
   ```
-- **Trên Windows:**
+- **Tr├¬n Windows:**
   ```cmd
   python -m venv .venv
   .venv\Scripts\activate
   ```
 
-**Bước 3: Cài đặt các thư viện lõi (Python Dependencies)**
+**B╞░ß╗¢c 3: C├ái ─æß║╖t c├íc th╞░ viß╗çn l├╡i (Python Dependencies)**
 ```bash
 pip install -r requirements.txt
 ```
-*(Nếu hệ thống chưa cài được `yt-dlp`, có thể chạy thêm lệnh độc lập: `pip install yt-dlp`)*
+*(Nß║┐u hß╗ç thß╗æng ch╞░a c├ái ─æ╞░ß╗úc `yt-dlp`, c├│ thß╗â chß║íy th├¬m lß╗çnh ─æß╗Öc lß║¡p: `pip install yt-dlp`)*
 
-**Bước 4: Cài đặt trình duyệt tự động (Playwright Browsers)**
-Vì trình **TTS Studio** cần trình duyệt ảo để lấy giọng nói từ ElevenLabs, bạn bắt buộc phải cấp phép cài Chromium giả lập:
+**B╞░ß╗¢c 4: C├ái ─æß║╖t tr├¼nh duyß╗çt tß╗▒ ─æß╗Öng (Playwright Browsers)**
+V├¼ tr├¼nh **TTS Studio** cß║ºn tr├¼nh duyß╗çt ß║úo ─æß╗â lß║Ñy giß╗ìng n├│i tß╗½ ElevenLabs, bß║ín bß║»t buß╗Öc phß║úi cß║Ñp ph├⌐p c├ái Chromium giß║ú lß║¡p:
 ```bash
 playwright install chromium
 ```
 
-*(Giao diện web hiện đại đã được build tĩnh sẵn trong mục `web/dist`. Bạn hoàn toàn bỏ qua phần cài đặt NPM/NodeJS trừ phi có nhu cầu thay đổi, lập trình lại UI lúc đó hãy vào thư mục `web` để `npm install` và `npm run build`.)*
+*(Giao diß╗çn web hiß╗çn ─æß║íi ─æ├ú ─æ╞░ß╗úc build t─⌐nh sß║╡n trong mß╗Ñc `web/dist`. Bß║ín ho├án to├án bß╗Å qua phß║ºn c├ái ─æß║╖t NPM/NodeJS trß╗½ phi c├│ nhu cß║ºu thay ─æß╗òi, lß║¡p tr├¼nh lß║íi UI l├║c ─æ├│ h├úy v├áo th╞░ mß╗Ñc `web` ─æß╗â `npm install` v├á `npm run build`.)*
 
-## Sử dụng
+## Sß╗¡ dß╗Ñng
 
-Khởi động ứng dụng bằng terminal:
+Khß╗ƒi ─æß╗Öng ß╗⌐ng dß╗Ñng bß║▒ng terminal:
 ```bash
 python3 main.py
 ```
 
-Ứng dụng sẽ chạy máy chủ FastAPI mượt mà và tự động mở giao diện Web UI hiện đại hiển thị trên trình duyệt mặc định ở địa chỉ:
+ß╗¿ng dß╗Ñng sß║╜ chß║íy m├íy chß╗º FastAPI m╞░ß╗út m├á v├á tß╗▒ ─æß╗Öng mß╗ƒ giao diß╗çn Web UI hiß╗çn ─æß║íi hiß╗ân thß╗ï tr├¬n tr├¼nh duyß╗çt mß║╖c ─æß╗ïnh ß╗ƒ ─æß╗ïa chß╗ë:
 ```text
 http://127.0.0.1:8765
 ```
 
-Nếu bạn đang chạy tool trên thiết bị cắm máy/server và **không muốn** tool cố mở trình duyệt:
+Nß║┐u bß║ín ─æang chß║íy tool tr├¬n thiß║┐t bß╗ï cß║»m m├íy/server v├á **kh├┤ng muß╗æn** tool cß╗æ mß╗ƒ tr├¼nh duyß╗çt:
 ```bash
 VIDEO_DOWNLOADER_NO_BROWSER=1 python3 main.py
 ```
 
 ---
 
-## Đóng gói chạy trực tiếp không cần cài đặt (Windows Portable .exe)
+## ─É├│ng g├│i chß║íy trß╗▒c tiß║┐p kh├┤ng cß║ºn c├ái ─æß║╖t (Windows Portable .exe)
 
-Nếu bạn muốn tạo một bản `.exe` di động mang chép sang bất kỳ máy tính Windows nào để dùng mà không cần cài mã nguồn hay Python:
+Nß║┐u bß║ín muß╗æn tß║ío mß╗Öt bß║ún `.exe` di ─æß╗Öng mang ch├⌐p sang bß║Ñt kß╗│ m├íy t├¡nh Windows n├áo ─æß╗â d├╣ng m├á kh├┤ng cß║ºn c├ái m├ú nguß╗ôn hay Python:
 
-1. Phải chuẩn bị một máy build chạy hệ điều hành Windows và đã cài Python 3.9+.
-2. (Tuỳ chọn) Có Node.js để build frontend mới nhất.
-3. Tải và chép file `ffmpeg.exe` / `ffprobe.exe` vào thư mục `vendor/windows/bin/` trong source code này.
-4. Mở PowerShell trong thư mục của Project và chạy:
+1. Phß║úi chuß║⌐n bß╗ï mß╗Öt m├íy build chß║íy hß╗ç ─æiß╗üu h├ánh Windows v├á ─æ├ú c├ái Python 3.9+.
+2. (Tuß╗│ chß╗ìn) C├│ Node.js ─æß╗â build frontend mß╗¢i nhß║Ñt.
+3. Tß║úi v├á ch├⌐p file `ffmpeg.exe` / `ffprobe.exe` v├áo th╞░ mß╗Ñc `vendor/windows/bin/` trong source code n├áy.
+4. Mß╗ƒ PowerShell trong th╞░ mß╗Ñc cß╗ºa Project v├á chß║íy:
 ```powershell
 .\packaging\windows\build.ps1
 ```
 
-Hoàn tất, Script sẽ gộp nguyên bộ source thành một khối trong thư mục `dist/VideoDownloader`. File gửi đi sẽ đủ mọi chức năng và máy người nhận chỉ việc click khởi chạy file `VideoDownloader.exe`.
+Ho├án tß║Ñt, Script sß║╜ gß╗Öp nguy├¬n bß╗Ö source th├ánh mß╗Öt khß╗æi trong th╞░ mß╗Ñc `dist/VideoDownloader`. File gß╗¡i ─æi sß║╜ ─æß╗º mß╗ìi chß╗⌐c n─âng v├á m├íy ng╞░ß╗¥i nhß║¡n chß╗ë viß╗çc click khß╗ƒi chß║íy file `VideoDownloader.exe`.
 
 ---
 
-## Khắc phục lỗi thường gặp / Tháo gỡ khó khăn
+## Khß║»c phß╗Ñc lß╗ùi th╞░ß╗¥ng gß║╖p / Th├ío gß╗í kh├│ kh─ân
 
-- **Web từ chối/bắt Captcha chặn tải:** Tính năng Auto-fallback qua lớp HTTP scraper được bật giúp tải từ những luồng như Threads/Dailymotion. Với video cần xem được mới tải được (Private Mode), bạn buộc phải thêm Cookies vào mục cài đặt trên màn hình UI. App tự bật cơ chế mạo danh `--impersonate chrome` để qua mặt Cloudflare chặn web.
-- **Trạng thái lịch sử Download và TTS:** Các thông số đã tải, cấu hình giọng đều được ứng dụng tự lưu đệm ở những tệp `app_state.json` và `tts_state.json`. Hãy để nguyên các tệp này, chúng là nơi lưu bộ nhớ hệ thống.
-- **Tải TikTok bị thất bại:** Máy chủ TikTok thỉnh thoảng update bộ máy chặn thuật toán. Tool sẽ thay đổi qua Mobile API nội bộ, nhưng đối với những nội dung khó, vui lòng ấn nút Retry từ giao diện tracker hoặc chèn Cookies.
-- **Youtube Shorts không thể tải được:** Trường hợp thường liên quan bị lỗi bảo mật phân quyền do Youtube triển khai gọi là `PO Token / GVS access`. Đây là giới hạn từ `yt-dlp` đang được tiếp tục phân tích, bạn có thể thử cấp Cookie cho phần mềm xử lý.
+- **Web tß╗½ chß╗æi/bß║»t Captcha chß║╖n tß║úi:** T├¡nh n─âng Auto-fallback qua lß╗¢p HTTP scraper ─æ╞░ß╗úc bß║¡t gi├║p tß║úi tß╗½ nhß╗»ng luß╗ông nh╞░ Threads/Dailymotion. Vß╗¢i video cß║ºn xem ─æ╞░ß╗úc mß╗¢i tß║úi ─æ╞░ß╗úc (Private Mode), bß║ín buß╗Öc phß║úi th├¬m Cookies v├áo mß╗Ñc c├ái ─æß║╖t tr├¬n m├án h├¼nh UI. App tß╗▒ bß║¡t c╞í chß║┐ mß║ío danh `--impersonate chrome` ─æß╗â qua mß║╖t Cloudflare chß║╖n web.
+- **Trß║íng th├íi lß╗ïch sß╗¡ Download v├á TTS:** C├íc th├┤ng sß╗æ ─æ├ú tß║úi, cß║Ñu h├¼nh giß╗ìng ─æß╗üu ─æ╞░ß╗úc ß╗⌐ng dß╗Ñng tß╗▒ l╞░u ─æß╗çm ß╗ƒ nhß╗»ng tß╗çp `app_state.json` v├á `tts_state.json`. H├úy ─æß╗â nguy├¬n c├íc tß╗çp n├áy, ch├║ng l├á n╞íi l╞░u bß╗Ö nhß╗¢ hß╗ç thß╗æng.
+- **Tß║úi TikTok bß╗ï thß║Ñt bß║íi:** M├íy chß╗º TikTok thß╗ënh thoß║úng update bß╗Ö m├íy chß║╖n thuß║¡t to├ín. Tool sß║╜ thay ─æß╗òi qua Mobile API nß╗Öi bß╗Ö, nh╞░ng ─æß╗æi vß╗¢i nhß╗»ng nß╗Öi dung kh├│, vui l├▓ng ß║Ñn n├║t Retry tß╗½ giao diß╗çn tracker hoß║╖c ch├¿n Cookies.
+- **Youtube Shorts kh├┤ng thß╗â tß║úi ─æ╞░ß╗úc:** Tr╞░ß╗¥ng hß╗úp th╞░ß╗¥ng li├¬n quan bß╗ï lß╗ùi bß║úo mß║¡t ph├ón quyß╗ün do Youtube triß╗ân khai gß╗ìi l├á `PO Token / GVS access`. ─É├óy l├á giß╗¢i hß║ín tß╗½ `yt-dlp` ─æang ─æ╞░ß╗úc tiß║┐p tß╗Ñc ph├ón t├¡ch, bß║ín c├│ thß╗â thß╗¡ cß║Ñp Cookie cho phß║ºn mß╗üm xß╗¡ l├╜.
 
-## Tuyên bố từ chối trách nhiệm
-Công cụ được xây dựng nhằm hỗ trợ công việc tự động hoá theo kịch bản (automation-flow), không dùng để mở khoá nội dung mã hoá khoá luồng (DRM DRM-protected media). Người sử dụng hoàn toàn tự mình chịu các trách nhiệm liên đới với việc tuân thủ Điều khoản sử dụng & Bản quyền gốc ở mọi trang cung cấp video âm thanh cá nhân liên quan.
+## Tuy├¬n bß╗æ tß╗½ chß╗æi tr├ích nhiß╗çm
+C├┤ng cß╗Ñ ─æ╞░ß╗úc x├óy dß╗▒ng nhß║▒m hß╗ù trß╗ú c├┤ng viß╗çc tß╗▒ ─æß╗Öng ho├í theo kß╗ïch bß║ún (automation-flow), kh├┤ng d├╣ng ─æß╗â mß╗ƒ kho├í nß╗Öi dung m├ú ho├í kho├í luß╗ông (DRM DRM-protected media). Ng╞░ß╗¥i sß╗¡ dß╗Ñng ho├án to├án tß╗▒ m├¼nh chß╗ïu c├íc tr├ích nhiß╗çm li├¬n ─æß╗¢i vß╗¢i viß╗çc tu├ón thß╗º ─Éiß╗üu khoß║ún sß╗¡ dß╗Ñng & Bß║ún quyß╗ün gß╗æc ß╗ƒ mß╗ìi trang cung cß║Ñp video ├óm thanh c├í nh├ón li├¬n quan.

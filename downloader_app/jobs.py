@@ -36,10 +36,12 @@ COOKIE_DOMAIN_HINTS = {
     "pinterest": ["pinterest.com", "pin.it"],
     "dumpert": ["dumpert.nl"],
     "x": ["x.com", "twitter.com"],
-    "threads": ["threads.net", "instagram.com"],
+    "threads": ["threads.net", "threads.com", "instagram.com"],
     "reddit": ["reddit.com", "redd.it"],
     "telegram": ["t.me", "telegram.me", "telegram.dog"],
     "dailymotion": ["dailymotion.com", "dai.ly"],
+    "yandex": ["yandex.ru", "yandex.com", "yandex.by", "yandex.kz", "yandex.ua", "yandex.com.tr"],
+    "nicovideo": ["nicovideo.jp", "nico.ms"],
 }
 FINAL_BATCH_STATUSES = {"completed", "completed_with_errors", "cancelled"}
 MAX_EVENT_BACKLOG = 500
@@ -537,25 +539,23 @@ class DownloadManager:
 
             with self._lock:
                 batch = self._batches.get(batch_id)
-                if batch is None:
-                    return
+                if batch is not None:
+                    if processing_error:
+                        for item in batch.items:
+                            if item.supported and item.status == "queued":
+                                item.status = "failed"
+                                item.error = f"Batch worker crashed before processing item: {processing_error}"
+                                item.completed_at = utc_now()
+                    elif cancel_event.is_set():
+                        for item in batch.items:
+                            if item.supported and item.status == "queued":
+                                item.status = "cancelled"
+                                item.error = "Batch stopped by user."
+                                item.completed_at = utc_now()
 
-                if processing_error:
-                    for item in batch.items:
-                        if item.supported and item.status == "queued":
-                            item.status = "failed"
-                            item.error = f"Batch worker crashed before processing item: {processing_error}"
-                            item.completed_at = utc_now()
-                elif cancel_event.is_set():
-                    for item in batch.items:
-                        if item.supported and item.status == "queued":
-                            item.status = "cancelled"
-                            item.error = "Batch stopped by user."
-                            item.completed_at = utc_now()
-
-                self._refresh_batch_status_locked(batch_id)
-                self._persist_state_locked()
-                self._record_event_locked("batch.updated", {"batchId": batch_id})
+                    self._refresh_batch_status_locked(batch_id)
+                    self._persist_state_locked()
+                    self._record_event_locked("batch.updated", {"batchId": batch_id})
 
     def _process_item(
         self,
@@ -762,6 +762,14 @@ class DownloadManager:
                             continue
                         attempt_url = direct_url
                         print(f"[DEBUG] Dailymotion scraper found direct URL: {attempt_url}", flush=True)
+                        
+                    if attempt.label == "yandex_html_scraping_fallback":
+                        direct_url = self._resolve_yandex_direct_url(item.source_url, cookie_file_path=cookie_file_path)
+                        if not direct_url:
+                            last_error = "Could not scrape direct/embed URL from Yandex page."
+                            continue
+                        attempt_url = direct_url
+                        print(f"[DEBUG] Yandex scraper found embedded URL: {attempt_url}", flush=True)
 
                     command = self._build_yt_dlp_command(
                         item=item,
@@ -935,6 +943,13 @@ class DownloadManager:
                     extra_args=(),
                 )
             )
+        if item.platform == "yandex":
+            attempts.append(
+                YtDlpAttempt(
+                    label="yandex_html_scraping_fallback",
+                    extra_args=(),
+                )
+            )
         return attempts
 
     def _build_yt_dlp_command(
@@ -1041,6 +1056,9 @@ class DownloadManager:
 
         if item.platform == "dailymotion":
             return attempt_label in {"default", "dailymotion_no_impersonate_fallback"}
+
+        if item.platform == "yandex":
+            return attempt_label == "default"
 
         if item.platform != "youtube":
             return False
@@ -1301,6 +1319,56 @@ class DownloadManager:
         
         return None
 
+    def _resolve_yandex_direct_url(self, source_url: str, cookie_file_path: str | None = None) -> str | None:
+        import urllib.parse
+        import html
+        
+        # Fetch using curl-cffi for stealth
+        page_html = self._curl_fetch_text(source_url, cookie_file_path, impersonate="chrome")
+        if not page_html:
+            # Fallback to urllib
+            import urllib.request
+            import http.cookiejar
+            jar = http.cookiejar.MozillaCookieJar()
+            if cookie_file_path and os.path.exists(cookie_file_path):
+                try: jar.load(cookie_file_path, ignore_discard=True, ignore_expires=True)
+                except Exception: pass
+            opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+            try:
+                req = urllib.request.Request(source_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"})
+                page_html = opener.open(req, timeout=15).read().decode("utf-8", errors="replace")
+            except Exception:
+                return None
+
+        # Look for iframes
+        iframes = re.findall(r'<iframe[^>]*src="([^"]+)"', page_html)
+        for src in iframes:
+            # Unescape HTML entities
+            src = html.unescape(src)
+            if src.startswith("//"):
+                src = "https:" + src
+            
+            # 1. Handle Yandex's own video-player wrapper which often embeds the real source
+            if "video-player" in src:
+                fragment = urllib.parse.urlparse(src).fragment
+                params = urllib.parse.parse_qs(fragment)
+                if "html" in params:
+                    # The fragment contains an inner iframe in 'html' param
+                    inner_html = params["html"][0]
+                    inner_src_match = re.search(r'src="([^"]+)"', inner_html)
+                    if inner_src_match:
+                        inner_src = html.unescape(inner_src_match.group(1))
+                        if inner_src.startswith("//"):
+                            inner_src = "https:" + inner_src
+                        return inner_src
+
+            # 2. Check for common external video hosts
+            for host in ["youtube.com", "youtu.be", "ok.ru", "rutube.ru", "vimeo.com", "vk.com"]:
+                if host in src:
+                    return src
+
+        return None
+
     def _build_cookie_file(
         self,
         item: DownloadItem,
@@ -1371,7 +1439,7 @@ class DownloadManager:
         created_paths: list[Path] = []
         for clip_index, clip_range in enumerate(item.clip_ranges, start=1):
             clipped_path = source_path.with_name(
-                f"{source_path.stem}.{clip_index}{source_path.suffix}"
+                f"{source_path.stem}.{clip_index}.mp4"
             )
             command = [
                 self._require_ffmpeg(),
@@ -1437,7 +1505,9 @@ class DownloadManager:
                 for created_path in created_paths:
                     created_path.unlink(missing_ok=True)
                 message = (stderr or stdout or "ffmpeg autocut failed").strip()
-                raise RuntimeError(message.splitlines()[-1])
+                error_lines = message.splitlines()
+                context = "\n".join(error_lines[-3:]) if len(error_lines) >= 3 else message
+                raise RuntimeError(f"FFmpeg Auto-cut failed:\n{context}")
 
             created_paths.append(clipped_path)
 

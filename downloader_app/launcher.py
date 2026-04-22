@@ -39,7 +39,32 @@ def main(argv: list[str] | None = None) -> int:
         yt_dlp.main(args[1:])
         return 0
 
+    import threading
     from downloader_app.server import run
 
-    run()
-    return 0
+    host = "127.0.0.1"
+    port = 8765
+    app_url = f"http://{host}:{port}"
+
+    # Start server in a background thread
+    server_thread = threading.Thread(
+        target=run,
+        kwargs={"host": host, "port": port},
+        daemon=True
+    )
+    
+    # Disable automatic browser opening by the server
+    os.environ["VIDEO_DOWNLOADER_NO_BROWSER"] = "1"
+    server_thread.start()
+
+    try:
+        from downloader_app.desktop import run_desktop
+        return run_desktop(app_url)
+    except ImportError:
+        # Fallback to browser if PyQt6 is not installed
+        print("PyQt6 khong tim thay. Dang mo trong trinh duyet...")
+        import webbrowser
+        webbrowser.open(app_url)
+        # In fallback mode, the main thread needs to stay alive
+        server_thread.join()
+        return 0

@@ -9,7 +9,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 BIN_DIR_ENV = "VIDEO_DOWNLOADER_BIN_DIR"
 
-APP_VERSION = "0.1.0"
+APP_VERSION = "1.0.0"
 GITHUB_REPO = "mmmnhat/Video-downloader"
 
 def is_frozen() -> bool:

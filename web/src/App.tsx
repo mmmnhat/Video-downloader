@@ -1361,7 +1361,6 @@ function App() {
                 : "hidden"
             }
           >
-            {currentView === "tts" ? (
               <Suspense
                 fallback={
                   <Card className="border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)]">
@@ -1373,7 +1372,6 @@ function App() {
               >
                 <TtsStudio />
               </Suspense>
-            ) : null}
           </main>
 
           <main

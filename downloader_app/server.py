@@ -81,7 +81,8 @@ class AppHandler(BaseHTTPRequestHandler):
 
         if path == "/api/tts/voices":
             try:
-                self._send_json(tts_manager.list_available_voices())
+                refresh = self._single_query_value(query, "refresh") == "1"
+                self._send_json(tts_manager.list_available_voices(refresh=refresh))
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
