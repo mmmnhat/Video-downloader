@@ -27,39 +27,39 @@ function clearFlash() {
 
 function statusLabel(status) {
   const map = {
-    queued: "Queued",
-    downloading: "Downloading",
-    completed: "Completed",
-    completed_with_errors: "Completed with errors",
-    failed: "Failed",
-    unsupported: "Unsupported",
-    running: "Running",
-    cancelling: "Stopping",
-    cancelled: "Cancelled",
+    queued: "Đang chờ",
+    downloading: "Đang tải",
+    completed: "Hoàn tất",
+    completed_with_errors: "Hoàn tất kèm lỗi",
+    failed: "Thất bại",
+    unsupported: "Không hỗ trợ",
+    running: "Đang chạy",
+    cancelling: "Đang dừng",
+    cancelled: "Đã dừng",
   };
   return map[status] || status;
 }
 
 function renderStats(stats) {
   return `
-    <div class="stat-chip">Supported ${stats.supported_total}</div>
-    <div class="stat-chip">Queued ${stats.queued}</div>
-    <div class="stat-chip">Downloading ${stats.downloading}</div>
-    <div class="stat-chip">Completed ${stats.completed}</div>
-    <div class="stat-chip">Failed ${stats.failed}</div>
-    <div class="stat-chip">Cancelled ${stats.cancelled}</div>
-    <div class="stat-chip">Unsupported ${stats.unsupported}</div>
+    <div class="stat-chip">Được hỗ trợ ${stats.supported_total}</div>
+    <div class="stat-chip">Đang chờ ${stats.queued}</div>
+    <div class="stat-chip">Đang tải ${stats.downloading}</div>
+    <div class="stat-chip">Hoàn tất ${stats.completed}</div>
+    <div class="stat-chip">Thất bại ${stats.failed}</div>
+    <div class="stat-chip">Đã dừng ${stats.cancelled}</div>
+    <div class="stat-chip">Không hỗ trợ ${stats.unsupported}</div>
   `;
 }
 
 function accessModeLabel(mode) {
   if (mode === "private_google_oauth") {
-    return "Google auth";
+    return "Đăng nhập Google";
   }
   if (mode === "browser_session") {
-    return "Browser session";
+    return "Phiên trình duyệt";
   }
-  return "Public link";
+  return "Liên kết công khai";
 }
 
 function renderItem(item) {
@@ -71,9 +71,9 @@ function renderItem(item) {
   sourceLink.href = item.source_url;
   sourceLink.textContent = item.source_url;
 
-  const clipLabel = item.clip_range_label ? ` · Cut ${item.clip_range_label}` : "";
+  const clipLabel = item.clip_range_label ? ` · Cắt ${item.clip_range_label}` : "";
   node.querySelector(".item-status").textContent =
-    `${statusLabel(item.status)}${item.attempt_count ? ` · Attempt ${item.attempt_count}` : ""}${clipLabel}`;
+    `${statusLabel(item.status)}${item.attempt_count ? ` · Lần ${item.attempt_count}` : ""}${clipLabel}`;
 
   const output = node.querySelector(".item-output");
   if (item.output_path) {
@@ -82,9 +82,9 @@ function renderItem(item) {
     output.textContent = item.error;
   } else if (item.supported) {
     output.textContent =
-      `Row ${item.sheet_row_number} · ${item.clip_range_label ? `Auto-cut ${item.clip_range_label}` : "Waiting for downloader"}`;
+      `Dòng ${item.sheet_row_number} · ${item.clip_range_label ? `Tự cắt ${item.clip_range_label}` : "Đang chờ trình tải"}`;
   } else {
-    output.textContent = "Link not mapped to a supported platform";
+    output.textContent = "Liên kết chưa được ánh xạ tới nền tảng được hỗ trợ";
   }
 
   return node;
@@ -93,14 +93,14 @@ function renderItem(item) {
 function renderBatch(batch) {
   const node = batchTemplate.content.firstElementChild.cloneNode(true);
   node.querySelector(".batch-status").textContent = statusLabel(batch.status);
-  node.querySelector(".batch-title").textContent = `${batch.discovered_url_count} URLs found`;
+  node.querySelector(".batch-title").textContent = `Tìm thấy ${batch.discovered_url_count} URL`;
   node.querySelector(".batch-time").textContent = batch.created_at;
   node.querySelector(".stats").innerHTML =
-    `<div class="stat-chip">Sheet ${accessModeLabel(batch.sheet_access_mode)}</div>` +
-    `<div class="stat-chip">Output ${batch.output_dir}</div>` +
-    `<div class="stat-chip">Quality ${batch.quality}</div>` +
-    `<div class="stat-chip">Threads ${batch.concurrent_downloads}</div>` +
-    `<div class="stat-chip">Retry ${batch.retry_count}</div>` +
+    `<div class="stat-chip">Bảng ${accessModeLabel(batch.sheet_access_mode)}</div>` +
+    `<div class="stat-chip">Đầu ra ${batch.output_dir}</div>` +
+    `<div class="stat-chip">Chất lượng ${batch.quality}</div>` +
+    `<div class="stat-chip">Luồng ${batch.concurrent_downloads}</div>` +
+    `<div class="stat-chip">Thử lại ${batch.retry_count}</div>` +
     renderStats(batch.stats);
 
   const openFolderButton = node.querySelector(".batch-open-folder");
@@ -146,7 +146,7 @@ async function requestJson(url, options = {}) {
   const payload = await response.json();
 
   if (!response.ok) {
-    throw new Error(payload.error || "Request failed.");
+    throw new Error(payload.error || "Yêu cầu thất bại.");
   }
   return payload;
 }
@@ -186,12 +186,12 @@ async function loadBatches() {
 
 function updateAuthUi(status) {
   authStatusLabel.textContent = status.authenticated
-    ? "Da tim thay Google session trong browser"
-    : "Browser session chua san sang";
+    ? "Đã tìm thấy phiên Google trong trình duyệt"
+    : "Phiên trình duyệt chưa sẵn sàng";
 
   authStatusDetail.textContent =
     status.message ||
-    "Hay dang nhap Google tren browser local roi bam Refresh Session.";
+    "Hãy đăng nhập Google trên trình duyệt cục bộ rồi bấm Làm mới phiên.";
 
   browserLoginButton.disabled = !status.dependencies_ready;
   refreshSessionButton.disabled = !status.dependencies_ready;
@@ -215,7 +215,7 @@ batchForm.addEventListener("submit", async (event) => {
 
   const submitButton = batchForm.querySelector("button[type='submit']");
   submitButton.disabled = true;
-  submitButton.textContent = "Scanning...";
+  submitButton.textContent = "Đang quét...";
 
   try {
     const payload = await requestJson("/api/batches", {
@@ -232,7 +232,7 @@ batchForm.addEventListener("submit", async (event) => {
     showFlash(error.message, true);
   } finally {
     submitButton.disabled = false;
-    submitButton.textContent = "Scan & Download";
+    submitButton.textContent = "Quét & Tải";
   }
 });
 
@@ -241,7 +241,7 @@ saveSettingsButton.addEventListener("click", async () => {
   saveSettingsButton.disabled = true;
   try {
     await saveSettings();
-    showFlash("Da luu settings downloader.");
+    showFlash("Đã lưu cài đặt trình tải.");
   } catch (error) {
     showFlash(error.message, true);
   } finally {
@@ -254,7 +254,7 @@ chooseFolderButton.addEventListener("click", async () => {
   try {
     const payload = await requestJson("/api/system/choose-folder", { method: "POST" });
     settingsForm.querySelector("#output-dir").value = payload.path;
-    showFlash("Da chon output folder.");
+    showFlash("Đã chọn thư mục đầu ra.");
   } catch (error) {
     showFlash(error.message, true);
   }
@@ -264,7 +264,7 @@ openFolderButton.addEventListener("click", async () => {
   clearFlash();
   const path = settingsForm.querySelector("#output-dir").value.trim();
   if (!path) {
-    showFlash("Chua co output folder de mo.", true);
+    showFlash("Chưa có thư mục đầu ra để mở.", true);
     return;
   }
 
@@ -274,7 +274,7 @@ openFolderButton.addEventListener("click", async () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path }),
     });
-    showFlash("Da mo output folder.");
+    showFlash("Đã mở thư mục đầu ra.");
   } catch (error) {
     showFlash(error.message, true);
   }
@@ -286,7 +286,7 @@ browserLoginButton.addEventListener("click", async () => {
 
   try {
     await requestJson("/api/browser-session/open-login", { method: "POST" });
-    showFlash("Da mo Google trong browser. Hay dang nhap roi bam Refresh Session.");
+    showFlash("Đã mở Google trong trình duyệt. Hãy đăng nhập rồi bấm Làm mới phiên.");
   } catch (error) {
     showFlash(error.message, true);
   } finally {
@@ -298,7 +298,7 @@ refreshSessionButton.addEventListener("click", async () => {
   clearFlash();
   try {
     await loadAuthStatus();
-    showFlash("Da refresh browser session.");
+    showFlash("Đã làm mới phiên trình duyệt.");
   } catch (error) {
     showFlash(error.message, true);
   }
@@ -323,7 +323,7 @@ batchList.addEventListener("click", async (event) => {
       await requestJson(`/api/batches/${retryButton.dataset.batchId}/retry-failed`, {
         method: "POST",
       });
-      showFlash("Da queue lai cac item failed/cancelled.");
+      showFlash("Đã đưa lại các mục lỗi/đã dừng vào hàng đợi.");
       await loadBatches();
       return;
     }
@@ -332,7 +332,7 @@ batchList.addEventListener("click", async (event) => {
       await requestJson(`/api/batches/${cancelButton.dataset.batchId}/cancel`, {
         method: "POST",
       });
-      showFlash("Da gui lenh stop batch.");
+      showFlash("Đã gửi lệnh dừng batch.");
       await loadBatches();
       return;
     }
@@ -343,7 +343,7 @@ batchList.addEventListener("click", async (event) => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path: openButton.dataset.path }),
       });
-      showFlash("Da mo folder cua batch.");
+      showFlash("Đã mở thư mục của batch.");
     }
   } catch (error) {
     showFlash(error.message, true);

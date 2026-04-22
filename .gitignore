@@ -16,3 +16,15 @@ app_state.json
 build/
 packaging/windows/build/
 packaging/windows/dist/
+
+# TTS runtime & browser profiles (all of tts_profiles is local/runtime data)
+tts_profiles/
+tts_batches/
+tts_state.json
+
+# Playwright runtime
+.playwright/
+.playwright-cli/
+
+# Tests output
+tests/

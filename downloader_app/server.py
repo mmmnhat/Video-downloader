@@ -17,6 +17,7 @@ from downloader_app.browser_session import browser_session
 from downloader_app.google_auth import GoogleAuthError, google_oauth
 from downloader_app.jobs import manager
 from downloader_app.runtime import bundled_path
+from downloader_app.tts_manager import tts_manager
 from downloader_app.updater import updater, UpdateError
 
 
@@ -47,6 +48,10 @@ class AppHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if path == "/api/tts/bootstrap":
+            self._send_json(tts_manager.get_bootstrap())
+            return
+
         if path == "/api/events":
             self._serve_events(query)
             return
@@ -63,6 +68,46 @@ class AppHandler(BaseHTTPRequestHandler):
 
         if path == "/api/settings":
             self._send_json(manager.get_settings())
+            return
+
+        if path == "/api/tts/session/status":
+            refresh = self._single_query_value(query, "refresh") == "1"
+            self._send_json(tts_manager.get_session_status(refresh=refresh))
+            return
+
+        if path == "/api/tts/batches":
+            self._send_json(tts_manager.list_batch_summaries())
+            return
+
+        if path == "/api/tts/voices":
+            try:
+                self._send_json(tts_manager.list_available_voices())
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path.startswith("/api/tts/audio/"):
+            parts = path.rstrip("/").split("/")
+            if len(parts) != 6:
+                self._send_json({"error": "Audio not found."}, status=HTTPStatus.NOT_FOUND)
+                return
+            batch_id = parts[4]
+            take_id = parts[5]
+            audio_path = tts_manager.resolve_take_path(batch_id, take_id)
+            if audio_path is None:
+                self._send_json({"error": "Audio not found."}, status=HTTPStatus.NOT_FOUND)
+                return
+            content_type, _ = mimetypes.guess_type(str(audio_path))
+            self._serve_file(audio_path, content_type or "audio/mpeg")
+            return
+
+        if path.startswith("/api/tts/batches/"):
+            batch_id = path.split("/")[-1]
+            batch = tts_manager.get_batch_detail(batch_id)
+            if batch is None:
+                self._send_json({"error": "TTS batch not found."}, status=HTTPStatus.NOT_FOUND)
+                return
+            self._send_json(batch)
             return
 
         if path == "/api/google/auth-status":
@@ -142,6 +187,33 @@ class AppHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
 
+        if path == "/api/tts/sheets/preview":
+            try:
+                payload = self._read_json_body()
+            except json.JSONDecodeError:
+                self._send_json({"error": "Body must be valid JSON."}, status=HTTPStatus.BAD_REQUEST)
+                return
+
+            sheet_url = str(payload.get("sheet_url", "")).strip()
+            if not sheet_url:
+                self._send_json({"error": "sheet_url is required."}, status=HTTPStatus.BAD_REQUEST)
+                return
+
+            try:
+                self._send_json(
+                    tts_manager.preview_sheet(
+                        sheet_url,
+                        text_column=str(payload.get("text_column", "")).strip() or None,
+                    )
+                )
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/tts/session/open-login":
+            self._send_json(tts_manager.open_login())
+            return
+
         if path == "/api/browser-session/open-login":
             self._send_json(browser_session.open_login())
             return
@@ -205,6 +277,110 @@ class AppHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
                 return
             self._send_json({"ok": True})
+            return
+
+        if path == "/api/tts/batches":
+            try:
+                payload = self._read_json_body()
+            except json.JSONDecodeError:
+                self._send_json({"error": "Body must be valid JSON."}, status=HTTPStatus.BAD_REQUEST)
+                return
+
+            sheet_url = str(payload.get("sheet_url", "")).strip()
+            if not sheet_url:
+                self._send_json({"error": "sheet_url is required."}, status=HTTPStatus.BAD_REQUEST)
+                return
+
+            try:
+                batch = tts_manager.create_batch(
+                    sheet_url=sheet_url,
+                    voice_query=str(payload.get("voice_query", "")).strip(),
+                    voice_id=str(payload.get("voice_id", "")).strip() or None,
+                    voice_name=str(payload.get("voice_name", "")).strip() or None,
+                    model_family=str(payload.get("model_family", "")).strip(),
+                    take_count=int(payload.get("take_count", 1)),
+                    retry_count=int(payload.get("retry_count", 1)),
+                    worker_count=int(payload.get("worker_count", 1)),
+                    headless=bool(payload.get("headless", False)),
+                    tag_text=str(payload.get("tag_text", "")).strip(),
+                    text_column=str(payload.get("text_column", "")).strip() or None,
+                )
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                return
+            self._send_json(batch, status=HTTPStatus.CREATED)
+            return
+
+        if path.startswith("/api/tts/batches/") and path.endswith("/cancel"):
+            batch_id = path.split("/")[-2]
+            try:
+                self._send_json(tts_manager.cancel_batch(batch_id))
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path.startswith("/api/tts/batches/") and path.endswith("/pick"):
+            batch_id = path.split("/")[-2]
+            try:
+                payload = self._read_json_body()
+            except json.JSONDecodeError:
+                self._send_json({"error": "Body must be valid JSON."}, status=HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                self._send_json(
+                    tts_manager.pick_take(
+                        batch_id=batch_id,
+                        item_id=str(payload.get("item_id", "")).strip(),
+                        take_id=str(payload.get("take_id", "")).strip(),
+                    )
+                )
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path.startswith("/api/tts/batches/") and path.endswith("/retry-failed"):
+            batch_id = path.split("/")[-2]
+            try:
+                self._send_json(tts_manager.retry_failed(batch_id))
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path.startswith("/api/tts/batches/") and "/items/" in path and path.endswith("/retry"):
+            parts = path.strip("/").split("/")
+            if len(parts) != 7:
+                self._send_json({"error": "TTS item not found."}, status=HTTPStatus.NOT_FOUND)
+                return
+            batch_id = parts[3]
+            item_id = parts[5]
+            try:
+                self._send_json(tts_manager.retry_item(batch_id, item_id))
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path.startswith("/api/tts/batches/") and path.endswith("/export"):
+            batch_id = path.split("/")[-2]
+            try:
+                payload = self._read_json_body()
+            except json.JSONDecodeError:
+                self._send_json({"error": "Body must be valid JSON."}, status=HTTPStatus.BAD_REQUEST)
+                return
+            destination_dir = str(payload.get("destination_dir", "")).strip()
+            item_ids = payload.get("item_ids") or []
+            if not destination_dir:
+                self._send_json({"error": "destination_dir is required."}, status=HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                self._send_json(
+                    tts_manager.export_selected(
+                        batch_id=batch_id,
+                        item_ids=[str(item_id) for item_id in item_ids],
+                        destination_dir=destination_dir,
+                    )
+                )
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
 
         if path.startswith("/api/batches/") and path.endswith("/cancel"):
@@ -459,7 +635,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 [
                     "osascript",
                     "-e",
-                    'POSIX path of (choose folder with prompt "Chon thu muc luu video")',
+                    'POSIX path of (choose folder with prompt "Chon thu muc")',
                 ],
                 capture_output=True,
                 text=True,
@@ -489,7 +665,7 @@ class AppHandler(BaseHTTPRequestHandler):
             pass
 
         try:
-            folder = filedialog.askdirectory(title="Chon thu muc luu video")
+            folder = filedialog.askdirectory(title="Chon thu muc")
         finally:
             root.destroy()
 

@@ -300,6 +300,48 @@ class BrowserSessionManager:
             "Hay mo chinh sheet trong browser dang dung va dam bao tai khoan do co quyen xem."
         ) from last_error
 
+    def get_domain_cookies(self, domains: list[str]) -> tuple[str | None, list[http.cookiejar.Cookie]]:
+        import time
+
+        normalized_domains = [domain.lstrip(".").lower() for domain in domains if domain]
+        if not normalized_domains:
+            return None, []
+
+        cache_valid = (
+            self._cookiejar_cache is not None
+            and self._active_candidate is not None
+            and (time.monotonic() - self._cookiejar_cache_time) < self._SESSION_CACHE_TTL
+        )
+        if cache_valid and self._cookiejar_cache is not None:
+            matched = [
+                cookie
+                for cookie in self._cookiejar_cache
+                if any(cookie.domain.lstrip(".").lower().endswith(domain) for domain in normalized_domains)
+            ]
+            if matched:
+                return self._active_candidate.name, matched
+
+        for candidate in self._ordered_candidates():
+            try:
+                cookiejar = self._load_cookiejar(candidate, domain_name="")
+            except BrowserSessionError:
+                continue
+
+            matched = [
+                cookie
+                for cookie in cookiejar
+                if any(cookie.domain.lstrip(".").lower().endswith(domain) for domain in normalized_domains)
+            ]
+            if not matched:
+                continue
+
+            self._active_candidate = candidate
+            self._cookiejar_cache = cookiejar
+            self._cookiejar_cache_time = time.monotonic()
+            return candidate.name, matched
+
+        return None, []
+
     def open_login(self, target_url: str = GOOGLE_LOGIN_URL) -> dict:
         opened = webbrowser.open(target_url, new=2)
         return {"opened": bool(opened), "url": target_url}
@@ -375,30 +417,19 @@ class BrowserSessionManager:
     def _coccoc_cookie_loader(self, browser_cookie3_module):
         import glob
         import os
+        import sys
         import http.cookiejar
 
         def load_all_profiles(domain_name=""):
             combined_cj = http.cookiejar.CookieJar()
+            base_dirs: list[str] = []
             local_app_data = os.getenv("LOCALAPPDATA")
-            if not local_app_data:
-                return combined_cj
-
-            base_dir = os.path.join(local_app_data, "CocCoc", "Browser", "User Data")
-            key_file = os.path.join(base_dir, "Local State")
-
-            if not os.path.exists(key_file):
-                return combined_cj
-
-            patterns = [
-                os.path.join(base_dir, "Default", "Cookies"),
-                os.path.join(base_dir, "Default", "Network", "Cookies"),
-                os.path.join(base_dir, "Profile *", "Cookies"),
-                os.path.join(base_dir, "Profile *", "Network", "Cookies"),
-            ]
-
-            found_files = []
-            for pat in patterns:
-                found_files.extend(glob.glob(pat))
+            if local_app_data:
+                base_dirs.append(os.path.join(local_app_data, "CocCoc", "Browser", "User Data"))
+            if sys.platform == "darwin":
+                base_dirs.append(os.path.expanduser("~/Library/Application Support/CocCoc/Browser"))
+            elif sys.platform.startswith("linux"):
+                base_dirs.append(os.path.expanduser("~/.config/CocCoc/Browser"))
 
             class CocCoc(browser_cookie3_module.ChromiumBased):
                 def __init__(self, c_file, k_file, d_name):
@@ -411,17 +442,35 @@ class BrowserSessionManager:
                         osx_key_service="CocCoc Safe Storage",
                         osx_key_user="CocCoc",
                     )
-                    
-            for cf in set(found_files):
-                if not os.path.isfile(cf):
+
+            for base_dir in base_dirs:
+                key_file = os.path.join(base_dir, "Local State")
+                if not os.path.exists(key_file):
                     continue
-                try:
-                    extractor = CocCoc(c_file=cf, k_file=key_file, d_name=domain_name)
-                    extracted_cj = extractor.load()
-                    for cookie in extracted_cj:
-                        combined_cj.set_cookie(cookie)
-                except Exception:
-                    pass
+
+                patterns = [
+                    os.path.join(base_dir, "Default", "Cookies"),
+                    os.path.join(base_dir, "Default", "Network", "Cookies"),
+                    os.path.join(base_dir, "Profile *", "Cookies"),
+                    os.path.join(base_dir, "Profile *", "Network", "Cookies"),
+                    os.path.join(base_dir, "Guest Profile", "Cookies"),
+                    os.path.join(base_dir, "Guest Profile", "Network", "Cookies"),
+                ]
+
+                found_files = []
+                for pat in patterns:
+                    found_files.extend(glob.glob(pat))
+
+                for cf in set(found_files):
+                    if not os.path.isfile(cf):
+                        continue
+                    try:
+                        extractor = CocCoc(c_file=cf, k_file=key_file, d_name=domain_name)
+                        extracted_cj = extractor.load()
+                        for cookie in extracted_cj:
+                            combined_cj.set_cookie(cookie)
+                    except Exception:
+                        pass
 
             return combined_cj
 

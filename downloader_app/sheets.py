@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import html
 import io
 import json
 import re
@@ -121,6 +122,7 @@ class SheetUrlEntry:
 class SheetScanResult:
     sheet_id: str
     gid: str | None
+    sheet_title: str
     cells: list[SheetCell]
     entries: list[SheetUrlEntry]
     access_mode: str
@@ -293,6 +295,105 @@ def _parse_values_payload(payload: dict) -> list[SheetCell]:
             )
 
     return cells
+
+
+def _extract_sheet_title_from_html(payload: str) -> str | None:
+    title_match = re.search(r"<title[^>]*>(.*?)</title>", payload, re.IGNORECASE | re.DOTALL)
+    if not title_match:
+        return None
+
+    title = re.sub(r"\s+", " ", title_match.group(1)).strip()
+    if not title:
+        return None
+
+    for suffix in (
+        " - Google Sheets",
+        " – Google Sheets",
+        " - Google Trang tính",
+        " – Google Trang tính",
+    ):
+        if title.endswith(suffix):
+            title = title[: -len(suffix)].strip()
+            break
+
+    return title or None
+
+
+def _clean_html_text(value: str) -> str | None:
+    stripped = re.sub(r"<[^>]+>", " ", value)
+    stripped = html.unescape(stripped)
+    stripped = re.sub(r"\s+", " ", stripped).strip()
+    if not stripped:
+        return None
+    return stripped
+
+
+def _decode_embedded_text(value: str) -> str:
+    try:
+        return json.loads(f'"{value}"')
+    except Exception:
+        return html.unescape(value)
+
+
+def _extract_sheet_tab_title_from_html(payload: str, gid: str | None) -> str | None:
+    normalized_gid = str(gid).strip() if gid is not None else None
+
+    if normalized_gid:
+        object_patterns = [
+            re.compile(
+                rf'"sheetId"\s*:\s*{re.escape(normalized_gid)}[\s\S]{{0,400}}?"title"\s*:\s*"([^"]+)"',
+                re.IGNORECASE,
+            ),
+            re.compile(
+                rf'"title"\s*:\s*"([^"]+)"[\s\S]{{0,400}}?"sheetId"\s*:\s*{re.escape(normalized_gid)}',
+                re.IGNORECASE,
+            ),
+            re.compile(
+                rf'sheetId\s*:\s*{re.escape(normalized_gid)}[\s\S]{{0,400}}?title\s*:\s*"([^"]+)"',
+                re.IGNORECASE,
+            ),
+            re.compile(
+                rf'title\s*:\s*"([^"]+)"[\s\S]{{0,400}}?sheetId\s*:\s*{re.escape(normalized_gid)}',
+                re.IGNORECASE,
+            ),
+        ]
+        for pattern in object_patterns:
+            match = pattern.search(payload)
+            if match:
+                title = _clean_html_text(_decode_embedded_text(match.group(1)))
+                if title:
+                    return title
+
+        link_patterns = [
+            re.compile(
+                rf'<a[^>]+href="[^"]*gid={re.escape(normalized_gid)}[^"]*"[^>]*>(.*?)</a>',
+                re.IGNORECASE | re.DOTALL,
+            ),
+            re.compile(
+                rf'<[^>]+data-sheet-id="{re.escape(normalized_gid)}"[^>]*>(.*?)</[^>]+>',
+                re.IGNORECASE | re.DOTALL,
+            ),
+        ]
+        for pattern in link_patterns:
+            match = pattern.search(payload)
+            if match:
+                title = _clean_html_text(match.group(1))
+                if title:
+                    return title
+
+    selected_patterns = [
+        re.compile(r'<[^>]+aria-selected="true"[^>]*>(.*?)</[^>]+>', re.IGNORECASE | re.DOTALL),
+        re.compile(r'<[^>]+data-active="true"[^>]*>(.*?)</[^>]+>', re.IGNORECASE | re.DOTALL),
+        re.compile(r'<div[^>]+docs-sheet-tab-caption[^>]*>(.*?)</div>', re.IGNORECASE | re.DOTALL),
+    ]
+    for pattern in selected_patterns:
+        match = pattern.search(payload)
+        if match:
+            title = _clean_html_text(match.group(1))
+            if title and "google sheets" not in title.lower():
+                return title
+
+    return None
 
 
 def _normalize_header(value: str) -> str:
@@ -705,7 +806,7 @@ def _extract_entries_from_cells(cells: Iterable[SheetCell]) -> list[SheetUrlEntr
 def _scan_private_sheet(sheet_id: str, gid: str | None) -> SheetScanResult:
     metadata = google_oauth.authorized_json(
         f"https://sheets.googleapis.com/v4/spreadsheets/{sheet_id}"
-        "?fields=sheets(properties(sheetId,title))"
+        "?fields=properties(title),sheets(properties(sheetId,title))"
     )
 
     sheets = metadata.get("sheets", [])
@@ -743,6 +844,7 @@ def _scan_private_sheet(sheet_id: str, gid: str | None) -> SheetScanResult:
     return SheetScanResult(
         sheet_id=sheet_id,
         gid=selected_gid,
+        sheet_title=selected_title,
         cells=cells,
         entries=entries,
         access_mode="private_google_oauth",
@@ -769,10 +871,24 @@ def _scan_public_sheet(sheet_id: str, gid: str | None) -> SheetScanResult:
             ) from exc
 
     entries = _extract_entries_from_cells(cells)
+    sheet_title = ""
+    try:
+        landing_page = _fetch_text(
+            f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit"
+            + (f"?gid={gid}" if gid else "")
+        )
+        sheet_title = (
+            _extract_sheet_tab_title_from_html(landing_page, gid)
+            or _extract_sheet_title_from_html(landing_page)
+            or ""
+        )
+    except Exception:
+        sheet_title = ""
 
     return SheetScanResult(
         sheet_id=sheet_id,
         gid=gid,
+        sheet_title=sheet_title or "sheet",
         cells=cells,
         entries=entries,
         access_mode="public_link",
@@ -799,9 +915,14 @@ def _candidate_account_indices(sheet_url: str) -> list[str | None]:
 
 def _scan_browser_session_sheet(sheet_id: str, gid: str | None, sheet_url: str) -> SheetScanResult:
     try:
-        browser_session.fetch_text(sheet_url)
+        landing_page = browser_session.fetch_text(sheet_url)
     except BrowserSessionError as exc:
         raise SheetParseError(str(exc)) from exc
+    sheet_title = (
+        _extract_sheet_tab_title_from_html(landing_page, gid)
+        or _extract_sheet_title_from_html(landing_page)
+        or "sheet"
+    )
 
     last_error: Exception | None = None
 
@@ -824,6 +945,7 @@ def _scan_browser_session_sheet(sheet_id: str, gid: str | None, sheet_url: str) 
                 return SheetScanResult(
                     sheet_id=sheet_id,
                     gid=gid,
+                    sheet_title=sheet_title,
                     cells=cells,
                     entries=entries,
                     access_mode="browser_session",
@@ -833,6 +955,7 @@ def _scan_browser_session_sheet(sheet_id: str, gid: str | None, sheet_url: str) 
             return SheetScanResult(
                 sheet_id=sheet_id,
                 gid=gid,
+                sheet_title=sheet_title,
                 cells=cells,
                 entries=entries,
                 access_mode="browser_session",

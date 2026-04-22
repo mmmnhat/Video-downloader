@@ -16,6 +16,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from queue import Empty, Queue
+from urllib.parse import urlparse
 
 from downloader_app.browser_session import BrowserSessionError, browser_session
 from downloader_app.platforms import detect_platform
@@ -52,6 +53,12 @@ def sanitize_file_stem(value: str) -> str:
     stem = re.sub(r"[^\w.\-]+", "_", value.strip(), flags=re.ASCII)
     stem = stem.strip("._")
     return stem or "video"
+
+
+def build_sheet_sequence_stem(sheet_title: str | None, sequence_label: str | None) -> str:
+    title_stem = sanitize_file_stem(sheet_title or "sheet")
+    sequence_stem = sanitize_file_stem(sequence_label or "item")
+    return f"{title_stem}_{sequence_stem}"
 
 
 @dataclass
@@ -119,6 +126,7 @@ class BatchCancelledError(RuntimeError):
 class YtDlpAttempt:
     label: str
     use_cookie_file: bool = True
+    use_impersonation: bool = True
     extra_args: tuple[str, ...] = ()
 
 
@@ -395,7 +403,7 @@ class DownloadManager:
 
         for entry in scan_result.entries:
             match = detect_platform(entry.url)
-            base_name = sanitize_file_stem(entry.sequence_label)
+            base_name = build_sheet_sequence_stem(scan_result.sheet_title, entry.sequence_label)
             suffix = used_names.get(base_name, 0) + 1
             used_names[base_name] = suffix
             output_name = base_name if suffix == 1 else f"{base_name}-{suffix}"
@@ -472,56 +480,82 @@ class DownloadManager:
 
         worker_count = max(1, batch.concurrent_downloads)
         workers: list[threading.Thread] = []
+        processing_error: str | None = None
 
-        # Build ONE shared cookie file for the entire batch — avoids 20x redundant
-        # browser cookie reads when running 20 concurrent worker threads.
-        shared_cookie_path: str | None = None
-        with self._lock:
-            batch_obj = self._batches.get(batch_id)
-        if batch_obj is not None:
-            shared_cookie_path = self._prepare_batch_cookie_file(batch_obj)
-        self._batch_shared_cookie[batch_id] = shared_cookie_path
-
-        def run_worker() -> None:
-            while not cancel_event.is_set():
+        try:
+            # Build ONE shared cookie file for the entire batch — avoids 20x redundant
+            # browser cookie reads when running concurrent worker threads.
+            shared_cookie_path: str | None = None
+            with self._lock:
+                batch_obj = self._batches.get(batch_id)
+            if batch_obj is not None:
                 try:
-                    item_id = queue.get_nowait()
-                except Empty:
+                    shared_cookie_path = self._prepare_batch_cookie_file(batch_obj)
+                except Exception as exc:
+                    print(f"[DEBUG] Failed to prepare shared cookie file for batch {batch_id}: {exc}", flush=True)
+                    shared_cookie_path = None
+            self._batch_shared_cookie[batch_id] = shared_cookie_path
+
+            def run_worker() -> None:
+                while not cancel_event.is_set():
+                    try:
+                        item_id = queue.get_nowait()
+                    except Empty:
+                        return
+
+                    try:
+                        self._process_item(batch_id, item_id, cancel_event)
+                    except Exception as exc:
+                        if cancel_event.is_set():
+                            self._mark_item_cancelled(batch_id, item_id)
+                        else:
+                            self._update_item(
+                                batch_id,
+                                item_id,
+                                status="failed",
+                                completed_at=utc_now(),
+                                error=f"Worker crashed while processing item: {exc}",
+                            )
+                    finally:
+                        queue.task_done()
+
+            for _ in range(worker_count):
+                worker = threading.Thread(target=run_worker, daemon=True)
+                workers.append(worker)
+                worker.start()
+
+            for worker in workers:
+                worker.join()
+        except Exception as exc:
+            processing_error = str(exc) or exc.__class__.__name__
+            print(f"[DEBUG] Batch worker crashed for batch {batch_id}: {processing_error}", flush=True)
+        finally:
+            # Cleanup shared cookie file
+            shared = self._batch_shared_cookie.pop(batch_id, None)
+            if shared:
+                Path(shared).unlink(missing_ok=True)
+
+            with self._lock:
+                batch = self._batches.get(batch_id)
+                if batch is None:
                     return
 
-                try:
-                    self._process_item(batch_id, item_id, cancel_event)
-                finally:
-                    queue.task_done()
+                if processing_error:
+                    for item in batch.items:
+                        if item.supported and item.status == "queued":
+                            item.status = "failed"
+                            item.error = f"Batch worker crashed before processing item: {processing_error}"
+                            item.completed_at = utc_now()
+                elif cancel_event.is_set():
+                    for item in batch.items:
+                        if item.supported and item.status == "queued":
+                            item.status = "cancelled"
+                            item.error = "Batch stopped by user."
+                            item.completed_at = utc_now()
 
-        for _ in range(worker_count):
-            worker = threading.Thread(target=run_worker, daemon=True)
-            workers.append(worker)
-            worker.start()
-
-        for worker in workers:
-            worker.join()
-
-        # Cleanup shared cookie file
-        shared = self._batch_shared_cookie.pop(batch_id, None)
-        if shared:
-            Path(shared).unlink(missing_ok=True)
-
-        with self._lock:
-            batch = self._batches.get(batch_id)
-            if batch is None:
-                return
-
-            if cancel_event.is_set():
-                for item in batch.items:
-                    if item.supported and item.status == "queued":
-                        item.status = "cancelled"
-                        item.error = "Batch stopped by user."
-                        item.completed_at = utc_now()
-
-            self._refresh_batch_status_locked(batch_id)
-            self._persist_state_locked()
-            self._record_event_locked("batch.updated", {"batchId": batch_id})
+                self._refresh_batch_status_locked(batch_id)
+                self._persist_state_locked()
+                self._record_event_locked("batch.updated", {"batchId": batch_id})
 
     def _process_item(
         self,
@@ -617,6 +651,8 @@ class DownloadManager:
                 cookie_count += self._merge_cookie_file(merged, browser_temp.name)
             except BrowserSessionError:
                 pass
+            except Exception as exc:
+                print(f"[DEBUG] Browser cookie export failed for batch {batch.id}: {exc}", flush=True)
             finally:
                 Path(browser_temp.name).unlink(missing_ok=True)
 
@@ -626,6 +662,8 @@ class DownloadManager:
             manual_path, should_cleanup = self._materialize_manual_cookie_file(cookies_text)
             try:
                 cookie_count += self._merge_cookie_file(merged, manual_path)
+            except Exception as exc:
+                print(f"[DEBUG] Ignoring invalid manual cookies for platform {platform}: {exc}", flush=True)
             finally:
                 if should_cleanup:
                     Path(manual_path).unlink(missing_ok=True)
@@ -634,7 +672,12 @@ class DownloadManager:
             Path(target_file.name).unlink(missing_ok=True)
             return None
 
-        merged.save(ignore_discard=True, ignore_expires=True)
+        try:
+            merged.save(ignore_discard=True, ignore_expires=True)
+        except Exception as exc:
+            print(f"[DEBUG] Failed to save merged cookie file for batch {batch.id}: {exc}", flush=True)
+            Path(target_file.name).unlink(missing_ok=True)
+            return None
         return target_file.name
 
     def _download_item(
@@ -727,6 +770,7 @@ class DownloadManager:
                         cookie_file_path=cookie_file_path,
                         quality=quality,
                         use_cookie_file=attempt.use_cookie_file,
+                        use_impersonation=attempt.use_impersonation,
                         extra_args=attempt.extra_args,
                     )
                     returncode, stdout, stderr = self._run_yt_dlp_command(
@@ -766,6 +810,7 @@ class DownloadManager:
                             cookie_file_path=cookie_file_path,
                             quality=quality,
                             use_cookie_file=attempt.use_cookie_file,
+                            use_impersonation=attempt.use_impersonation,
                             extra_args=attempt.extra_args,
                         )
                         returncode, stdout, stderr = self._run_yt_dlp_command(
@@ -869,8 +914,6 @@ class DownloadManager:
                 )
             )
         if item.platform == "threads":
-            # Attempt 1: Standard yt-dlp extractor (with our current dependencies/cookies)
-            attempts.append(YtDlpAttempt(label="default"))
             # Attempt 2: Custom HTML/JSON scraper as a robust fallback
             attempts.append(
                 YtDlpAttempt(
@@ -879,12 +922,11 @@ class DownloadManager:
                 )
             )
         if item.platform == "dailymotion":
-            attempts.append(YtDlpAttempt(label="default"))
             # High Priority Fallback for Windows dependency issues
             attempts.append(
                 YtDlpAttempt(
                     label="dailymotion_no_impersonate_fallback",
-                    extra_args=("--no-impersonate",),
+                    use_impersonation=False,
                 )
             )
             attempts.append(
@@ -903,10 +945,11 @@ class DownloadManager:
         cookie_file_path: str | None,
         quality: str,
         use_cookie_file: bool = True,
+        use_impersonation: bool = True,
         extra_args: tuple[str, ...] = (),
     ) -> list[str]:
         command = [*self._yt_dlp_cmd]
-        if self._impersonate_target:
+        if use_impersonation and self._impersonate_target:
             command.extend(["--impersonate", self._impersonate_target])
         # Tell yt-dlp where to find ffmpeg so it can merge separate video/audio streams
         if self._ffmpeg_cmd:
@@ -992,6 +1035,12 @@ class DownloadManager:
 
         if item.platform == "dumpert":
             return attempt_label in ("default", "dumpert_browser_fallback", "dumpert_mobile_fallback")
+
+        if item.platform == "threads":
+            return attempt_label == "default"
+
+        if item.platform == "dailymotion":
+            return attempt_label in {"default", "dailymotion_no_impersonate_fallback"}
 
         if item.platform != "youtube":
             return False
@@ -1093,6 +1142,14 @@ class DownloadManager:
         
         return None
 
+    def _is_threads_media_url(self, url: str) -> bool:
+        hostname = (urlparse(url).hostname or "").lower()
+        return (
+            hostname.endswith("fbcdn.net")
+            or hostname.endswith("cdninstagram.com")
+            or hostname.endswith("instagram.com")
+        )
+
     def _resolve_threads_direct_url(self, source_url: str, cookie_file_path: str | None = None) -> str | None:
         import re
         import json
@@ -1127,7 +1184,11 @@ class DownloadManager:
         html_unquoted = html.replace('\\/', '/')
         
         # Level 2 — Standard JSON embedded parsing
-        json_blobs = re.findall(r'<script type="application/json"[^>]*>(.*?)</script>', html)
+        json_blobs = re.findall(
+            r'<script type="application/json"[^>]*>(.*?)</script>',
+            html,
+            flags=re.DOTALL,
+        )
         for blob in json_blobs:
             if "video_versions" not in blob:
                 continue
@@ -1140,7 +1201,9 @@ class DownloadManager:
                         if "video_versions" in obj and isinstance(obj["video_versions"], list):
                             for v in obj["video_versions"]:
                                 if isinstance(v, dict) and "url" in v:
-                                    urls.append((v.get("width", 0), v["url"]))
+                                    url = str(v["url"]).replace("\\/", "/")
+                                    if self._is_threads_media_url(url):
+                                        urls.append((int(v.get("width", 0) or 0), url))
                         for k, v in obj.items():
                             urls.extend(find_videos(v))
                     elif isinstance(obj, list):
@@ -1159,26 +1222,37 @@ class DownloadManager:
                 pass
 
             # Level 1 Fallback inside the blob
-            video_matches = re.finditer(r'{"type":\s*\d+,\s*"width":\s*(\d+),\s*"height":\s*\d+,\s*"url":\s*"(https?://[^"]+?\.mp4[^"]*)"}', blob.replace('\\/', '/'))
-            best_video = None
-            max_width = 0
+            video_matches = re.finditer(
+                r'"url"\s*:\s*"(https?://[^"]+?\.mp4[^"]*)"',
+                blob.replace('\\/', '/'),
+            )
             for match in video_matches:
-                width = int(match.group(1))
-                url = match.group(2)
-                if "threads.net" in url or "fbcdn.net" in url:
-                    if width > max_width:
-                        max_width = width
-                        best_video = url
-            if best_video:
-                self._direct_url_cache[source_url] = best_video
-                return best_video
+                url = match.group(1)
+                if self._is_threads_media_url(url):
+                    self._direct_url_cache[source_url] = url
+                    return url
+
+        # Level 1.5 Fallback on the whole page when the JSON wrapper changes
+        for body_match in re.finditer(
+            r'"video_versions"\s*:\s*\[(.*?)\]',
+            html_unquoted,
+            flags=re.DOTALL,
+        ):
+            body = body_match.group(1)
+            for stream_match in re.finditer(r'"url"\s*:\s*"(https?://[^"]+?\.mp4[^"]*)"', body):
+                url = stream_match.group(1)
+                if self._is_threads_media_url(url):
+                    self._direct_url_cache[source_url] = url
+                    return url
 
         # 2. Fallback to broad regex
         match = re.search(r'https?://[^\s\"\'\>\\]+?\.mp4[^\s\"\'\>\\]*', html_unquoted)
         if match:
             url = match.group(0).split('"')[0].split("'")[0]
-            if "fbcdn.net" in url:
-                return url.rstrip(')"\'\\')
+            if self._is_threads_media_url(url):
+                cleaned = url.rstrip(')"\'\\')
+                self._direct_url_cache[source_url] = cleaned
+                return cleaned
 
         return None
 
@@ -1578,15 +1652,30 @@ class DownloadManager:
         if forced:
             return [forced]
 
-        packaged = resolve_binary("yt-dlp", env_var="VIDEO_DOWNLOADER_YT_DLP_BIN")
-        if packaged:
-            return [packaged]
-
         if is_frozen():
+            packaged = resolve_binary("yt-dlp", env_var="VIDEO_DOWNLOADER_YT_DLP_BIN")
+            if packaged:
+                return [packaged]
             return [sys.executable, "--run-yt-dlp"]
 
         if importlib.util.find_spec("yt_dlp") is not None:
+            scripts_dir = Path(sys.prefix) / ("Scripts" if os.name == "nt" else "bin")
+            script_name = "yt-dlp.exe" if os.name == "nt" else "yt-dlp"
+            python_name = "python.exe" if os.name == "nt" else "python"
+
+            venv_script = scripts_dir / script_name
+            if venv_script.exists():
+                return [str(venv_script)]
+
+            venv_python = scripts_dir / python_name
+            if venv_python.exists():
+                return [str(venv_python), "-m", "yt_dlp"]
+
             return [sys.executable, "-m", "yt_dlp"]
+
+        packaged = resolve_binary("yt-dlp", env_var="VIDEO_DOWNLOADER_YT_DLP_BIN")
+        if packaged:
+            return [packaged]
 
         binary = shutil.which("yt-dlp")
         if binary:
@@ -1715,6 +1804,7 @@ class DownloadManager:
             cmap = {"default": str(payload.get("cookies_text", ""))}
         elif cmap is None:
             cmap = base.cookies_map
+        cmap = self._normalize_cookie_map(cmap)
 
         return DownloadSettings(
             output_dir=str(Path(output_dir).expanduser()),
@@ -1724,6 +1814,19 @@ class DownloadManager:
             use_browser_cookies=use_browser_cookies,
             cookies_map=cmap,
         )
+
+    def _normalize_cookie_map(self, value: object) -> dict[str, str]:
+        if not isinstance(value, dict):
+            return {}
+
+        normalized: dict[str, str] = {}
+        for key, raw_cookie in value.items():
+            platform = str(key).strip()
+            cookie_text = str(raw_cookie).strip()
+            if not platform or not cookie_text:
+                continue
+            normalized[platform] = str(raw_cookie)
+        return normalized
 
     def _clamp_int(self, value: object, default: int, minimum: int, maximum: int) -> int:
         try:

@@ -120,7 +120,8 @@ Script sẽ:
 - Browser session hiện ưu tiên đọc cookie từ Cốc Cốc nếu có, sau đó mới fallback sang các Chromium browser khác.
 - App sẽ cố gắng gộp browser cookies với cookies bạn nhập tay trước khi gọi `yt-dlp`.
 - App tự bật `--impersonate chrome` khi `curl-cffi` có sẵn, giúp một số site như Dumpert ổn định hơn.
-- Link Threads (`threads.net`, `threads.com`) hiện vẫn được nhận diện riêng trong bảng, nhưng downloader sẽ đánh dấu `Unsupported` vì `yt-dlp` upstream chưa hỗ trợ ổn định.
+- Link Threads (`threads.net`, `threads.com`) sẽ thử extractor mặc định trước, rồi fallback sang HTML scraper để lấy direct MP4 khi có thể. Với post private hoặc trang bắt đăng nhập, hãy bật browser cookies và dùng account có quyền xem.
+- Link Dailymotion sẽ thử extractor mặc định trước, rồi fallback sang request không impersonation hoặc direct metadata stream nếu cần.
 - Một số YouTube Shorts hiện vẫn có thể fail do `PO token / GVS access` từ phía YouTube, ngay cả khi đã có cookies.
 - Một số TikTok có thể fail do `yt-dlp` không còn tách được dữ liệu trang; app đã thử thêm mobile API fallback nhưng vẫn phụ thuộc extractor upstream.
 - Tool này không xử lý nội dung DRM hoặc nội dung bạn không có quyền tải xuống.

@@ -1,4 +1,6 @@
 import {
+  Suspense,
+  lazy,
   startTransition,
   useCallback,
   useEffect,
@@ -9,9 +11,10 @@ import {
 } from "react";
 import type { FormEvent } from "react";
 import { toast } from "sonner";
-import { DownloadCloud, Cookie } from "lucide-react";
+import { DownloadCloud, Cookie, AudioLines } from "lucide-react";
 import CookiesManager from "./components/CookiesManager";
 import UpdaterDialog from "./components/UpdaterDialog";
+import { useLocalStorage } from "./hooks/use-local-storage";
 
 import {
   AlertDialog,
@@ -42,7 +45,6 @@ import {
   Field,
   FieldError,
   FieldGroup,
-  FieldLabel,
   FieldLegend,
   FieldSet,
 } from "@/components/ui/field";
@@ -63,6 +65,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
+import { TooltipFieldLabel } from "@/components/ui/tooltip-field-label";
 import {
   Table,
   TableBody,
@@ -121,12 +124,13 @@ const SHOW_UNIFIED_TABLE = true;
 const SHOW_TABLE_CONTEXT = false;
 const ACTIVE_BATCH_STATUSES = new Set(["queued", "running", "cancelling"]);
 const QUALITY_OPTIONS = [
-  { value: "auto", label: "Auto / best available" },
-  { value: "1080", label: "Up to 1080p" },
-  { value: "720", label: "Up to 720p" },
-  { value: "480", label: "Up to 480p" },
-  { value: "360", label: "Up to 360p" },
+  { value: "auto", label: "Tự động / tốt nhất hiện có" },
+  { value: "1080", label: "Tối đa 1080p" },
+  { value: "720", label: "Tối đa 720p" },
+  { value: "480", label: "Tối đa 480p" },
+  { value: "360", label: "Tối đa 360p" },
 ];
+const TtsStudio = lazy(() => import("./components/TtsStudio"));
 
 type TableMode = "preview" | "queue" | "empty";
 type BadgeVariant = "default" | "secondary" | "destructive" | "outline";
@@ -145,7 +149,9 @@ type UnifiedTableRow = {
 };
 
 function App() {
-  const [currentView, setCurrentView] = useState<"downloader" | "cookies">("downloader");
+  const [currentView, setCurrentView] = useLocalStorage<
+    "downloader" | "cookies" | "tts"
+  >("app.current-view", "downloader");
   const [batchSummaries, setBatchSummaries] = useState<BatchSummary[]>([]);
   const [selectedBatchId, setSelectedBatchId] = useState<string | null>(null);
   const [selectedBatch, setSelectedBatch] = useState<BatchDetail | null>(null);
@@ -409,7 +415,7 @@ function App() {
       if (messageEvent.data) {
         const payload = JSON.parse(messageEvent.data) as BatchEvent;
         if (payload.type === "batch.created") {
-          toast("A new batch started in the background.");
+          toast("Một batch mới đã được khởi chạy nền.");
         }
       }
       scheduleRefresh();
@@ -497,7 +503,7 @@ function App() {
     const trimmedSheetUrl = rawSheetUrl.trim();
 
     if (!trimmedSheetUrl) {
-      setPreviewError("Paste a Google Sheets URL before downloading.");
+      setPreviewError("Hãy dán URL Google Sheets trước khi tải.");
       return null;
     }
 
@@ -524,7 +530,7 @@ function App() {
     const trimmedSheetUrl = rawSheetUrl.trim();
 
     if (!trimmedSheetUrl) {
-      setPreviewError("Paste a Google Sheets URL before downloading.");
+      setPreviewError("Hãy dán URL Google Sheets trước khi tải.");
       return;
     }
 
@@ -542,7 +548,7 @@ function App() {
         setPreviewError("");
         setTableCleared(false);
       });
-      toast.success("Batch created and downloader started.");
+      toast.success("Đã tạo batch và bắt đầu tải.");
       await refreshSummaries();
     } catch (error) {
       setPreviewError(getErrorMessage(error));
@@ -558,7 +564,7 @@ function App() {
 
   async function handlePasteSheetUrl() {
     if (!navigator.clipboard?.readText) {
-      setPreviewError("Clipboard access is not available in this browser.");
+      setPreviewError("Trình duyệt này không hỗ trợ truy cập clipboard.");
       return;
     }
 
@@ -566,7 +572,7 @@ function App() {
       const clipboardText = (await navigator.clipboard.readText()).trim();
 
       if (!clipboardText) {
-        setPreviewError("Clipboard is empty. Copy a Google Sheets URL and try again.");
+        setPreviewError("Clipboard đang trống. Hãy sao chép URL Google Sheets rồi thử lại.");
         return;
       }
 
@@ -576,7 +582,7 @@ function App() {
         setPreviewError("");
       });
     } catch {
-      setPreviewError("Cannot read clipboard. Please allow clipboard access and try again.");
+      setPreviewError("Không thể đọc clipboard. Hãy cấp quyền truy cập clipboard rồi thử lại.");
     }
   }
 
@@ -644,7 +650,7 @@ function App() {
           output_dir: payload.path,
         })),
       );
-      toast.success("Output folder selected.");
+      toast.success("Đã chọn thư mục đầu ra.");
     } catch (error) {
       toast.error(getErrorMessage(error));
     } finally {
@@ -655,7 +661,7 @@ function App() {
   async function handleOpenFolder(path: string) {
     try {
       await openFolder(path);
-      toast.success("Folder opened.");
+      toast.success("Đã mở thư mục.");
     } catch (error) {
       toast.error(getErrorMessage(error));
     }
@@ -670,7 +676,7 @@ function App() {
       setTableSource("");
       setTableCleared(true);
     });
-    toast.success("Table cleared.");
+    toast.success("Đã xóa bảng.");
   }
 
   async function handleRefreshAuth() {
@@ -678,7 +684,7 @@ function App() {
     try {
       const status = await refreshBrowserSession();
       startTransition(() => setAuthStatus(status));
-      toast.success("Browser session refreshed.");
+      toast.success("Đã làm mới phiên trình duyệt.");
     } catch (error) {
       toast.error(getErrorMessage(error));
     } finally {
@@ -689,7 +695,7 @@ function App() {
   async function handleOpenGoogleLogin() {
     try {
       await openBrowserLogin();
-      toast.success("Google login opened in your browser.");
+      toast.success("Đã mở trang đăng nhập Google trên trình duyệt.");
     } catch (error) {
       toast.error(getErrorMessage(error));
     }
@@ -698,7 +704,7 @@ function App() {
   async function handleCancelBatch(batchId: string) {
     try {
       await cancelBatch(batchId);
-      toast.success("Batch is stopping.");
+      toast.success("Batch đang dừng.");
       await refreshSummaries();
       if (selectedBatchId === batchId) {
         await loadBatchDetail(batchId, { silent: true });
@@ -711,7 +717,7 @@ function App() {
   async function handleRetryFailed(batchId: string) {
     try {
       await retryFailed(batchId);
-      toast.success("Failed items queued for retry.");
+      toast.success("Đã đưa các mục lỗi vào hàng đợi chạy lại.");
       await refreshSummaries();
       if (selectedBatchId === batchId) {
         await loadBatchDetail(batchId, { silent: true });
@@ -743,17 +749,17 @@ function App() {
     }
 
     return [
-      { label: "Progress", value: `${progressRatio(currentBatch.stats)}%` },
+      { label: "Tiến độ", value: `${progressRatio(currentBatch.stats)}%` },
       {
-        label: "Threads",
+        label: "Luồng",
         value: formatCount(currentBatch.settingsSnapshot.concurrentDownloads),
       },
       {
-        label: "Retry",
+        label: "Thử lại",
         value: formatCount(currentBatch.settingsSnapshot.retryCount),
       },
       {
-        label: "Quality",
+        label: "Chất lượng",
         value: qualityLabel(currentBatch.settingsSnapshot.quality),
       },
     ];
@@ -768,12 +774,12 @@ function App() {
         platform: row.platform,
         sourceUrl: row.sourceUrl,
         clipRange: row.clipRange,
-        stateLabel: row.supported ? "Supported" : "Unsupported",
+        stateLabel: row.supported ? "Được hỗ trợ" : "Không hỗ trợ",
         stateVariant: row.supported ? "secondary" : "destructive",
         attempts: "\u2014",
         result: row.supported
-          ? "Ready for queue validation."
-          : "Platform is not mapped to a supported downloader yet.",
+          ? "Sẵn sàng để xác thực trước khi đưa vào hàng đợi."
+          : "Nền tảng này chưa được ánh xạ tới trình tải được hỗ trợ.",
       }));
     }
 
@@ -804,7 +810,7 @@ function App() {
         <aside className="w-[72px] lg:w-64 flex flex-col border-r border-border bg-card py-4 transition-all duration-300 z-10">
           <div className="flex items-center justify-center lg:justify-start lg:px-6 mb-8 gap-3">
              <div className="bg-primary/10 p-2 rounded-md"><DownloadCloud className="w-5 h-5 text-primary" /></div>
-             <span className="font-bold text-lg hidden lg:block">Downloader</span>
+             <span className="font-bold text-lg hidden lg:block">Trình tải video</span>
           </div>
           
           <nav className="flex-1 px-3 space-y-2">
@@ -814,7 +820,15 @@ function App() {
                 onClick={() => setCurrentView("downloader")}
              >
                 <DownloadCloud className="w-4 h-4 lg:mr-2" />
-                <span className="hidden lg:block">Dashboard</span>
+                <span className="hidden lg:block">Bảng điều khiển</span>
+             </Button>
+             <Button 
+                variant={currentView === "tts" ? "secondary" : "ghost"} 
+                className="w-full justify-center lg:justify-start" 
+                onClick={() => setCurrentView("tts")}
+             >
+                <AudioLines className="w-4 h-4 lg:mr-2" />
+                <span className="hidden lg:block">Studio TTS</span>
              </Button>
              <Button 
                 variant={currentView === "cookies" ? "secondary" : "ghost"} 
@@ -822,7 +836,7 @@ function App() {
                 onClick={() => setCurrentView("cookies")}
              >
                 <Cookie className="w-4 h-4 lg:mr-2" />
-                <span className="hidden lg:block">Cookies Manager</span>
+                <span className="hidden lg:block">Quản lý Cookie</span>
              </Button>
           </nav>
 
@@ -833,15 +847,16 @@ function App() {
 
         {/* Main Content Area */}
         <div className="flex-1 overflow-auto">
-          {currentView === "cookies" ? (
-             <main className="mx-auto w-full px-4 py-8 sm:px-6 lg:px-12">
-                <CookiesManager settings={settingsDraft} onSettingsChange={setSettingsDraft} />
-             </main>
-          ) : (
-            <main className="mx-auto grid w-full max-w-[1520px] gap-6 px-4 py-6 sm:px-6 lg:grid-cols-[minmax(22rem,28rem)_minmax(0,1fr)] lg:px-8">
+          <main
+            className={
+              currentView === "downloader"
+                ? "mx-auto grid w-full max-w-[1520px] gap-6 px-4 py-6 sm:px-6 lg:grid-cols-[minmax(22rem,28rem)_minmax(0,1fr)] lg:px-8"
+                : "hidden"
+            }
+          >
               {bootError ? (
                 <Alert className="lg:col-span-2" variant="destructive">
-                  <AlertTitle>Backend connection problem</AlertTitle>
+                  <AlertTitle>Lỗi kết nối backend</AlertTitle>
                   <AlertDescription>{bootError}</AlertDescription>
                 </Alert>
               ) : null}
@@ -851,8 +866,8 @@ function App() {
               <Alert>
                 <AlertTitle>
                   {authStatus?.authenticated
-                    ? "Browser session ready"
-                    : "Browser session not ready"}
+                    ? "Phiên trình duyệt đã sẵn sàng"
+                    : "Phiên trình duyệt chưa sẵn sàng"}
                 </AlertTitle>
                 <AlertDescription>{authSummary(authStatus)}</AlertDescription>
               </Alert>
@@ -863,7 +878,7 @@ function App() {
                   variant="outline"
                   onClick={() => void handleOpenGoogleLogin()}
                 >
-                  Open Google login
+                  Mở đăng nhập Google
                 </Button>
                 <Button
                   type="button"
@@ -871,13 +886,18 @@ function App() {
                   onClick={() => void handleRefreshAuth()}
                   disabled={authRefreshing}
                 >
-                  {authRefreshing ? "Refreshing..." : "Refresh session"}
+                  {authRefreshing ? "Đang làm mới..." : "Làm mới phiên"}
                 </Button>
               </div>
 
               <form className="flex flex-col gap-6" onSubmit={handleSubmitSheetUrl}>
                   <Field data-invalid={Boolean(previewError)}>
-                  <FieldLabel htmlFor="sheet-url">Google Sheets URL</FieldLabel>
+                  <TooltipFieldLabel
+                    htmlFor="sheet-url"
+                    tooltip="Dán liên kết Google Sheets chứa các video cần xử lý."
+                  >
+                    URL Google Sheets
+                  </TooltipFieldLabel>
                   <InputGroup>
                     <InputGroupInput
                       id="sheet-url"
@@ -903,7 +923,7 @@ function App() {
                         disabled={previewLoading || startLoading}
                         onClick={() => void handlePasteSheetUrl()}
                       >
-                        Paste
+                        Dán
                       </InputGroupButton>
                     </InputGroupAddon>
                   </InputGroup>
@@ -916,7 +936,7 @@ function App() {
                     variant="outline"
                     disabled={previewLoading || startLoading}
                   >
-                    {previewLoading ? "Checking..." : "Preview"}
+                    {previewLoading ? "Đang kiểm tra..." : "Xem trước"}
                   </Button>
                   <Button
                     type="button"
@@ -927,7 +947,7 @@ function App() {
                     }
                     onClick={() => void handleStartBatchClick()}
                   >
-                    {startLoading ? "Starting..." : "Start"}
+                    {startLoading ? "Đang bắt đầu..." : "Bắt đầu"}
                   </Button>
                 </div>
               </form>
@@ -935,7 +955,12 @@ function App() {
               <Separator />
               <FieldGroup>
                 <Field>
-                  <FieldLabel htmlFor="output-dir">Output folder</FieldLabel>
+                  <TooltipFieldLabel
+                    htmlFor="output-dir"
+                    tooltip="Chọn nơi lưu mặc định cho các tệp đã tải."
+                  >
+                    Thư mục đầu ra
+                  </TooltipFieldLabel>
                   <InputGroup>
                     <InputGroupInput
                       id="output-dir"
@@ -959,7 +984,7 @@ function App() {
                         disabled={folderLoading}
                         onClick={() => void handleChooseFolder()}
                       >
-                        {folderLoading ? "Choosing..." : "Choose"}
+                        {folderLoading ? "Đang chọn..." : "Chọn"}
                       </InputGroupButton>
                       <InputGroupButton
                         type="button"
@@ -968,17 +993,19 @@ function App() {
                         disabled={!settingsDraft.output_dir.trim()}
                         onClick={() => void handleOpenFolder(settingsDraft.output_dir)}
                       >
-                        Open
+                        Mở
                       </InputGroupButton>
                     </InputGroupAddon>
                   </InputGroup>
                 </Field>
 
                 <FieldSet>
-                  <FieldLegend variant="label">Transfer defaults</FieldLegend>
+                  <FieldLegend variant="label">Thiết lập tải mặc định</FieldLegend>
                   <FieldGroup className="md:grid md:grid-cols-2">
                     <Field>
-                      <FieldLabel>Quality</FieldLabel>
+                      <TooltipFieldLabel tooltip="Thiết lập chất lượng tải ưu tiên. Tự động sẽ chọn chất lượng tốt nhất hiện có.">
+                        Chất lượng
+                      </TooltipFieldLabel>
                       <Select
                         value={settingsDraft.quality}
                         onValueChange={(value) =>
@@ -993,7 +1020,7 @@ function App() {
                         </SelectTrigger>
                         <SelectContent>
                           <SelectGroup>
-                            <SelectLabel>Quality</SelectLabel>
+                            <SelectLabel>Chất lượng</SelectLabel>
                             {QUALITY_OPTIONS.map((option) => (
                               <SelectItem key={option.value} value={option.value}>
                                 {option.label}
@@ -1005,7 +1032,12 @@ function App() {
                     </Field>
 
                     <Field>
-                      <FieldLabel htmlFor="concurrent-downloads">Threads</FieldLabel>
+                      <TooltipFieldLabel
+                        htmlFor="concurrent-downloads"
+                        tooltip="Số lượt tải có thể chạy cùng lúc."
+                      >
+                        Luồng tải
+                      </TooltipFieldLabel>
                       <Input
                         id="concurrent-downloads"
                         value={settingsDraft.concurrent_downloads}
@@ -1027,7 +1059,12 @@ function App() {
                     </Field>
 
                     <Field>
-                      <FieldLabel htmlFor="retry-count">Retry count</FieldLabel>
+                      <TooltipFieldLabel
+                        htmlFor="retry-count"
+                        tooltip="Số lần thử lại tự động sau khi tải thất bại."
+                      >
+                        Số lần thử lại
+                      </TooltipFieldLabel>
                       <Input
                         id="retry-count"
                         value={settingsDraft.retry_count}
@@ -1055,38 +1092,40 @@ function App() {
               {SHOW_TABLE_CONTEXT ? (
                 <CardHeader className="gap-4 border-b border-border/70">
                   <div>
-                    <CardTitle>Unified preview and queue table</CardTitle>
+                    <CardTitle>Bảng xem trước và hàng đợi hợp nhất</CardTitle>
                     <CardDescription>
                       {tableMode === "preview"
-                        ? "The current sheet preview is using the same columns the live queue will use once the batch starts."
+                        ? "Bản xem trước của sheet hiện tại dùng đúng các cột mà hàng đợi thực tế sẽ dùng khi batch bắt đầu."
                         : tableMode === "queue"
                           ? batchPrimaryMessage(currentBatch)
-                          : "Choose a table source to inspect either the current preview or any saved batch."}
+                          : "Hãy chọn nguồn bảng để xem bản xem trước hiện tại hoặc batch đã lưu."}
                     </CardDescription>
                   </div>
                   <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
                     <Field className="xl:max-w-md">
-                      <FieldLabel>Table source</FieldLabel>
+                      <TooltipFieldLabel tooltip="Chọn hiển thị bản xem trước hiện tại hoặc một batch đã lưu trước đó.">
+                        Nguồn bảng
+                      </TooltipFieldLabel>
                       <Select
                         value={tableSource || undefined}
                         onValueChange={handleTableSourceChange}
                         disabled={!preview && batchSummaries.length === 0}
                       >
                         <SelectTrigger className="w-full">
-                          <SelectValue placeholder="Choose preview or a saved batch" />
+                          <SelectValue placeholder="Chọn bản xem trước hoặc batch đã lưu" />
                         </SelectTrigger>
                         <SelectContent>
                           {preview ? (
                             <SelectGroup>
-                              <SelectLabel>Current sheet</SelectLabel>
+                              <SelectLabel>Sheet hiện tại</SelectLabel>
                               <SelectItem value={TABLE_SOURCE_PREVIEW}>
-                                Preview · {formatCount(preview.urlCount)} rows
+                                Xem trước · {formatCount(preview.urlCount)} dòng
                               </SelectItem>
                             </SelectGroup>
                           ) : null}
                           {batchSummaries.length > 0 ? (
                             <SelectGroup>
-                              <SelectLabel>Saved batches</SelectLabel>
+                              <SelectLabel>Batch đã lưu</SelectLabel>
                               {batchSummaries.map((summary) => (
                                 <SelectItem key={summary.id} value={summary.id}>
                                   {statusLabel(summary.status)} ·{" "}
@@ -1102,10 +1141,10 @@ function App() {
 
                     <div className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
                       {currentBatchSummary
-                        ? `Selected batch: ${statusLabel(currentBatchSummary.status)}`
+                        ? `Batch đã chọn: ${statusLabel(currentBatchSummary.status)}`
                         : preview
-                          ? "Selected source: current preview"
-                          : "No source selected"}
+                          ? "Nguồn đã chọn: bản xem trước hiện tại"
+                          : "Chưa chọn nguồn"}
                     </div>
                   </div>
                 </CardHeader>
@@ -1119,7 +1158,7 @@ function App() {
                     disabled={tableMode === "empty"}
                     onClick={handleRefreshTable}
                   >
-                    Clear table
+                    Xóa bảng
                   </Button>
                 </div>
                 {SHOW_TABLE_CONTEXT && tableMode === "queue" && currentBatch ? (
@@ -1132,7 +1171,7 @@ function App() {
                         {accessModeLabel(currentBatch.sheetAccessMode)}
                       </Badge>
                       <Badge variant="outline">
-                        Updated {formatDateTime(currentBatch.lastUpdatedAt)}
+                        Cập nhật {formatDateTime(currentBatch.lastUpdatedAt)}
                       </Badge>
                     </div>
 
@@ -1162,7 +1201,7 @@ function App() {
                         variant="outline"
                         onClick={() => void handleOpenFolder(currentBatch.outputDir)}
                       >
-                        Open folder
+                        Mở thư mục
                       </Button>
                       <Button
                         type="button"
@@ -1170,7 +1209,7 @@ function App() {
                         onClick={() => void handleRetryFailed(currentBatch.id)}
                         disabled={currentBatch.status === "running"}
                       >
-                        Retry failed
+                        Chạy lại lỗi
                       </Button>
 
                       <AlertDialog>
@@ -1184,19 +1223,19 @@ function App() {
                               )
                             }
                           >
-                            Stop batch
+                            Dừng batch
                           </Button>
                         </AlertDialogTrigger>
                         <AlertDialogContent>
-                          <AlertDialogTitle>Stop this batch?</AlertDialogTitle>
+                          <AlertDialogTitle>Dừng batch này?</AlertDialogTitle>
                           <AlertDialogDescription>
-                            Active processes will be terminated and any remaining
-                            queued rows will be marked as cancelled.
+                            Các tiến trình đang chạy sẽ bị dừng và các dòng còn lại
+                            trong hàng đợi sẽ được đánh dấu đã hủy.
                           </AlertDialogDescription>
                           <div className="mt-6 flex justify-end gap-3">
                             <AlertDialogCancel asChild>
                               <Button type="button" variant="outline">
-                                Keep running
+                                Tiếp tục chạy
                               </Button>
                             </AlertDialogCancel>
                             <AlertDialogAction asChild>
@@ -1205,7 +1244,7 @@ function App() {
                                 variant="destructive"
                                 onClick={() => void handleCancelBatch(currentBatch.id)}
                               >
-                                Confirm stop
+                                Xác nhận dừng
                               </Button>
                             </AlertDialogAction>
                           </div>
@@ -1217,15 +1256,15 @@ function App() {
 
                 {SHOW_TABLE_CONTEXT && tableMode === "preview" && preview ? (
                   <div className="flex flex-wrap gap-2">
-                    <Badge variant="secondary">Preview mode</Badge>
+                    <Badge variant="secondary">Chế độ xem trước</Badge>
                     <Badge variant="outline">
                       {accessModeLabel(preview.accessMode)}
                     </Badge>
                     <Badge variant="outline">
-                      Supported: {formatCount(preview.supportedCount)}
+                      Hỗ trợ: {formatCount(preview.supportedCount)}
                     </Badge>
                     <Badge variant="outline">
-                      Unsupported: {formatCount(preview.unsupportedCount)}
+                      Không hỗ trợ: {formatCount(preview.unsupportedCount)}
                     </Badge>
                   </div>
                 ) : null}
@@ -1234,16 +1273,16 @@ function App() {
                   <div className="flex flex-wrap gap-2">
                     <Badge variant="secondary">{statusLabel(currentBatch.status)}</Badge>
                     <Badge variant="outline">
-                      Progress: {progressRatio(currentBatch.stats)}%
+                      Tiến độ: {progressRatio(currentBatch.stats)}%
                     </Badge>
                     <Badge variant="outline">
-                      Completed: {formatCount(currentBatch.stats.completed)}
+                      Hoàn tất: {formatCount(currentBatch.stats.completed)}
                     </Badge>
                     <Badge variant="outline">
-                      Failed: {formatCount(currentBatch.stats.failed)}
+                      Thất bại: {formatCount(currentBatch.stats.failed)}
                     </Badge>
                     <Badge variant="outline">
-                      Unsupported: {formatCount(currentBatch.stats.unsupported)}
+                      Không hỗ trợ: {formatCount(currentBatch.stats.unsupported)}
                     </Badge>
                   </div>
                 ) : null}
@@ -1255,12 +1294,12 @@ function App() {
                   selectedBatchId &&
                   detailLoading &&
                   !currentBatch) ? (
-                  <Empty className="border-border bg-card/70">
+                  <Empty className="border-0 bg-transparent shadow-none">
                     <EmptyHeader>
-                      <EmptyTitle>Loading table source</EmptyTitle>
+                      <EmptyTitle>Đang tải nguồn bảng</EmptyTitle>
                       <EmptyDescription>
-                        Pulling the latest preview or batch detail from the local
-                        Python backend.
+                        Đang lấy bản xem trước hoặc chi tiết batch mới nhất từ
+                        backend Python cục bộ.
                       </EmptyDescription>
                     </EmptyHeader>
                   </Empty>
@@ -1269,10 +1308,10 @@ function App() {
                   <Table className="min-w-[58rem]">
                     <TableHeader>
                       <TableRow>
-                        <TableHead>Item</TableHead>
-                        <TableHead>Platform</TableHead>
-                        <TableHead>Clip</TableHead>
-                        <TableHead>State</TableHead>
+                        <TableHead>Mục</TableHead>
+                        <TableHead>Nền tảng</TableHead>
+                        <TableHead>Đoạn cắt</TableHead>
+                        <TableHead>Trạng thái</TableHead>
                         <TableHead className="w-[42%]">URL</TableHead>
                       </TableRow>
                     </TableHeader>
@@ -1286,7 +1325,7 @@ function App() {
                           </TableCell>
                           <TableCell className="align-top">{row.platform}</TableCell>
                           <TableCell className="align-top">
-                            {row.clipRange ?? "Full"}
+                            {row.clipRange ?? "Toàn bộ"}
                           </TableCell>
                           <TableCell className="align-top">
                             <Badge variant={row.stateVariant}>{row.stateLabel}</Badge>
@@ -1300,12 +1339,12 @@ function App() {
                   </Table>
                   </div>
                 ) : (
-                  <Empty className="border-border bg-card/70">
+                  <Empty className="border-0 bg-transparent shadow-none">
                     <EmptyHeader>
-                      <EmptyTitle>No preview or queue selected</EmptyTitle>
+                      <EmptyTitle>Chưa chọn xem trước hoặc hàng đợi</EmptyTitle>
                       <EmptyDescription>
-                        Preview a sheet to populate this table immediately, or choose
-                        a saved batch from the table source selector above.
+                        Xem trước một sheet để điền dữ liệu ngay vào bảng này,
+                        hoặc chọn một batch đã lưu ở bộ chọn nguồn bảng phía trên.
                       </EmptyDescription>
                     </EmptyHeader>
                   </Empty>
@@ -1313,8 +1352,42 @@ function App() {
               </CardContent>
             </Card>
           ) : null}
-            </main>
-          )}
+          </main>
+
+          <main
+            className={
+              currentView === "tts"
+                ? "mx-auto w-full max-w-[1520px] px-4 py-6 sm:px-6 lg:px-8"
+                : "hidden"
+            }
+          >
+            {currentView === "tts" ? (
+              <Suspense
+                fallback={
+                  <Card className="border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)]">
+                    <CardContent className="py-12 text-center text-sm text-muted-foreground">
+                      Đang tải Studio TTS...
+                    </CardContent>
+                  </Card>
+                }
+              >
+                <TtsStudio />
+              </Suspense>
+            ) : null}
+          </main>
+
+          <main
+            className={
+              currentView === "cookies"
+                ? "mx-auto w-full px-4 py-8 sm:px-6 lg:px-12"
+                : "hidden"
+            }
+          >
+            <CookiesManager
+              settings={settingsDraft}
+              onSettingsChange={setSettingsDraft}
+            />
+          </main>
         </div>
       </div>
     </>
@@ -1360,7 +1433,7 @@ function getErrorMessage(error: unknown) {
   if (error instanceof Error) {
     return error.message;
   }
-  return "Something went wrong while talking to the local backend.";
+  return "Có lỗi xảy ra khi giao tiếp với backend cục bộ.";
 }
 
 export default App;

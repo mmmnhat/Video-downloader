@@ -28,8 +28,8 @@ export default function UpdaterDialog() {
       const data = await checkUpdate();
       setStatus(data);
     } catch (err: any) {
-      setError(err.message || "Failed to check for updates");
-      toast.error("Could not reach update server");
+      setError(err.message || "Không thể kiểm tra bản cập nhật");
+      toast.error("Không thể kết nối máy chủ cập nhật");
     } finally {
       setLoading(false);
     }
@@ -46,10 +46,10 @@ export default function UpdaterDialog() {
     setError("");
     try {
       await applyUpdate(status.downloadUrl);
-      toast.success("Update downloaded! App will restart in 5 seconds...");
+      toast.success("Đã tải bản cập nhật! Ứng dụng sẽ khởi động lại sau 5 giây...");
       setOpen(false);
     } catch (err: any) {
-      setError(err.message || "Failed to install update");
+      setError(err.message || "Không thể cài đặt bản cập nhật");
     } finally {
       setApplying(false);
     }
@@ -64,35 +64,35 @@ export default function UpdaterDialog() {
             onClick={handleOpenInfo}
         >
           <Info className="w-4 h-4 lg:mr-2" />
-          <span className="hidden lg:block">App Info & Updates</span>
+          <span className="hidden lg:block">Thông tin & Cập nhật</span>
         </Button>
       </AlertDialogTrigger>
       
       <AlertDialogContent className="sm:max-w-[425px]">
-        <AlertDialogTitle>System Information</AlertDialogTitle>
+        <AlertDialogTitle>Thông tin hệ thống</AlertDialogTitle>
         <AlertDialogDescription>
-          Check for the latest features and patches.
+          Kiểm tra các tính năng và bản vá mới nhất.
         </AlertDialogDescription>
 
         <div className="py-4 space-y-4">
           <div className="flex flex-col gap-1.5">
-             <span className="text-sm font-semibold">Current Version</span>
+             <span className="text-sm font-semibold">Phiên bản hiện tại</span>
              <Badge variant="outline" className="w-fit">{status?.currentVersion || "..."}</Badge>
           </div>
 
           {error && (
              <Alert variant="destructive">
                <ServerCrash className="w-4 h-4" />
-               <AlertTitle>Error</AlertTitle>
+               <AlertTitle>Lỗi</AlertTitle>
                <AlertDescription className="text-xs">{error}</AlertDescription>
              </Alert>
           )}
 
           {status?.isPlaceholder && (
                <Alert className="bg-yellow-50 text-yellow-900 border-yellow-200">
-               <AlertTitle>Placeholder Mode</AlertTitle>
+               <AlertTitle>Chế độ Placeholder</AlertTitle>
                <AlertDescription className="text-xs">
-                  Auto-update is currently deactivated because the GitHub repository has not been set up. Edit the runtime config to link a repository.
+                  Tự động cập nhật hiện đang tắt vì chưa cấu hình repository GitHub. Hãy chỉnh runtime config để liên kết repository.
                </AlertDescription>
              </Alert>
           )}
@@ -101,7 +101,7 @@ export default function UpdaterDialog() {
              <div className="p-4 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-900 space-y-3">
                 <div className="flex items-center gap-2 font-bold">
                    <Download className="w-4 h-4" />
-                   New update available: {status.latestVersion}
+                   Có bản cập nhật mới: {status.latestVersion}
                 </div>
                 {status.releaseNotes && (
                     <div className="text-xs opacity-80 whitespace-pre-line max-h-32 overflow-y-auto">
@@ -113,21 +113,21 @@ export default function UpdaterDialog() {
 
           {status && !status.isPlaceholder && !status.updateAvailable && (
              <div className="text-sm text-muted-foreground p-3 bg-muted rounded-md border">
-                You are on the latest version.
+                Bạn đang dùng phiên bản mới nhất.
              </div>
           )}
         </div>
 
         <div className="flex flex-col sm:flex-row gap-2 justify-end mt-4">
-          <AlertDialogCancel disabled={applying}>Close</AlertDialogCancel>
+          <AlertDialogCancel disabled={applying}>Đóng</AlertDialogCancel>
           {!status?.updateAvailable ? (
               <Button disabled={loading || applying} onClick={handleCheck}>
                 {loading ? <RefreshCw className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
-                Check Again
+                Kiểm tra lại
               </Button>
           ) : (
               <Button disabled={loading || applying} onClick={handleApply}>
-                {applying ? <RefreshCw className="w-4 h-4 mr-2 animate-spin" /> : "Install & Restart"}
+                {applying ? <RefreshCw className="w-4 h-4 mr-2 animate-spin" /> : "Cài đặt & Khởi động lại"}
               </Button>
           )}
         </div>

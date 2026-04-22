@@ -2,15 +2,15 @@ import type { AuthStatus, BatchDetail, BatchItem, BatchStats } from "@/lib/api";
 
 export function statusLabel(status: string) {
   const labels: Record<string, string> = {
-    queued: "Queued",
-    downloading: "Downloading",
-    completed: "Completed",
-    completed_with_errors: "Completed With Errors",
-    failed: "Failed",
-    unsupported: "Unsupported",
-    running: "Running",
-    cancelling: "Stopping",
-    cancelled: "Cancelled",
+    queued: "Đang chờ",
+    downloading: "Đang tải",
+    completed: "Hoàn tất",
+    completed_with_errors: "Hoàn tất kèm lỗi",
+    failed: "Thất bại",
+    unsupported: "Không hỗ trợ",
+    running: "Đang chạy",
+    cancelling: "Đang dừng",
+    cancelled: "Đã dừng",
   };
 
   return labels[status] ?? status;
@@ -18,23 +18,23 @@ export function statusLabel(status: string) {
 
 export function accessModeLabel(mode: string) {
   const labels: Record<string, string> = {
-    browser_session: "Browser Session",
-    private_google_oauth: "Google Auth",
-    public_link: "Public Link",
+    browser_session: "Phiên trình duyệt",
+    private_google_oauth: "Đăng nhập Google",
+    public_link: "Liên kết công khai",
   };
   return labels[mode] ?? mode;
 }
 
 export function qualityLabel(quality: string) {
   if (quality === "auto") {
-    return "Auto";
+    return "Tự động";
   }
-  return `Up To ${quality}p`;
+  return `Tối đa ${quality}p`;
 }
 
 export function formatDateTime(value: string | null) {
   if (!value) {
-    return "N/A";
+    return "Không có";
   }
 
   const date = new Date(value);
@@ -60,35 +60,35 @@ export function progressRatio(stats: BatchStats) {
 
 export function batchPrimaryMessage(batch: BatchDetail | null) {
   if (!batch) {
-    return "Preview a sheet or pick a batch to inspect its live queue.";
+    return "Hãy xem trước sheet hoặc chọn một batch để theo dõi hàng đợi theo thời gian thực.";
   }
 
   if (batch.status === "completed_with_errors") {
-    return "Some items need attention. Review the failed rows and retry only what matters.";
+    return "Một số dòng cần xử lý. Hãy xem các dòng lỗi và chỉ chạy lại những dòng cần thiết.";
   }
 
   if (batch.status === "completed") {
-    return "This batch is done. Open the folder or inspect any row for its final output path.";
+    return "Batch này đã hoàn tất. Mở thư mục hoặc kiểm tra từng dòng để xem đường dẫn đầu ra.";
   }
 
   if (batch.status === "running") {
-    return "Downloads are in flight. This panel updates automatically while the worker runs.";
+    return "Quá trình tải đang diễn ra. Bảng này sẽ tự động cập nhật khi worker chạy.";
   }
 
   if (batch.status === "cancelled") {
-    return "The batch was stopped before every supported item finished.";
+    return "Batch đã bị dừng trước khi mọi mục được hỗ trợ hoàn thành.";
   }
 
-  return "This batch is ready to run. Review settings and queue details before continuing.";
+  return "Batch đã sẵn sàng chạy. Hãy kiểm tra cài đặt và thông tin hàng đợi trước khi tiếp tục.";
 }
 
 export function authSummary(status: AuthStatus | null) {
   if (!status) {
-    return "Checking local browser session…";
+    return "Đang kiểm tra phiên trình duyệt cục bộ…";
   }
 
   if (status.authenticated) {
-    return `Connected via ${status.browser ?? "browser"} session.`;
+    return `Đã kết nối qua phiên ${status.browser ?? "trình duyệt"}.`;
   }
 
   if (status.message) {
@@ -96,10 +96,10 @@ export function authSummary(status: AuthStatus | null) {
   }
 
   if (!status.dependencies_ready) {
-    return "Browser cookie access is not ready on this machine.";
+    return "Máy hiện tại chưa sẵn sàng để truy cập cookie trình duyệt.";
   }
 
-  return "Google session not ready yet.";
+  return "Phiên Google chưa sẵn sàng.";
 }
 
 export function itemStatusTone(item: BatchItem) {
