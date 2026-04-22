@@ -51,6 +51,7 @@ import {
   type TtsSessionStatus,
   type TtsVoice,
 } from "@/lib/api";
+import { useLocalStorage } from "@/hooks/use-local-storage";
 
 
 const ACTIVE_BATCH_STATUSES = new Set(["queued", "running", "cancelling"]);
@@ -106,15 +107,16 @@ function isExportableItem(item: TtsItem) {
 
 export default function TtsManager() {
   const [sessionStatus, setSessionStatus] = useState<TtsSessionStatus | null>(null);
-  const [sheetUrl, setSheetUrl] = useState("");
-  const [textColumn, setTextColumn] = useState("");
-  const [voiceQuery, setVoiceQuery] = useState("");
-  const [modelFamily, setModelFamily] = useState<"v2" | "v3">("v2");
-  const [tagText, setTagText] = useState("");
-  const [takeCount, setTakeCount] = useState(1);
-  const [retryCount, setRetryCount] = useState(1);
-  const [workerCount, setWorkerCount] = useState(1);
-  const [headless, setHeadless] = useState(false);
+  // Persist form fields to localStorage so they survive tab switching
+  const [sheetUrl, setSheetUrl] = useLocalStorage("tts.sheetUrl", "");
+  const [textColumn, setTextColumn] = useLocalStorage("tts.textColumn", "");
+  const [voiceQuery, setVoiceQuery] = useLocalStorage("tts.voiceQuery", "");
+  const [modelFamily, setModelFamily] = useLocalStorage<"v2" | "v3">("tts.modelFamily", "v2");
+  const [tagText, setTagText] = useLocalStorage("tts.tagText", "");
+  const [takeCount, setTakeCount] = useLocalStorage("tts.takeCount", 1);
+  const [retryCount, setRetryCount] = useLocalStorage("tts.retryCount", 1);
+  const [workerCount, setWorkerCount] = useLocalStorage("tts.workerCount", 1);
+  const [headless, setHeadless] = useLocalStorage("tts.headless", false);
   const [preview, setPreview] = useState<TtsPreview | null>(null);
   const [voices, setVoices] = useState<TtsVoice[]>([]);
   const [batchSummaries, setBatchSummaries] = useState<TtsBatchSummary[]>([]);
