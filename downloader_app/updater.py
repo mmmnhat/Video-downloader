@@ -41,11 +41,11 @@ class UpdateManager:
             latest_version = data.get("tag_name", "").lstrip("v")
             release_notes = data.get("body", "")
             
-            # Find the Windows executable asset
+            # Find the Windows zip asset
             download_url = ""
             for asset in data.get("assets", []):
                 name = asset.get("name", "").lower()
-                if name.endswith(".exe"):
+                if name.endswith(".zip"):
                     download_url = asset.get("browser_download_url", "")
                     break
 
@@ -86,7 +86,7 @@ class UpdateManager:
             raise UpdateError(f"Failed to check for updates: {e}")
 
     def apply_update(self, download_url: str) -> bool:
-        """Downloads the update and triggers the bat replacement."""
+        """Downloads the update zip, extracts it, and triggers the bat replacement."""
         if not is_frozen():
             raise UpdateError("Automatic applying updates is only supported when running the compiled App (.exe). You are running in Dev Mode, please download source directly.")
 
@@ -95,9 +95,12 @@ class UpdateManager:
 
         temp_dir = Path(tempfile.gettempdir()) / "VD_Update"
         temp_dir.mkdir(parents=True, exist_ok=True)
-        new_exe_path = temp_dir / "VideoDownloader_update.exe"
+        zip_path = temp_dir / "update.zip"
+        extract_dir = temp_dir / "extracted"
         bat_path = temp_dir / "update_helper.bat"
+        
         current_exe = Path(sys.executable).resolve()
+        current_app_dir = current_exe.parent
 
         try:
             # Download the file
@@ -105,17 +108,36 @@ class UpdateManager:
                 download_url,
                 headers={"User-Agent": "Video-Downloader-Updater/1.0"}
             )
-            with urllib.request.urlopen(req, timeout=30) as response, open(new_exe_path, 'wb') as out_file:
+            with urllib.request.urlopen(req, timeout=120) as response, open(zip_path, 'wb') as out_file:
                 shutil.copyfileobj(response, out_file)
         except Exception as e:
             raise UpdateError(f"Failed to download update: {e}")
+
+        try:
+            import zipfile
+            if extract_dir.exists():
+                shutil.rmtree(extract_dir, ignore_errors=True)
+            extract_dir.mkdir(parents=True, exist_ok=True)
+            
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(extract_dir)
+                
+            # Find the inner directory containing VideoDownloader.exe
+            source_dir = extract_dir
+            # Usually the zip contains a "VideoDownloader" folder at the root
+            inner_dir = extract_dir / "VideoDownloader"
+            if inner_dir.exists() and inner_dir.is_dir():
+                source_dir = inner_dir
+        except Exception as e:
+            raise UpdateError(f"Failed to extract update zip: {e}")
 
         # Write bat script
         current_pid = os.getpid()
         bat_content = f"""@echo off
 setlocal
-set "NEW_EXE={str(new_exe_path)}"
-set "OLD_EXE={str(current_exe)}"
+set "SRC_DIR={str(source_dir)}"
+set "DEST_DIR={str(current_app_dir)}"
+set "EXE_PATH={str(current_exe)}"
 set "PID={current_pid}"
 
 echo Waiting for application to exit...
@@ -126,11 +148,11 @@ if not errorlevel 1 (
     goto wait_loop
 )
 
-echo Replacing executable...
-move /Y "%NEW_EXE%" "%OLD_EXE%"
+echo Copying updated files...
+xcopy /Y /E /H /C /I "%SRC_DIR%\\*" "%DEST_DIR%\\"
 
 echo Restarting...
-start "" "%OLD_EXE%"
+start "" "%EXE_PATH%"
 
 echo Cleaning up...
 del "%~f0"
