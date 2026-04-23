@@ -12,7 +12,6 @@ import {
   RefreshCw,
   RotateCcw,
   Sparkles,
-  Upload,
 } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -39,12 +38,14 @@ import {
   getStoryBootstrap,
   getStorySessionStatus,
   getStoryVideo,
-  importStoryManifest,
+  chooseFolder,
+  listStoryGems,
   listStoryVideos,
   openFolder,
   openStoryLogin,
   pauseStoryVideo,
   runStoryVideo,
+  scanStoryFolder,
   updateStoryGlobalPrompt,
   updateStorySettings,
   type StoryBootstrapPayload,
@@ -315,11 +316,12 @@ export default function StoryStudio() {
   const [selectedAttemptId, setSelectedAttemptId] = useState<string | null>(null);
   const [expandedMarkerIds, setExpandedMarkerIds] = useState<string[]>([]);
 
-  const [manifestPath, setManifestPath] = useState("");
   const [savingPrompt, setSavingPrompt] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
   const [sessionRefreshing, setSessionRefreshing] = useState(false);
-  const [importingManifest, setImportingManifest] = useState(false);
+  const [scanningFolder, setScanningFolder] = useState(false);
+  const [availableGems, setAvailableGems] = useState<{ name: string; url: string }[]>([]);
+  const [fetchingGems, setFetchingGems] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [actionBusyKey, setActionBusyKey] = useState<string | null>(null);
   const [queueFilter, setQueueFilter] = useState<QueueFilter>("all");
@@ -736,28 +738,45 @@ export default function StoryStudio() {
     }
   }, [globalPromptDraft]);
 
-  const handleImportManifest = useCallback(async () => {
-    const trimmedPath = manifestPath.trim();
-    if (!trimmedPath) {
-      toast.error("Can nhap duong dan manifest JSON.");
-      return;
-    }
-    setImportingManifest(true);
+
+  const handleFetchGems = useCallback(async () => {
+    setFetchingGems(true);
     try {
-      const imported = await importStoryManifest({ manifestPath: trimmedPath });
+      const gems = await listStoryGems();
+      setAvailableGems(gems);
+      if (gems.length > 0) {
+        toast.success(`Da quet duoc ${gems.length} Gem.`);
+      } else {
+        toast.info("Khong tim thay Gem nao. Hay dam bao ban da dang nhap Gemini.");
+      }
+    } catch (error) {
+      toast.error("Loi khi quet danh sach Gem.");
+    } finally {
+      setFetchingGems(false);
+    }
+  }, []);
+
+  const handleScanFolder = useCallback(async () => {
+    try {
+      const { path } = await chooseFolder();
+      if (!path) {
+        return;
+      }
+      setScanningFolder(true);
+      const imported = await scanStoryFolder(path);
       if (imported.length === 0) {
-        toast.error("Manifest khong co video hop le.");
+        toast.info("Khong tim thay video co marker XMP.");
         return;
       }
       applyVideoDetail(imported[0]);
       await refreshSummaries(true);
-      toast.success(`Da import ${imported.length} video vao queue.`);
+      toast.success(`Da quet va import ${imported.length} video.`);
     } catch (error) {
       toast.error(getErrorMessage(error));
     } finally {
-      setImportingManifest(false);
+      setScanningFolder(false);
     }
-  }, [applyVideoDetail, manifestPath, refreshSummaries]);
+  }, [applyVideoDetail, refreshSummaries]);
 
   const handleRunVideo = useCallback(async () => {
     if (!selectedVideoId) {
@@ -1284,28 +1303,24 @@ export default function StoryStudio() {
 
               <div className="rounded-xl border border-border/70 bg-muted/20 p-3">
                 <div className="mb-2 text-xs font-medium uppercase text-muted-foreground">
-                  Import Manifest
+                  XMP Marker Scan
                 </div>
-                <div className="flex gap-2">
-                  <Input
-                    value={manifestPath}
-                    onChange={(event) => setManifestPath(event.target.value)}
-                    placeholder="D:\\projects\\story\\markers.json"
-                  />
-                  <Button
-                    type="button"
-                    variant="outline"
-                    disabled={importingManifest}
-                    onClick={() => void handleImportManifest()}
-                  >
-                    {importingManifest ? (
-                      <Loader2 className="size-4 animate-spin" />
-                    ) : (
-                      <Upload className="size-4" />
-                    )}
-                  </Button>
-                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full"
+                  disabled={scanningFolder}
+                  onClick={() => void handleScanFolder()}
+                >
+                  {scanningFolder ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <FolderOpen className="size-4" />
+                  )}
+                  Scan Premiere Project Folder
+                </Button>
               </div>
+
 
               {settingsDraft ? (
                 <div className="rounded-xl border border-border/70 bg-muted/20 p-3">
@@ -1340,31 +1355,69 @@ export default function StoryStudio() {
                     </div>
 
                     <div className="flex flex-col gap-1">
-                      <label className="text-xs text-muted-foreground">Backend</label>
-                      <Select
-                        value={settingsDraft.generation_backend}
-                        onValueChange={(value) =>
+                      <label className="text-xs text-muted-foreground">Select Gem (Instruction Set)</label>
+                      <div className="flex gap-2">
+                        <Select
+                          value={settingsDraft.gemini_base_url}
+                          onValueChange={(value) =>
+                            setSettingsDraft((current) =>
+                              current ? { ...current, gemini_base_url: value } : current
+                            )
+                          }
+                        >
+                          <SelectTrigger className="flex-1">
+                            <SelectValue placeholder="Choose a Gem..." />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectGroup>
+                              <SelectLabel>My Gems</SelectLabel>
+                              <SelectItem value="https://gemini.google.com/app">Default Gemini</SelectItem>
+                              {availableGems.map((gem) => (
+                                <SelectItem key={gem.url} value={gem.url}>
+                                  {gem.name}
+                                </SelectItem>
+                              ))}
+                            </SelectGroup>
+                          </SelectContent>
+                        </Select>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="icon"
+                          disabled={fetchingGems}
+                          onClick={() => void handleFetchGems()}
+                        >
+                          {fetchingGems ? (
+                            <Loader2 className="size-4 animate-spin" />
+                          ) : (
+                            <RefreshCw className="size-4" />
+                          )}
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-muted-foreground" htmlFor="gemini-url">
+                        Custom Gem URL (Manual)
+                      </label>
+                      <Input
+                        id="gemini-url"
+                        value={settingsDraft.gemini_base_url}
+                        onChange={(event) =>
                           setSettingsDraft((current) =>
                             current
                               ? {
                                   ...current,
-                                  generation_backend: value,
+                                  gemini_base_url: event.target.value,
                                 }
                               : current,
                           )
                         }
-                      >
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectGroup>
-                            <SelectLabel>Generation</SelectLabel>
-                            <SelectItem value="local_preview">local_preview</SelectItem>
-                            <SelectItem value="gemini_web">gemini_web</SelectItem>
-                          </SelectGroup>
-                        </SelectContent>
-                      </Select>
+                        placeholder="https://gemini.google.com/app/gems/..."
+                      />
+                      <p className="text-[10px] text-muted-foreground">
+                        Dan link Gem chuyen dung (vi du Gem "Tao anh") de co ket qua tot nhat.
+                      </p>
                     </div>
 
                     <div className="flex items-center justify-between rounded-lg border border-border/70 px-3 py-2">
@@ -1385,24 +1438,29 @@ export default function StoryStudio() {
                     </div>
 
                     <div className="flex flex-col gap-1">
-                      <label className="text-xs text-muted-foreground" htmlFor="debug-dir">
-                        Debug dir
-                      </label>
-                      <Input
-                        id="debug-dir"
-                        value={settingsDraft.gemini_selector_debug_dir}
-                        onChange={(event) =>
-                          setSettingsDraft((current) =>
-                            current
-                              ? {
-                                  ...current,
-                                  gemini_selector_debug_dir: event.target.value,
-                                }
-                              : current,
-                          )
-                        }
-                        placeholder="D:\\gemini-debug"
-                      />
+                      <label className="text-xs text-muted-foreground">Debug directory (Browser logs)</label>
+                      <div className="flex gap-2">
+                        <Input
+                          value={settingsDraft.gemini_selector_debug_dir}
+                          readOnly
+                          placeholder="Select folder for debug logs..."
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="icon"
+                          onClick={async () => {
+                            const { path } = await chooseFolder();
+                            if (path) {
+                              setSettingsDraft((current) =>
+                                current ? { ...current, gemini_selector_debug_dir: path } : current
+                              );
+                            }
+                          }}
+                        >
+                          <FolderOpen className="size-4" />
+                        </Button>
+                      </div>
                     </div>
 
                     <Button

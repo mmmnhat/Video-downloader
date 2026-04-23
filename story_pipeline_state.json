@@ -1,0 +1,396 @@
+{
+  "settings": {
+    "output_root": "C:\\Users\\ad\\Downloads\\Video-downloader\\story_pipeline",
+    "max_parallel_videos": 2,
+    "generation_backend": "local_preview",
+    "gemini_headless": false,
+    "gemini_base_url": "https://gemini.google.com/gem/1ThC03qatV23oD9L1Hse0__HMx5QHJfZq?usp=sharing",
+    "gemini_response_timeout_ms": 120000,
+    "gemini_selector_debug": false,
+    "gemini_selector_debug_dir": "",
+    "gemini_model": "gemini-1.5-flash"
+  },
+  "global_prompt": "",
+  "active_video_id": "video-dbf482133a",
+  "videos": [
+    {
+      "id": "video-48ac11c439",
+      "name": "KB3_1.mp4",
+      "source_video_path": "C:\\Users\\ad\\Downloads\\2\\KB3_1.mp4",
+      "mode": "chain",
+      "video_prompt": "",
+      "status": "completed",
+      "created_at": "2026-04-23T14:05:41Z",
+      "last_updated_at": "2026-04-23T14:27:03Z",
+      "error": null,
+      "markers": [
+        {
+          "id": "marker-2f5f76ab90",
+          "index": 1,
+          "label": "Marker 1",
+          "timestamp_ms": 0,
+          "input_frame_path": "C:\\Users\\ad\\Downloads\\2\\_frames\\KB3_1\\marker_001_0.00.jpg",
+          "seed_prompt": "Marker 1",
+          "status": "completed",
+          "steps": [
+            {
+              "id": "step-a527e4f1ad",
+              "index": 1,
+              "title": "Marker 1",
+              "modifier_prompt": "",
+              "status": "completed",
+              "selected_attempt_id": "att-b4494cb7a8",
+              "pending_mode": "auto",
+              "pending_input_path": null,
+              "attempts": [
+                {
+                  "id": "att-39f4087e0b",
+                  "index": 1,
+                  "mode": "auto",
+                  "status": "review",
+                  "prompt": "Marker 1",
+                  "input_image_path": "C:\\Users\\ad\\Downloads\\2\\_frames\\KB3_1\\marker_001_0.00.jpg",
+                  "preview_path": "C:\\Users\\ad\\Downloads\\Video-downloader\\story_pipeline\\KB3_1.mp4\\marker_001\\step_01\\attempt_01\\preview.jpg",
+                  "normalized_path": "C:\\Users\\ad\\Downloads\\Video-downloader\\story_pipeline\\KB3_1.mp4\\marker_001\\step_01\\attempt_01\\normalized.jpg",
+                  "error": null,
+                  "started_at": "2026-04-23T14:26:32Z",
+                  "completed_at": "2026-04-23T14:26:32Z"
+                },
+                {
+                  "id": "att-b4494cb7a8",
+                  "index": 2,
+                  "mode": "regenerate",
+                  "status": "accepted",
+                  "prompt": "Marker 1",
+                  "input_image_path": "C:\\Users\\ad\\Downloads\\2\\_frames\\KB3_1\\marker_001_0.00.jpg",
+                  "preview_path": "C:\\Users\\ad\\Downloads\\Video-downloader\\story_pipeline\\KB3_1.mp4\\marker_001\\step_01\\attempt_02\\preview.jpg",
+                  "normalized_path": "C:\\Users\\ad\\Downloads\\Video-downloader\\story_pipeline\\KB3_1.mp4\\marker_001\\step_01\\attempt_02\\normalized.jpg",
+                  "error": null,
+                  "started_at": "2026-04-23T14:27:02Z",
+                  "completed_at": "2026-04-23T14:27:02Z"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "video-dbf482133a",
+      "name": "KB3_13.mp4",
+      "source_video_path": "C:\\Users\\ad\\Downloads\\2\\KB3_13.mp4",
+      "mode": "chain",
+      "video_prompt": "",
+      "status": "review",
+      "created_at": "2026-04-23T14:05:41Z",
+      "last_updated_at": "2026-04-23T14:27:30Z",
+      "error": null,
+      "markers": [
+        {
+          "id": "marker-8e4beb06bf",
+          "index": 1,
+          "label": "Marker 1",
+          "timestamp_ms": 0,
+          "input_frame_path": "C:\\Users\\ad\\Downloads\\2\\_frames\\KB3_13\\marker_001_0.00.jpg",
+          "seed_prompt": "Marker 1",
+          "status": "review",
+          "steps": [
+            {
+              "id": "step-e912d0187a",
+              "index": 1,
+              "title": "Marker 1",
+              "modifier_prompt": "",
+              "status": "review",
+              "selected_attempt_id": null,
+              "pending_mode": "auto",
+              "pending_input_path": null,
+              "attempts": [
+                {
+                  "id": "att-9d70953d0a",
+                  "index": 1,
+                  "mode": "auto",
+                  "status": "review",
+                  "prompt": "Marker 1",
+                  "input_image_path": "C:\\Users\\ad\\Downloads\\2\\_frames\\KB3_13\\marker_001_0.00.jpg",
+                  "preview_path": "C:\\Users\\ad\\Downloads\\Video-downloader\\story_pipeline\\KB3_13.mp4\\marker_001\\step_01\\attempt_01\\preview.jpg",
+                  "normalized_path": "C:\\Users\\ad\\Downloads\\Video-downloader\\story_pipeline\\KB3_13.mp4\\marker_001\\step_01\\attempt_01\\normalized.jpg",
+                  "error": null,
+                  "started_at": "2026-04-23T14:27:07Z",
+                  "completed_at": "2026-04-23T14:27:07Z"
+                },
+                {
+                  "id": "att-e0e297275d",
+                  "index": 2,
+                  "mode": "regenerate",
+                  "status": "review",
+                  "prompt": "Marker 1",
+                  "input_image_path": "C:\\Users\\ad\\Downloads\\2\\_frames\\KB3_13\\marker_001_0.00.jpg",
+                  "preview_path": "C:\\Users\\ad\\Downloads\\Video-downloader\\story_pipeline\\KB3_13.mp4\\marker_001\\step_01\\attempt_02\\preview.jpg",
+                  "normalized_path": "C:\\Users\\ad\\Downloads\\Video-downloader\\story_pipeline\\KB3_13.mp4\\marker_001\\step_01\\attempt_02\\normalized.jpg",
+                  "error": null,
+                  "started_at": "2026-04-23T14:27:30Z",
+                  "completed_at": "2026-04-23T14:27:30Z"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "video-888c958a85",
+      "name": "KB3_15.mp4",
+      "source_video_path": "C:\\Users\\ad\\Downloads\\2\\KB3_15.mp4",
+      "mode": "chain",
+      "video_prompt": "",
+      "status": "queued",
+      "created_at": "2026-04-23T14:05:41Z",
+      "last_updated_at": "2026-04-23T14:05:41Z",
+      "error": null,
+      "markers": [
+        {
+          "id": "marker-e71a7c3ef7",
+          "index": 1,
+          "label": "Marker 1",
+          "timestamp_ms": 0,
+          "input_frame_path": "C:\\Users\\ad\\Downloads\\2\\_frames\\KB3_15\\marker_001_0.00.jpg",
+          "seed_prompt": "Marker 1",
+          "status": "queued",
+          "steps": [
+            {
+              "id": "step-c6a087e213",
+              "index": 1,
+              "title": "Marker 1",
+              "modifier_prompt": "",
+              "status": "queued",
+              "selected_attempt_id": null,
+              "pending_mode": "auto",
+              "pending_input_path": null,
+              "attempts": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "video-2dc102a4d6",
+      "name": "KB3_18.mp4",
+      "source_video_path": "C:\\Users\\ad\\Downloads\\2\\KB3_18.mp4",
+      "mode": "chain",
+      "video_prompt": "",
+      "status": "queued",
+      "created_at": "2026-04-23T14:05:41Z",
+      "last_updated_at": "2026-04-23T14:05:41Z",
+      "error": null,
+      "markers": [
+        {
+          "id": "marker-b05298db85",
+          "index": 1,
+          "label": "Marker 1",
+          "timestamp_ms": 0,
+          "input_frame_path": "C:\\Users\\ad\\Downloads\\2\\_frames\\KB3_18\\marker_001_0.00.jpg",
+          "seed_prompt": "Marker 1",
+          "status": "queued",
+          "steps": [
+            {
+              "id": "step-5e8f38c4f2",
+              "index": 1,
+              "title": "Marker 1",
+              "modifier_prompt": "",
+              "status": "queued",
+              "selected_attempt_id": null,
+              "pending_mode": "auto",
+              "pending_input_path": null,
+              "attempts": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "video-dd8bf9635d",
+      "name": "KB3_20.mp4",
+      "source_video_path": "C:\\Users\\ad\\Downloads\\2\\KB3_20.mp4",
+      "mode": "chain",
+      "video_prompt": "",
+      "status": "queued",
+      "created_at": "2026-04-23T14:05:41Z",
+      "last_updated_at": "2026-04-23T14:05:41Z",
+      "error": null,
+      "markers": [
+        {
+          "id": "marker-529c6190f1",
+          "index": 1,
+          "label": "Marker 1",
+          "timestamp_ms": 0,
+          "input_frame_path": "C:\\Users\\ad\\Downloads\\2\\_frames\\KB3_20\\marker_001_0.00.jpg",
+          "seed_prompt": "Marker 1",
+          "status": "queued",
+          "steps": [
+            {
+              "id": "step-de71cc5fa8",
+              "index": 1,
+              "title": "Marker 1",
+              "modifier_prompt": "",
+              "status": "queued",
+              "selected_attempt_id": null,
+              "pending_mode": "auto",
+              "pending_input_path": null,
+              "attempts": []
+            }
+          ]
+        },
+        {
+          "id": "marker-54afaa77d8",
+          "index": 2,
+          "label": "Marker 2",
+          "timestamp_ms": 0,
+          "input_frame_path": "C:\\Users\\ad\\Downloads\\2\\_frames\\KB3_20\\marker_002_0.00.jpg",
+          "seed_prompt": "Marker 2",
+          "status": "queued",
+          "steps": [
+            {
+              "id": "step-b31521f866",
+              "index": 1,
+              "title": "Marker 2",
+              "modifier_prompt": "",
+              "status": "queued",
+              "selected_attempt_id": null,
+              "pending_mode": "auto",
+              "pending_input_path": null,
+              "attempts": []
+            }
+          ]
+        },
+        {
+          "id": "marker-e774ec0230",
+          "index": 3,
+          "label": "Marker 3",
+          "timestamp_ms": 0,
+          "input_frame_path": "C:\\Users\\ad\\Downloads\\2\\_frames\\KB3_20\\marker_003_0.00.jpg",
+          "seed_prompt": "Marker 3",
+          "status": "queued",
+          "steps": [
+            {
+              "id": "step-e9dc164372",
+              "index": 1,
+              "title": "Marker 3",
+              "modifier_prompt": "",
+              "status": "queued",
+              "selected_attempt_id": null,
+              "pending_mode": "auto",
+              "pending_input_path": null,
+              "attempts": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "video-9cda959771",
+      "name": "KB3_21.mp4",
+      "source_video_path": "C:\\Users\\ad\\Downloads\\2\\KB3_21.mp4",
+      "mode": "chain",
+      "video_prompt": "",
+      "status": "queued",
+      "created_at": "2026-04-23T14:05:41Z",
+      "last_updated_at": "2026-04-23T14:05:41Z",
+      "error": null,
+      "markers": [
+        {
+          "id": "marker-18a2d49a2c",
+          "index": 1,
+          "label": "Marker 1",
+          "timestamp_ms": 0,
+          "input_frame_path": "C:\\Users\\ad\\Downloads\\2\\_frames\\KB3_21\\marker_001_0.00.jpg",
+          "seed_prompt": "Marker 1",
+          "status": "queued",
+          "steps": [
+            {
+              "id": "step-96c5b98102",
+              "index": 1,
+              "title": "Marker 1",
+              "modifier_prompt": "",
+              "status": "queued",
+              "selected_attempt_id": null,
+              "pending_mode": "auto",
+              "pending_input_path": null,
+              "attempts": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "video-8f8ff90141",
+      "name": "KB3_24.mp4",
+      "source_video_path": "C:\\Users\\ad\\Downloads\\2\\KB3_24.mp4",
+      "mode": "chain",
+      "video_prompt": "",
+      "status": "review",
+      "created_at": "2026-04-23T14:05:41Z",
+      "last_updated_at": "2026-04-23T14:26:22Z",
+      "error": null,
+      "markers": [
+        {
+          "id": "marker-61cd30c287",
+          "index": 1,
+          "label": "Marker 1",
+          "timestamp_ms": 0,
+          "input_frame_path": "C:\\Users\\ad\\Downloads\\2\\_frames\\KB3_24\\marker_001_0.00.jpg",
+          "seed_prompt": "Marker 1",
+          "status": "review",
+          "steps": [
+            {
+              "id": "step-2a7a2883b0",
+              "index": 1,
+              "title": "Marker 1",
+              "modifier_prompt": "",
+              "status": "review",
+              "selected_attempt_id": null,
+              "pending_mode": "auto",
+              "pending_input_path": null,
+              "attempts": [
+                {
+                  "id": "att-677d0b46c2",
+                  "index": 1,
+                  "mode": "auto",
+                  "status": "review",
+                  "prompt": "Marker 1",
+                  "input_image_path": "C:\\Users\\ad\\Downloads\\2\\_frames\\KB3_24\\marker_001_0.00.jpg",
+                  "preview_path": "C:\\Users\\ad\\Downloads\\Video-downloader\\story_pipeline\\KB3_24.mp4\\marker_001\\step_01\\attempt_01\\preview.jpg",
+                  "normalized_path": "C:\\Users\\ad\\Downloads\\Video-downloader\\story_pipeline\\KB3_24.mp4\\marker_001\\step_01\\attempt_01\\normalized.jpg",
+                  "error": null,
+                  "started_at": "2026-04-23T14:26:22Z",
+                  "completed_at": "2026-04-23T14:26:22Z"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "marker-48b9fb6aea",
+          "index": 2,
+          "label": "Marker 2",
+          "timestamp_ms": 0,
+          "input_frame_path": "C:\\Users\\ad\\Downloads\\2\\_frames\\KB3_24\\marker_002_0.00.jpg",
+          "seed_prompt": "Marker 2",
+          "status": "queued",
+          "steps": [
+            {
+              "id": "step-e29fc30c83",
+              "index": 1,
+              "title": "Marker 2",
+              "modifier_prompt": "",
+              "status": "queued",
+              "selected_attempt_id": null,
+              "pending_mode": "auto",
+              "pending_input_path": null,
+              "attempts": []
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

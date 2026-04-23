@@ -970,98 +970,150 @@ class GeminiWebAdapter:
         return False
 
     def _find_attachment_buttons(self, page, composer) -> list[object]:
-        attach_tokens = [
-            "upload",
-            "attach",
-            "image",
-            "photo",
-            "picture",
-            "file",
-            "tải",
-            "anh",
-            "ảnh",
-            "hình",
-            "đính",
-            "tep",
-            "tệp",
-            "tap tin",
-            "tập tin",
+        """
+        Locates buttons used for attaching files/images.
+        Uses both specific ARIA labels and proximity to the prompt composer.
+        """
+        targeted_selectors = [
+            'button[aria-label*="upload" i]',
+            'button[aria-label*="attach" i]',
+            'button[aria-label*="tải" i]',
+            'button[aria-label*="đính" i]',
+            'button[aria-label*="ảnh" i]',
+            'button[aria-label*="image" i]',
+            'button:has(svg[path*="upload"])',
+            'button:has(svg[path*="attach"])',
+            'button:has(svg[path*="image"])',
         ]
-        send_tokens = [
-            "send",
-            "run",
-            "generate",
-            "gửi",
-            "gui",
-            "tạo",
-            "tao",
-            "chạy",
-            "chay",
-        ]
+        
+        candidates = []
+        for selector in targeted_selectors:
+            try:
+                locators = page.locator(selector)
+                count = locators.count()
+                for i in range(count):
+                    btn = locators.nth(i)
+                    if btn.is_visible():
+                        candidates.append(btn)
+            except Exception:
+                continue
+        
+        if candidates:
+            return candidates
 
+        attach_tokens = ["upload", "attach", "image", "photo", "file", "tải", "anh", "ảnh", "hình", "đính", "tệp"]
+        send_tokens = ["send", "run", "generate", "gửi", "gui", "tạo", "tao", "chạy", "chay"]
+        
         composer_box = None
         if composer is not None:
             try:
                 composer_box = composer.bounding_box()
             except Exception:
-                composer_box = None
+                pass
 
-        candidates: list[tuple[float, object]] = []
-        locator = page.locator("button, [role='button']")
         try:
-            count = locator.count()
+            buttons = page.locator("button, [role='button']")
+            count = buttons.count()
+            limit = min(count, 100)
+            scored: list[tuple[float, object]] = []
+            
+            for i in range(limit):
+                btn = buttons.nth(i)
+                if not btn.is_visible():
+                    continue
+                
+                label = (btn.get_attribute("aria-label") or "").lower()
+                text = (btn.inner_text() or "").lower()
+                title = (btn.get_attribute("title") or "").lower()
+                combined = f"{label} {text} {title}"
+                
+                if any(token in combined for token in send_tokens):
+                    continue
+                
+                score = 0.0
+                if any(token in combined for token in attach_tokens):
+                    score += 200.0
+                
+                if composer_box:
+                    box = btn.bounding_box()
+                    if box:
+                        dist = abs(box["x"] - composer_box["x"]) + abs(box["y"] - composer_box["y"])
+                        score += max(0.0, 300.0 - dist)
+                
+                if score > 0:
+                    scored.append((score, btn))
+            
+            scored.sort(key=lambda x: x[0], reverse=True)
+            return [x[1] for x in scored[:5]]
         except Exception:
+            pass
+
+        return []
+
+    def list_gems(self) -> list[dict]:
+        """
+        Navigates to the Gems view page and extracts available Gems.
+        """
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
             return []
 
-        limit = min(count, 120)
-        for index in range(limit):
-            candidate = locator.nth(index)
+        profile = detect_gemini_browser_profile()
+        runtime_id = f"list-gems-{uuid.uuid4().hex[:8]}"
+        runtime_profile = build_gemini_runtime_profile(profile, self._runtime_root, runtime_id)
+
+        playwright = None
+        context = None
+        try:
+            playwright = sync_playwright().start()
+            context = playwright.chromium.launch_persistent_context(
+                str(runtime_profile),
+                headless=True,
+                executable_path=str(profile.executable_path),
+                args=[f"--profile-directory={profile.profile_name}"],
+            )
+            page = context.pages[0] if context.pages else context.new_page()
+            page.set_default_timeout(30_000)
+            
+            # The exact URL provided by user
+            page.goto("https://gemini.google.com/gems/view", wait_until="networkidle", timeout=25_000)
+            
+            # Wait for content to appear
             try:
-                if not candidate.is_visible() or candidate.is_disabled():
-                    continue
-                box = candidate.bounding_box()
-                if not box or box["width"] < 20 or box["height"] < 20:
-                    continue
-                if box["width"] > 220 or box["height"] > 140:
-                    continue
-                text_blob = " ".join(
-                    [
-                        (candidate.get_attribute("aria-label") or ""),
-                        (candidate.inner_text() or ""),
-                        (candidate.get_attribute("title") or ""),
-                    ]
-                ).strip().lower()
-
-                send_hint = any(token in text_blob for token in send_tokens)
-                if send_hint:
-                    continue
-
-                attach_hint = any(token in text_blob for token in attach_tokens)
-                score = 0.0
-                if attach_hint:
-                    score += 250.0
-
-                if composer_box:
-                    center_x = box["x"] + box["width"] / 2
-                    center_y = box["y"] + box["height"] / 2
-                    composer_x = composer_box["x"] + composer_box["width"] / 2
-                    composer_y = composer_box["y"] + composer_box["height"] / 2
-                    distance = abs(center_x - composer_x) + abs(center_y - composer_y)
-                    score += max(0.0, 400.0 - distance)
-
-                    if (
-                        box["y"] + box["height"] >= composer_box["y"] - 40
-                        and box["y"] <= composer_box["y"] + composer_box["height"] + 40
-                    ):
-                        score += 80.0
-
-                score += min(box["width"] * box["height"], 3_000) * 0.02
-                candidates.append((score, candidate))
+                page.wait_for_selector('a[href*="/app/gems/"], a[href*="/gems/"]', timeout=8_000)
             except Exception:
-                continue
+                pass
 
-        candidates.sort(key=lambda item: item[0], reverse=True)
-        return [candidate for _, candidate in candidates[:12]]
+            gems = page.evaluate("""() => {
+                const results = [];
+                // Find all links that point to a Gem app
+                const links = Array.from(document.querySelectorAll('a[href*="/gems/"]'));
+                for (const link of links) {
+                    const href = link.href;
+                    if (href.includes('/view') || href.includes('/list') || href.includes('/manage')) continue;
+                    
+                    // The Gem name is usually in a prominent text element inside the card/link
+                    let name = (link.innerText || link.textContent || '').trim().split('\\n')[0];
+                    
+                    if (!name || name.length < 2) {
+                        name = (link.getAttribute('title') || link.getAttribute('aria-label') || '').trim();
+                    }
+                    
+                    if (href && name && name.length >= 2 && !results.some(g => g.url === href)) {
+                        results.push({ name, url: href });
+                    }
+                }
+                return results;
+            }""")
+            return gems
+        except Exception as e:
+            print(f"[DEBUG] Failed to list gems: {e}")
+            return []
+        finally:
+            if context: context.close()
+            if playwright: playwright.stop()
+            shutil.rmtree(runtime_profile, ignore_errors=True)
 
     def _click_send_button(self, page, composer) -> bool:
         send_selectors = [

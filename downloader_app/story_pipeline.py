@@ -20,6 +20,7 @@ from downloader_app.gemini_web_adapter import (
 )
 from downloader_app.jobs import sanitize_file_stem
 from downloader_app.runtime import app_path
+from downloader_app.xmp_scanner import xmp_scanner
 
 
 STORY_STATE_FILE = app_path("story_pipeline_state.json")
@@ -40,12 +41,13 @@ class StoryPipelineError(RuntimeError):
 class StorySettings:
     output_root: str
     max_parallel_videos: int = 2
-    generation_backend: str = "local_preview"
+    generation_backend: str = "gemini_web"
     gemini_headless: bool = False
     gemini_base_url: str = GEMINI_DEFAULT_URL
     gemini_response_timeout_ms: int = 120_000
     gemini_selector_debug: bool = False
     gemini_selector_debug_dir: str = ""
+    gemini_model: str = "gemini-1.5-flash"
 
 
 @dataclass
@@ -261,6 +263,11 @@ class StoryPipelineManager:
             self._invalidate_session_status_cache_locked()
         return payload
 
+    def list_available_gems(self) -> list[dict]:
+        if self._settings.generation_backend != "gemini_web":
+            return []
+        return self._adapter.list_gems()
+
     def update_settings(self, payload: dict) -> dict:
         with self._lock:
             max_parallel = payload.get("max_parallel_videos", self._settings.max_parallel_videos)
@@ -294,6 +301,8 @@ class StoryPipelineManager:
                 payload.get("gemini_selector_debug_dir", self._settings.gemini_selector_debug_dir)
             ).strip()
 
+            gemini_model = str(payload.get("gemini_model", self._settings.gemini_model)).strip() or self._settings.gemini_model
+
             previous_max_parallel = self._settings.max_parallel_videos
             self._settings = StorySettings(
                 output_root=output_root,
@@ -304,6 +313,7 @@ class StoryPipelineManager:
                 gemini_response_timeout_ms=max(20_000, min(300_000, gemini_response_timeout_ms)),
                 gemini_selector_debug=gemini_selector_debug,
                 gemini_selector_debug_dir=gemini_selector_debug_dir,
+                gemini_model=gemini_model,
             )
             self._refresh_adapter_locked()
             self._invalidate_session_status_cache_locked()
@@ -353,6 +363,21 @@ class StoryPipelineManager:
             self._persist_state_locked()
 
         return [self.get_video_detail(video_id) or {} for video_id in created_ids]
+
+    def import_from_folder(self, payload: dict) -> list[dict]:
+        folder_path = str(payload.get("folder_path", "")).strip()
+        if not folder_path:
+            raise StoryPipelineError("folder_path la bat buoc")
+
+        try:
+            videos = xmp_scanner.scan_folder(folder_path)
+        except Exception as exc:
+            raise StoryPipelineError(f"Quet thu muc that bai: {exc}") from exc
+
+        if not videos:
+            raise StoryPipelineError("Khong tim thay marker XMP nao trong thu muc nay. Hay dam bao ban da bat 'Write clip markers to XMP' trong Premiere.")
+
+        return self.import_manifest({"manifest": {"videos": videos}})
 
     def run_video(self, video_id: str) -> dict:
         with self._lock:
@@ -1003,8 +1028,8 @@ class StoryPipelineManager:
                         settings.get("gemini_selector_debug_dir", self._settings.gemini_selector_debug_dir)
                     ).strip(),
                 )
-                if self._settings.generation_backend not in {"local_preview", "gemini_web"}:
-                    self._settings.generation_backend = "local_preview"
+                # Always force gemini_web as requested by user
+                self._settings.generation_backend = "gemini_web"
             except (TypeError, ValueError):
                 pass
 

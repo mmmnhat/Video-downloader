@@ -251,6 +251,7 @@ class TtsBatch:
     worker_count: int
     headless: bool
     work_dir: str
+    filename_prefix: str | None = None
     items: list[TtsItem] = field(default_factory=list)
 
 
@@ -1661,6 +1662,7 @@ class TtsManager:
             "sheetId": scan_result.sheet_id,
             "gid": scan_result.gid,
             "accessMode": scan_result.access_mode,
+            "sheetTitle": scan_result.sheet_title,
             "textColumn": scan_result.text_column,
             "availableColumns": scan_result.available_columns,
             "rowCount": len(scan_result.entries),
@@ -1687,6 +1689,7 @@ class TtsManager:
         retry_count: int = 1,
         worker_count: int = 1,
         headless: bool = False,
+        filename_prefix: str | None = None,
         tag_text: str = "",
         text_column: str | None = None,
     ) -> dict:
@@ -1724,9 +1727,10 @@ class TtsManager:
             worker_count=worker_count,
             headless=bool(headless),
             work_dir=str(batch_dir),
+            filename_prefix=filename_prefix,
             items=self._build_items(
                 scan_result.entries,
-                scan_result.sheet_title,
+                filename_prefix or scan_result.sheet_title,
                 batch_dir,
                 take_count,
                 model_family=model_family.strip().lower(),
@@ -2247,6 +2251,7 @@ class TtsManager:
             "status": batch.status,
             "sheetUrl": batch.sheet_url,
             "textColumn": batch.text_column,
+            "filenamePrefix": batch.filename_prefix,
             "voiceQuery": batch.voice_query,
             "voiceId": batch.voice_id,
             "voiceName": batch.voice_name,

@@ -117,6 +117,7 @@ export default function TtsManager() {
   const [retryCount, setRetryCount] = useLocalStorage("tts.retryCount", 1);
   const [workerCount, setWorkerCount] = useLocalStorage("tts.workerCount", 1);
   const [headless, setHeadless] = useLocalStorage("tts.headless", false);
+  const [filenamePrefix, setFilenamePrefix] = useLocalStorage("tts.filenamePrefix", "");
   const [preview, setPreview] = useState<TtsPreview | null>(null);
   const [voices, setVoices] = useState<TtsVoice[]>([]);
   const [batchSummaries, setBatchSummaries] = useState<TtsBatchSummary[]>([]);
@@ -370,6 +371,9 @@ export default function TtsManager() {
       startTransition(() => {
         setPreview(nextPreview);
         setTextColumn(nextPreview.textColumn);
+        if (!filenamePrefix.trim()) {
+          setFilenamePrefix(nextPreview.sheetTitle);
+        }
         setSelectedBatch(null);
         setSelectedBatchId(null);
         setSelectedItemIds([]);
@@ -408,6 +412,7 @@ export default function TtsManager() {
         retryCount,
         workerCount,
         headless,
+        filenamePrefix: filenamePrefix.trim() || undefined,
       });
       startTransition(() => {
         setSelectedBatch(detail);
@@ -777,6 +782,21 @@ export default function TtsManager() {
                 onChange={(event) => setTagText(event.target.value)}
                 placeholder="[excited] hoặc tiền tố prompt bạn muốn"
                 disabled={modelFamily !== "v3"}
+              />
+            </Field>
+
+            <Field>
+              <TooltipFieldLabel
+                htmlFor="tts-filename-prefix"
+                tooltip="Tiền tố tùy chọn cho tên file (ví dụ: KB5). Nếu để trống, hệ thống sẽ tự lấy tên sheet/tab."
+              >
+                Tên file (Prefix)
+              </TooltipFieldLabel>
+              <Input
+                id="tts-filename-prefix"
+                value={filenamePrefix}
+                onChange={(event) => setFilenamePrefix(event.target.value)}
+                placeholder="Ví dụ: KB5"
               />
             </Field>
 

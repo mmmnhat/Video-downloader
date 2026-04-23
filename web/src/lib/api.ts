@@ -142,6 +142,7 @@ export type TtsPreview = {
   sheetId: string;
   gid: string | null;
   accessMode: string;
+  sheetTitle: string;
   textColumn: string;
   availableColumns: string[];
   rowCount: number;
@@ -188,6 +189,7 @@ export type TtsBatchSummary = {
   status: string;
   sheetUrl: string;
   textColumn: string;
+  filenamePrefix?: string | null;
   voiceQuery: string;
   voiceId?: string | null;
   voiceName?: string | null;
@@ -232,6 +234,7 @@ export type StorySettings = {
   gemini_response_timeout_ms: number;
   gemini_selector_debug: boolean;
   gemini_selector_debug_dir: string;
+  gemini_model: string;
 };
 
 export type StorySessionStatus = {
@@ -488,6 +491,7 @@ export async function createTtsBatch(payload: {
   retryCount: number;
   workerCount: number;
   headless: boolean;
+  filenamePrefix?: string;
 }) {
   return requestJson<TtsBatchDetail>("/api/tts/batches", {
     method: "POST",
@@ -504,6 +508,7 @@ export async function createTtsBatch(payload: {
       retry_count: payload.retryCount,
       worker_count: payload.workerCount,
       headless: payload.headless,
+      filenamePrefix: payload.filenamePrefix,
     }),
   });
 }
@@ -609,6 +614,14 @@ export async function importStoryManifest(payload: { manifest?: Record<string, u
   });
 }
 
+export async function scanStoryFolder(folderPath: string) {
+  return requestJson<StoryVideoDetail[]>("/api/story/videos/scan-folder", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ folder_path: folderPath }),
+  });
+}
+
 export async function runStoryVideo(videoId: string) {
   return requestJson<StoryVideoDetail>(`/api/story/videos/${videoId}/run`, {
     method: "POST",
@@ -646,4 +659,12 @@ export function getStoryAssetUrl(path: string | null | undefined) {
     return "";
   }
   return `/api/story/file?path=${encodeURIComponent(path)}`;
+}
+
+export async function listStoryGems(): Promise<{name: string, url: string}[]> {
+  const resp = await fetch('/api/story/gems');
+  if (!resp.ok) {
+    throw new Error('Failed to list gems');
+  }
+  return resp.json();
 }

@@ -61,6 +61,10 @@ class AppHandler(BaseHTTPRequestHandler):
             self._send_json(story_pipeline.get_bootstrap())
             return
 
+        if path == "/api/story/gems":
+            self._send_json(story_pipeline.list_available_gems())
+            return
+
         if path == "/api/story/session/status":
             refresh = self._single_query_value(query, "refresh") == "1"
             self._send_json(story_pipeline.get_session_status(refresh=refresh))
@@ -257,6 +261,19 @@ class AppHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
 
+        if path == "/api/story/videos/scan-folder":
+            try:
+                payload = self._read_json_body()
+            except json.JSONDecodeError:
+                self._send_json({"error": "Body must be valid JSON."}, status=HTTPStatus.BAD_REQUEST)
+                return
+
+            try:
+                self._send_json(story_pipeline.import_from_folder(payload), status=HTTPStatus.CREATED)
+            except StoryPipelineError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
         if path.startswith("/api/story/videos/") and (path.endswith("/run") or path.endswith("/pause") or path.endswith("/resume")):
             parts = path.strip("/").split("/")
             if len(parts) != 5:
@@ -420,6 +437,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     retry_count=int(payload.get("retry_count", 1)),
                     worker_count=int(payload.get("worker_count", 1)),
                     headless=bool(payload.get("headless", False)),
+                    filename_prefix=str(payload.get("filenamePrefix", "")).strip() or None,
                     tag_text=str(payload.get("tag_text", "")).strip(),
                     text_column=str(payload.get("text_column", "")).strip() or None,
                 )

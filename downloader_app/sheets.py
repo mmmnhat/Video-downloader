@@ -341,19 +341,19 @@ def _extract_sheet_tab_title_from_html(payload: str, gid: str | None) -> str | N
     if normalized_gid:
         object_patterns = [
             re.compile(
-                rf'"sheetId"\s*:\s*{re.escape(normalized_gid)}[\s\S]{{0,400}}?"title"\s*:\s*"([^"]+)"',
+                rf'"sheetId"\s*:\s*"?{re.escape(normalized_gid)}"?[\s\S]{{0,1000}}?"title"\s*:\s*"([^"]+)"',
                 re.IGNORECASE,
             ),
             re.compile(
-                rf'"title"\s*:\s*"([^"]+)"[\s\S]{{0,400}}?"sheetId"\s*:\s*{re.escape(normalized_gid)}',
+                rf'"title"\s*:\s*"([^"]+)"[\s\S]{{0,1000}}?"sheetId"\s*:\s*"?{re.escape(normalized_gid)}"?',
                 re.IGNORECASE,
             ),
             re.compile(
-                rf'sheetId\s*:\s*{re.escape(normalized_gid)}[\s\S]{{0,400}}?title\s*:\s*"([^"]+)"',
+                rf'\bsheetId\s*:\s*"?{re.escape(normalized_gid)}"?[\s\S]{{0,1000}}?\btitle\s*:\s*"([^"]+)"',
                 re.IGNORECASE,
             ),
             re.compile(
-                rf'title\s*:\s*"([^"]+)"[\s\S]{{0,400}}?sheetId\s*:\s*{re.escape(normalized_gid)}',
+                rf'\btitle\s*:\s*"([^"]+)"[\s\S]{{0,1000}}?\bsheetId\s*:\s*"?{re.escape(normalized_gid)}"?',
                 re.IGNORECASE,
             ),
         ]
@@ -832,6 +832,11 @@ def _scan_private_sheet(sheet_id: str, gid: str | None) -> SheetScanResult:
     if not selected_title:
         raise SheetParseError("Khong xac dinh duoc ten tab Google Sheets can doc.")
 
+    doc_title = metadata.get("properties", {}).get("title")
+    combined_title = selected_title
+    if doc_title and doc_title.strip() and doc_title.strip() != selected_title:
+        combined_title = f"{doc_title.strip()}-{selected_title}"
+
     escaped_title = selected_title.replace("'", "''")
     requested_range = quote(f"'{escaped_title}'", safe="")
     values = google_oauth.authorized_json(
@@ -844,7 +849,7 @@ def _scan_private_sheet(sheet_id: str, gid: str | None) -> SheetScanResult:
     return SheetScanResult(
         sheet_id=sheet_id,
         gid=selected_gid,
-        sheet_title=selected_title,
+        sheet_title=combined_title,
         cells=cells,
         entries=entries,
         access_mode="private_google_oauth",
@@ -877,11 +882,12 @@ def _scan_public_sheet(sheet_id: str, gid: str | None) -> SheetScanResult:
             f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit"
             + (f"?gid={gid}" if gid else "")
         )
-        sheet_title = (
-            _extract_sheet_tab_title_from_html(landing_page, gid)
-            or _extract_sheet_title_from_html(landing_page)
-            or ""
-        )
+        tab_title = _extract_sheet_tab_title_from_html(landing_page, gid)
+        doc_title = _extract_sheet_title_from_html(landing_page)
+        if tab_title and doc_title and tab_title != doc_title:
+            sheet_title = f"{doc_title}-{tab_title}"
+        else:
+            sheet_title = tab_title or doc_title or ""
     except Exception:
         sheet_title = ""
 
@@ -918,11 +924,12 @@ def _scan_browser_session_sheet(sheet_id: str, gid: str | None, sheet_url: str) 
         landing_page = browser_session.fetch_text(sheet_url)
     except BrowserSessionError as exc:
         raise SheetParseError(str(exc)) from exc
-    sheet_title = (
-        _extract_sheet_tab_title_from_html(landing_page, gid)
-        or _extract_sheet_title_from_html(landing_page)
-        or "sheet"
-    )
+    tab_title = _extract_sheet_tab_title_from_html(landing_page, gid)
+    doc_title = _extract_sheet_title_from_html(landing_page)
+    if tab_title and doc_title and tab_title != doc_title:
+        sheet_title = f"{doc_title}-{tab_title}"
+    else:
+        sheet_title = tab_title or doc_title or "sheet"
 
     last_error: Exception | None = None
 
