@@ -1,102 +1,212 @@
-# Flowgen - Video Downloader & TTS Studio
+# Flowgen - Video Downloader, Story Pipeline & TTS Studio
 
-Flowgen là một công cụ mạnh mẽ, giao diện hiện đại (React/PyQt6) chạy trực tiếp trên máy tính. Công cụ giúp tự động hóa việc tải video từ hàng chục nền tảng và chuyển đổi văn bản thành giọng nói (TTS) hàng loạt với chất lượng cao.
+Flowgen là ứng dụng desktop/web local để tự động hóa quy trình sản xuất content:
 
-## ✨ Tính năng chính
+- Tải video hàng loạt từ Google Sheets.
+- Chạy pipeline tạo ảnh theo marker (Gemini Web qua Playwright, không cần API key Gemini).
+- Tạo voiceover hàng loạt với TTS Studio.
 
-### 1. Trình tải Video tự động (Video Downloader)
-- **Tự động hóa qua Google Sheets**: Chỉ cần dán link sheet, công cụ sẽ quét toàn bộ danh sách URL.
-- **Hỗ trợ đa nền tảng**: Tối ưu cho YouTube, Facebook, Instagram, TikTok, Threads, X (Twitter), Reddit, Pinterest, Dumpert, Dailymotion, Yandex, v.v.
-- **Xử lý tên file & Cắt video (Auto-cut)**:
-  - Đặt tên file theo cột số thứ tự (STT) trong sheet.
-  - Tự động cắt video theo mốc thời gian (ví dụ: `00:52-01:04`).
-  - Hỗ trợ cắt nhiều đoạn từ một link duy nhất (ví dụ: `0:10-0:20, 1:30-1:40`).
-- **Quản lý chuyên nghiệp**:
-  - Chuyển đổi mặc định về MP4 H.264 để tương thích tốt nhất với các phần mềm chỉnh sửa (Premiere, CapCut).
-  - Theo dõi tiến độ thời gian thực, hỗ trợ Stop/Retry linh hoạt.
-  - Tự động nạp Cookies từ trình duyệt (Chrome, Cốc Cốc...) để tải video ở chế độ riêng tư.
+Ứng dụng chạy backend Python tại local (`127.0.0.1:8765`), frontend React và có shell desktop PyQt6.
 
-### 2. Studio lồng tiếng (TTS Studio) - MỚI
-- **Tích hợp ElevenLabs**: Sử dụng trình duyệt giả lập (Playwright) để đăng nhập và lấy giọng đọc cá nhân hóa một cách nhanh chóng.
-- **Xử lý hàng loạt**: Đọc kịch bản từ Google Sheets, chọn giọng đọc và tạo file âm thanh hàng loạt.
-- **Tiết kiệm chi phí**: Giúp quản lý và sử dụng hạn mức ElevenLabs tối ưu nhất cho công việc sản xuất nội dung.
+## Tính năng chính
 
-### 3. Desktop App (PyQt6)
-- Giao diện cửa sổ ứng dụng Windows hiện đại, không cần mở trình duyệt rời.
-- Tích hợp tính năng **Tự động cập nhật (Auto-Update)**: Nhận thông báo và cập nhật phiên bản mới chỉ với một cú click.
+### 1) Video Downloader
+- Nhập nguồn từ Google Sheets.
+- Theo dõi batch realtime qua SSE.
+- Hỗ trợ nhiều nền tảng phổ biến (YouTube, TikTok, Facebook, Instagram, X, Reddit...).
+- Có retry/cancel, quản lý cookies trình duyệt và mở thư mục output nhanh.
 
-### 4. Story Pipeline cho Gemini Web (MVP Backend)
-- Đã có `state machine + scheduler` cho workflow:
+### 2) Story Pipeline (Gemini Web Adapter)
+- Kiến trúc 3 cấp: `Video -> Marker -> Step/Attempt`.
+- Scheduler chuẩn:
   - Video chạy song song theo worker pool.
   - Marker/Step chạy tuần tự trong từng video.
-  - Attempt hỗ trợ `regenerate` và `refine`.
-- Đã có API backend cho import manifest, run/pause video, action review (`accept/regenerate/refine/skip`), và session Gemini (`status/open-login`).
-- Hỗ trợ 2 backend gen:
-  - `local_preview` (mock local)
-  - `gemini_web` (Playwright: upload ảnh + gửi prompt + capture preview + normalize)
-- Có `selector debug mode` cho Gemini: tự lưu screenshot + HTML + DOM/heuristic JSON khi fail để tune nhanh trên Windows.
-- Tài liệu kỹ thuật: xem [`docs/story-pipeline-spec.md`](docs/story-pipeline-spec.md).
+- Prompt merge 4 tầng:
+  - `Global + Video + Seed + Step`.
+- Hỗ trợ `accept`, `regenerate`, `refine`, `skip`.
+- Có 2 mode chạy step:
+  - `chain`: step sau ăn output step trước.
+  - `from_source`: luôn bám frame nguồn.
+- Realtime UI qua SSE `/api/story/events`.
+- Có filter nhanh queue theo `RUN / REVIEW / QUEUE`.
+- Có nút mở nhanh output folder trong cột trái.
 
----
+### 3) GeminiWebAdapter (Playwright) - chống sai ảnh
+- Tự động điều khiển Gemini web session đã login.
+- Preview-first: lấy preview trên UI trước.
+- Normalize output: chuẩn hóa ảnh local trước khi dùng tiếp.
+- Giải quyết lỗi tải nhầm ảnh do DOM/cache/blob URL không đổi.
+- Có debug selector mode để tune nhanh trên Windows:
+  - Tự lưu screenshot.
+  - Dump HTML snapshot.
+  - Dump JSON heuristic/snippet khi fail.
 
-## 🚀 Tải về & Cài đặt nhanh (Windows)
+### 4) TTS Studio
+- Quản lý TTS batch từ Google Sheets.
+- Theo dõi tiến độ, preview và xuất audio theo lô.
 
-Nếu bạn không muốn cài đặt mã nguồn, hãy sử dụng bản đóng gói sẵn:
+## Cấu trúc repo
 
-1. Truy cập [Releases](https://github.com/mmmnhat/Video-downloader/releases).
-2. Tải file `VideoDownloader_v1.0.1.zip`.
-3. Giải nén và chạy `VideoDownloader.exe`.
+```text
+.
+├── downloader_app/
+│   ├── server.py                  # HTTP API + SSE
+│   ├── launcher.py                # Entry chính (desktop + local server)
+│   ├── story_pipeline.py          # State machine + scheduler Story
+│   ├── gemini_web_adapter.py      # Playwright adapter cho Gemini Web
+│   └── tts_manager.py
+├── web/
+│   ├── src/App.tsx
+│   ├── src/components/StoryStudio.tsx
+│   └── src/lib/api.ts
+├── docs/story-pipeline-spec.md
+├── tests/
+└── main.py
+```
 
----
+## Yêu cầu hệ thống
 
-## 🛠️ Cài đặt từ mã nguồn (Dành cho Developer)
+- Python `3.9+`
+- Node.js `18+` (khuyến nghị 20+)
+- FFmpeg + FFprobe (để xử lý media)
+- Chromium cho Playwright
 
-### 1. Yêu cầu hệ thống
-- **Python 3.9+**
-- **FFmpeg & FFprobe**: Cần thiết để xử lý video/audio.
-- **Playwright**: Dùng cho tính năng TTS.
+## Cài đặt cho developer
 
-### 2. Các bước thực hiện
 ```bash
-# Clone repository
 git clone https://github.com/mmmnhat/Video-downloader.git
 cd Video-downloader
 
-# Tạo và kích hoạt môi trường ảo
 python -m venv .venv
-# Windows:
+# Windows
 .venv\Scripts\activate
-# macOS/Linux:
+# macOS/Linux
 source .venv/bin/activate
 
-# Cài đặt thư viện
 pip install -r requirements.txt
+python -m playwright install chromium
 
-# Cài đặt trình duyệt cho Playwright (cho TTS)
-playwright install chromium
+npm --prefix web install
+npm --prefix web run build
 ```
 
-### 3. Chạy ứng dụng
+## Chạy ứng dụng
+
+### Cách 1: chạy app desktop (khuyến nghị)
+
 ```bash
 python main.py
 ```
 
----
+- App sẽ tự chạy local server và mở shell desktop PyQt6.
+- Nếu thiếu PyQt6, launcher fallback sang mở trình duyệt.
 
-## 📦 Đóng gói ứng dụng (.exe)
+### Cách 2: chạy server web local thuần
 
-Sử dụng script tự động để build bản portable cho Windows:
-```powershell
-python auto_build.py
+```bash
+python -c "from downloader_app.server import run; run()"
 ```
-Kết quả sẽ nằm trong thư mục `dist/VideoDownloader`.
 
----
+Mở: `http://127.0.0.1:8765`
 
-## 📝 Ghi chú & Khắc phục lỗi
-- **Cookies**: Nếu gặp lỗi không tải được video riêng tư hoặc bị chặn bởi nền tảng, hãy vào phần Settings trên UI để dán Netscape Cookies hoặc trỏ tới file cookies.
-- **YouTube Shorts**: Một số video có thể bị lỗi `PO Token`. Hãy thử cập nhật `yt-dlp` hoặc sử dụng Cookies để vượt qua.
-- **TikTok**: Nếu tải thất bại, hãy ấn **Retry** để công cụ thử qua Mobile API dự phòng.
+## Story Pipeline quickstart
 
-## ⚖️ Tuyên bố từ chối trách nhiệm
-Công cụ được xây dựng nhằm mục đích hỗ trợ tự động hóa công việc cá nhân. Người dùng tự chịu trách nhiệm về việc tuân thủ điều khoản sử dụng và bản quyền của các nền tảng video/âm thanh liên quan. Không sử dụng công cụ để phá khóa các nội dung được bảo vệ bởi DRM.
+### Bước 1: chuẩn bị manifest
+
+Có thể import bằng `manifest` object hoặc `manifest_path` JSON.
+
+Ví dụ tối giản:
+
+```json
+{
+  "video_name": "dance_final",
+  "video_path": "D:/projects/dance_final.mp4",
+  "mode": "chain",
+  "video_prompt": "stylized action sequence, keep character identity",
+  "markers": [
+    {
+      "name": "M004",
+      "timestamp_ms": 1250,
+      "input_frame": "D:/projects/frames/M004.jpg",
+      "seed_prompt": "character falls",
+      "steps": [
+        { "title": "Step 1", "modifier_prompt": "fall to hiphop move" },
+        { "title": "Step 2", "modifier_prompt": "hiphop to spin" }
+      ]
+    }
+  ]
+}
+```
+
+### Bước 2: import và chạy
+
+Trong tab **Story Pipeline**:
+
+1. Import manifest.
+2. Chọn video trong queue.
+3. Run video.
+4. Review theo từng step (`Accept / Regenerate / Refine / Skip`).
+
+### Bước 3: dùng refine đúng cách
+
+- `Regenerate`: thử lại cùng mục tiêu.
+- `Refine`: dùng output chuẩn hóa của attempt trước làm input mới.
+
+## Debug selector Gemini (Windows-friendly)
+
+Khi DOM Gemini thay đổi hoặc selector fail, bật:
+
+- `gemini_selector_debug = true`
+- `gemini_selector_debug_dir = D:\\gemini-debug` (hoặc để trống để dùng mặc định)
+
+Artifacts sẽ gồm:
+
+- ảnh screenshot stage fail,
+- snapshot HTML,
+- JSON heuristic (candidate/composer/preview/snippet).
+
+Mặc định nếu không set dir riêng: `<output_root>/_gemini_debug/`.
+
+## API chính
+
+### Story
+- `GET /api/story/bootstrap`
+- `GET /api/story/videos`
+- `GET /api/story/videos/{videoId}`
+- `POST /api/story/videos/import`
+- `POST /api/story/videos/{videoId}/run`
+- `POST /api/story/videos/{videoId}/pause`
+- `POST /api/story/actions`
+- `GET /api/story/session/status?refresh=1`
+- `POST /api/story/session/open-login`
+- `GET /api/story/events` (SSE)
+
+### Downloader/TTS
+- `GET /api/bootstrap`
+- `GET /api/events` (SSE)
+- `GET /api/tts/bootstrap`
+
+## Test
+
+```bash
+# story pipeline tests
+python -m pytest tests/test_story_pipeline.py
+
+# tts related tests
+python -m pytest tests/test_tts_sheet.py tests/test_tts_manager.py
+```
+
+## Troubleshooting nhanh
+
+- Không thấy tab Story: build lại frontend `npm --prefix web run build`, sau đó hard refresh.
+- SSE không cập nhật: kiểm tra endpoint `/api/story/events` có trả event `connected`.
+- Lỗi login/session Gemini: dùng nút `Open Login`, login lại, rồi `refresh session status`.
+- Lỗi tải nhầm ảnh: đảm bảo flow dùng `preview + normalized` thay vì tin nút download của Gemini.
+
+## Tài liệu kỹ thuật
+
+- Story pipeline spec: [`docs/story-pipeline-spec.md`](docs/story-pipeline-spec.md)
+
+## Disclaimer
+
+Công cụ phục vụ tự động hóa workflow nội bộ/cá nhân. Người dùng tự chịu trách nhiệm về bản quyền nội dung và điều khoản sử dụng của từng nền tảng.
