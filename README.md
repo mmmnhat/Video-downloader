@@ -25,6 +25,18 @@ Flowgen là một công cụ mạnh mẽ, giao diện hiện đại (React/PyQt6
 - Giao diện cửa sổ ứng dụng Windows hiện đại, không cần mở trình duyệt rời.
 - Tích hợp tính năng **Tự động cập nhật (Auto-Update)**: Nhận thông báo và cập nhật phiên bản mới chỉ với một cú click.
 
+### 4. Story Pipeline cho Gemini Web (MVP Backend)
+- Đã có `state machine + scheduler` cho workflow:
+  - Video chạy song song theo worker pool.
+  - Marker/Step chạy tuần tự trong từng video.
+  - Attempt hỗ trợ `regenerate` và `refine`.
+- Đã có API backend cho import manifest, run/pause video, action review (`accept/regenerate/refine/skip`), và session Gemini (`status/open-login`).
+- Hỗ trợ 2 backend gen:
+  - `local_preview` (mock local)
+  - `gemini_web` (Playwright: upload ảnh + gửi prompt + capture preview + normalize)
+- Có `selector debug mode` cho Gemini: tự lưu screenshot + HTML + DOM/heuristic JSON khi fail để tune nhanh trên Windows.
+- Tài liệu kỹ thuật: xem [`docs/story-pipeline-spec.md`](docs/story-pipeline-spec.md).
+
 ---
 
 ## 🚀 Tải về & Cài đặt nhanh (Windows)

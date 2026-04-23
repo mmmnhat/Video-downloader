@@ -223,6 +223,89 @@ export type TtsVoice = {
   labels: Record<string, string>;
 };
 
+export type StorySettings = {
+  output_root: string;
+  max_parallel_videos: number;
+  generation_backend: "local_preview" | "gemini_web" | string;
+  gemini_headless: boolean;
+  gemini_base_url: string;
+  gemini_response_timeout_ms: number;
+  gemini_selector_debug: boolean;
+  gemini_selector_debug_dir: string;
+};
+
+export type StorySessionStatus = {
+  backend: string;
+  dependencies_ready: boolean;
+  authenticated: boolean;
+  browser: string | null;
+  profile_dir: string;
+  message: string;
+};
+
+export type StoryAttempt = {
+  id: string;
+  index: number;
+  mode: "auto" | "regenerate" | "refine" | string;
+  status: string;
+  prompt: string;
+  inputImagePath: string;
+  previewPath: string | null;
+  normalizedPath: string | null;
+  error: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+};
+
+export type StoryStep = {
+  id: string;
+  index: number;
+  title: string;
+  modifierPrompt: string;
+  status: string;
+  selectedAttemptId: string | null;
+  attempts: StoryAttempt[];
+};
+
+export type StoryMarker = {
+  id: string;
+  index: number;
+  label: string;
+  timestampMs: number;
+  inputFramePath: string;
+  seedPrompt: string;
+  status: string;
+  steps: StoryStep[];
+};
+
+export type StoryVideoSummary = {
+  id: string;
+  name: string;
+  sourceVideoPath: string;
+  status: string;
+  mode: "chain" | "from_source" | string;
+  createdAt: string;
+  lastUpdatedAt: string;
+  markerCount: number;
+  stepTotal: number;
+  completedSteps: number;
+  reviewSteps: number;
+  error: string | null;
+};
+
+export type StoryVideoDetail = StoryVideoSummary & {
+  videoPrompt: string;
+  markers: StoryMarker[];
+};
+
+export type StoryBootstrapPayload = {
+  settings: StorySettings;
+  globalPrompt: string;
+  videoSummaries: StoryVideoSummary[];
+  activeVideoId: string | null;
+  sessionStatus: StorySessionStatus;
+};
+
 export class ApiError extends Error {
   constructor(message: string) {
     super(message);
@@ -463,4 +546,104 @@ export async function exportTtsBatch(batchId: string, itemIds: string[], destina
       }),
     },
   );
+}
+
+export async function getStoryBootstrap() {
+  return requestJson<StoryBootstrapPayload>("/api/story/bootstrap");
+}
+
+export async function listStoryVideos(params?: { status?: string; limit?: number }) {
+  const query = new URLSearchParams();
+  if (params?.status) {
+    query.set("status", params.status);
+  }
+  if (typeof params?.limit === "number") {
+    query.set("limit", String(params.limit));
+  }
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  return requestJson<StoryVideoSummary[]>(`/api/story/videos${suffix}`);
+}
+
+export async function getStoryVideo(videoId: string) {
+  return requestJson<StoryVideoDetail>(`/api/story/videos/${videoId}`);
+}
+
+export async function updateStorySettings(settings: Partial<StorySettings>) {
+  return requestJson<StorySettings>("/api/story/settings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(settings),
+  });
+}
+
+export async function getStorySessionStatus(refresh = false) {
+  const suffix = refresh ? "?refresh=1" : "";
+  return requestJson<StorySessionStatus>(`/api/story/session/status${suffix}`);
+}
+
+export async function openStoryLogin() {
+  return requestJson<{ opened: boolean; url: string; message: string }>(
+    "/api/story/session/open-login",
+    {
+      method: "POST",
+    },
+  );
+}
+
+export async function updateStoryGlobalPrompt(prompt: string) {
+  return requestJson<{ globalPrompt: string }>("/api/story/global-prompt", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt }),
+  });
+}
+
+export async function importStoryManifest(payload: { manifest?: Record<string, unknown>; manifestPath?: string }) {
+  return requestJson<StoryVideoDetail[]>("/api/story/videos/import", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      ...(payload.manifest ? { manifest: payload.manifest } : {}),
+      ...(payload.manifestPath ? { manifest_path: payload.manifestPath } : {}),
+    }),
+  });
+}
+
+export async function runStoryVideo(videoId: string) {
+  return requestJson<StoryVideoDetail>(`/api/story/videos/${videoId}/run`, {
+    method: "POST",
+  });
+}
+
+export async function pauseStoryVideo(videoId: string) {
+  return requestJson<StoryVideoDetail>(`/api/story/videos/${videoId}/pause`, {
+    method: "POST",
+  });
+}
+
+export async function applyStoryAction(payload: {
+  action: "run" | "pause" | "accept" | "regenerate" | "refine" | "skip";
+  videoId: string;
+  markerId?: string;
+  stepId?: string;
+  attemptId?: string;
+}) {
+  return requestJson<StoryVideoDetail>("/api/story/actions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      action: payload.action,
+      video_id: payload.videoId,
+      marker_id: payload.markerId,
+      step_id: payload.stepId,
+      attempt_id: payload.attemptId,
+    }),
+  });
+}
+
+export function getStoryAssetUrl(path: string | null | undefined) {
+  if (!path) {
+    return "";
+  }
+  return `/api/story/file?path=${encodeURIComponent(path)}`;
 }

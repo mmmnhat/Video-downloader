@@ -17,6 +17,7 @@ from downloader_app.browser_session import browser_session
 from downloader_app.google_auth import GoogleAuthError, google_oauth
 from downloader_app.jobs import manager
 from downloader_app.runtime import bundled_path
+from downloader_app.story_pipeline import StoryPipelineError, story_pipeline
 from downloader_app.tts_manager import tts_manager
 from downloader_app.updater import updater, UpdateError
 
@@ -54,6 +55,36 @@ class AppHandler(BaseHTTPRequestHandler):
 
         if path == "/api/events":
             self._serve_events(query)
+            return
+
+        if path == "/api/story/bootstrap":
+            self._send_json(story_pipeline.get_bootstrap())
+            return
+
+        if path == "/api/story/session/status":
+            refresh = self._single_query_value(query, "refresh") == "1"
+            self._send_json(story_pipeline.get_session_status(refresh=refresh))
+            return
+
+        if path == "/api/story/file":
+            raw_path = self._single_query_value(query, "path")
+            if not raw_path:
+                self._send_json({"error": "path is required."}, status=HTTPStatus.BAD_REQUEST)
+                return
+            self._serve_story_file(raw_path)
+            return
+
+        if path == "/api/story/videos":
+            self._send_json(
+                story_pipeline.list_video_summaries(
+                    status=self._single_query_value(query, "status"),
+                    limit=self._query_int(query, "limit"),
+                )
+            )
+            return
+
+        if path == "/api/story/events":
+            self._serve_story_events(query)
             return
 
         if path == "/api/batches":
@@ -109,6 +140,15 @@ class AppHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "TTS batch not found."}, status=HTTPStatus.NOT_FOUND)
                 return
             self._send_json(batch)
+            return
+
+        if path.startswith("/api/story/videos/"):
+            video_id = path.split("/")[-1]
+            video = story_pipeline.get_video_detail(video_id)
+            if video is None:
+                self._send_json({"error": "Story video not found."}, status=HTTPStatus.NOT_FOUND)
+                return
+            self._send_json(video)
             return
 
         if path == "/api/google/auth-status":
@@ -168,6 +208,83 @@ class AppHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "Body must be valid JSON."}, status=HTTPStatus.BAD_REQUEST)
                 return
             self._send_json(manager.update_settings(payload))
+            return
+
+        if path == "/api/story/settings":
+            try:
+                payload = self._read_json_body()
+            except json.JSONDecodeError:
+                self._send_json({"error": "Body must be valid JSON."}, status=HTTPStatus.BAD_REQUEST)
+                return
+
+            try:
+                self._send_json(story_pipeline.update_settings(payload))
+            except StoryPipelineError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/story/global-prompt":
+            try:
+                payload = self._read_json_body()
+            except json.JSONDecodeError:
+                self._send_json({"error": "Body must be valid JSON."}, status=HTTPStatus.BAD_REQUEST)
+                return
+
+            prompt = str(payload.get("prompt", ""))
+            try:
+                self._send_json(story_pipeline.update_global_prompt(prompt))
+            except StoryPipelineError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/story/session/open-login":
+            try:
+                self._send_json(story_pipeline.open_login())
+            except StoryPipelineError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/story/videos/import":
+            try:
+                payload = self._read_json_body()
+            except json.JSONDecodeError:
+                self._send_json({"error": "Body must be valid JSON."}, status=HTTPStatus.BAD_REQUEST)
+                return
+
+            try:
+                self._send_json(story_pipeline.import_manifest(payload), status=HTTPStatus.CREATED)
+            except StoryPipelineError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path.startswith("/api/story/videos/") and (path.endswith("/run") or path.endswith("/pause") or path.endswith("/resume")):
+            parts = path.strip("/").split("/")
+            if len(parts) != 5:
+                self._send_json({"error": "Story video not found."}, status=HTTPStatus.NOT_FOUND)
+                return
+
+            video_id = parts[3]
+            action = parts[4]
+            try:
+                if action == "pause":
+                    self._send_json(story_pipeline.pause_video(video_id))
+                else:
+                    self._send_json(story_pipeline.run_video(video_id))
+            except StoryPipelineError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/story/actions":
+            try:
+                payload = self._read_json_body()
+            except json.JSONDecodeError:
+                self._send_json({"error": "Body must be valid JSON."}, status=HTTPStatus.BAD_REQUEST)
+                return
+
+            try:
+                self._send_json(story_pipeline.apply_action(payload))
+            except StoryPipelineError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
 
         if path == "/api/sheets/preview":
@@ -493,6 +610,24 @@ class AppHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _serve_story_file(self, raw_path: str) -> None:
+        file_path = Path(raw_path).expanduser()
+        if not file_path.is_absolute():
+            file_path = (Path.cwd() / file_path).resolve()
+        else:
+            file_path = file_path.resolve()
+
+        if not file_path.exists() or not file_path.is_file():
+            self._send_json({"error": "Not found."}, status=HTTPStatus.NOT_FOUND)
+            return
+
+        content_type, _ = mimetypes.guess_type(str(file_path))
+        if not content_type or not content_type.startswith("image/"):
+            self._send_json({"error": "Only image files are supported."}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        self._serve_file(file_path, content_type)
+
     def _serve_app_index(self) -> None:
         if (WEB_DIST_DIR / "index.html").exists():
             self._serve_file(WEB_DIST_DIR / "index.html", "text/html; charset=utf-8")
@@ -544,6 +679,39 @@ class AppHandler(BaseHTTPRequestHandler):
             )
             while True:
                 events = manager.wait_for_events(after_id=last_event_id, timeout=15.0)
+                if not events:
+                    try:
+                        self.wfile.write(b": heartbeat\n\n")
+                        self.wfile.flush()
+                    except OSError:
+                        return
+                    continue
+
+                for event in events:
+                    last_event_id = int(event["id"])
+                    self._write_sse_event(event, event_id=last_event_id)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
+            return
+
+    def _serve_story_events(self, query: dict[str, list[str]]) -> None:
+        last_event_id = self._query_int(query, "lastEventId") or 0
+
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+
+        try:
+            self._write_sse_event(
+                {
+                    "type": "connected",
+                    "activeVideoId": story_pipeline.get_bootstrap().get("activeVideoId"),
+                },
+                event_id=last_event_id,
+            )
+            while True:
+                events = story_pipeline.wait_for_events(after_id=last_event_id, timeout=15.0)
                 if not events:
                     try:
                         self.wfile.write(b": heartbeat\n\n")

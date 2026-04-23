@@ -11,7 +11,7 @@ import {
 } from "react";
 import type { FormEvent } from "react";
 import { toast } from "sonner";
-import { DownloadCloud, Cookie, AudioLines } from "lucide-react";
+import { DownloadCloud, Cookie, AudioLines, Clapperboard } from "lucide-react";
 import CookiesManager from "./components/CookiesManager";
 import UpdaterDialog from "./components/UpdaterDialog";
 import { useLocalStorage } from "./hooks/use-local-storage";
@@ -131,6 +131,7 @@ const QUALITY_OPTIONS = [
   { value: "360", label: "Tối đa 360p" },
 ];
 const TtsStudio = lazy(() => import("./components/TtsStudio"));
+const StoryStudio = lazy(() => import("./components/StoryStudio"));
 
 type TableMode = "preview" | "queue" | "empty";
 type BadgeVariant = "default" | "secondary" | "destructive" | "outline";
@@ -150,7 +151,7 @@ type UnifiedTableRow = {
 
 function App() {
   const [currentView, setCurrentView] = useLocalStorage<
-    "downloader" | "cookies" | "tts"
+    "downloader" | "cookies" | "tts" | "story"
   >("app.current-view", "downloader");
   const [batchSummaries, setBatchSummaries] = useState<BatchSummary[]>([]);
   const [selectedBatchId, setSelectedBatchId] = useState<string | null>(null);
@@ -807,36 +808,48 @@ function App() {
 
       <div className="flex h-dvh overflow-hidden bg-background text-foreground">
         {/* Sidebar */}
-        <aside className="w-[72px] lg:w-64 flex flex-col border-r border-border bg-card py-4 transition-all duration-300 z-10">
-          <div className="flex items-center justify-center lg:justify-start lg:px-6 mb-8 gap-3">
+        <aside className="w-[72px] md:w-64 flex flex-col border-r border-border bg-card py-4 transition-all duration-300 z-10">
+          <div className="flex items-center justify-center md:justify-start md:px-6 mb-8 gap-3">
              <div className="bg-primary/10 p-2 rounded-md"><DownloadCloud className="w-5 h-5 text-primary" /></div>
-             <span className="font-bold text-lg hidden lg:block">Trình tải video</span>
+             <span className="font-bold text-lg hidden md:block">Trình tải video</span>
           </div>
           
           <nav className="flex-1 px-3 space-y-2">
              <Button 
                 variant={currentView === "downloader" ? "secondary" : "ghost"} 
-                className="w-full justify-center lg:justify-start" 
+                className="w-full justify-center md:justify-start" 
                 onClick={() => setCurrentView("downloader")}
+                title="Bảng điều khiển"
              >
-                <DownloadCloud className="w-4 h-4 lg:mr-2" />
-                <span className="hidden lg:block">Bảng điều khiển</span>
+                <DownloadCloud className="w-4 h-4 md:mr-2" />
+                <span className="hidden md:block">Bảng điều khiển</span>
+             </Button>
+             <Button 
+                variant={currentView === "story" ? "secondary" : "ghost"} 
+                className="w-full justify-center md:justify-start" 
+                onClick={() => setCurrentView("story")}
+                title="Story Pipeline"
+             >
+                <Clapperboard className="w-4 h-4 md:mr-2" />
+                <span className="hidden md:block">Story Pipeline</span>
              </Button>
              <Button 
                 variant={currentView === "tts" ? "secondary" : "ghost"} 
-                className="w-full justify-center lg:justify-start" 
+                className="w-full justify-center md:justify-start" 
                 onClick={() => setCurrentView("tts")}
+                title="Studio TTS"
              >
-                <AudioLines className="w-4 h-4 lg:mr-2" />
-                <span className="hidden lg:block">Studio TTS</span>
+                <AudioLines className="w-4 h-4 md:mr-2" />
+                <span className="hidden md:block">Studio TTS</span>
              </Button>
              <Button 
                 variant={currentView === "cookies" ? "secondary" : "ghost"} 
-                className="w-full justify-center lg:justify-start" 
+                className="w-full justify-center md:justify-start" 
                 onClick={() => setCurrentView("cookies")}
+                title="Quản lý Cookie"
              >
-                <Cookie className="w-4 h-4 lg:mr-2" />
-                <span className="hidden lg:block">Quản lý Cookie</span>
+                <Cookie className="w-4 h-4 md:mr-2" />
+                <span className="hidden md:block">Quản lý Cookie</span>
              </Button>
           </nav>
 
@@ -1352,6 +1365,26 @@ function App() {
               </CardContent>
             </Card>
           ) : null}
+          </main>
+
+          <main
+            className={
+              currentView === "story"
+                ? "mx-auto w-full max-w-[1680px] px-4 py-6 sm:px-6 lg:px-8"
+                : "hidden"
+            }
+          >
+              <Suspense
+                fallback={
+                  <Card className="border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)]">
+                    <CardContent className="py-12 text-center text-sm text-muted-foreground">
+                      Đang tải Story Pipeline...
+                    </CardContent>
+                  </Card>
+                }
+              >
+                <StoryStudio />
+              </Suspense>
           </main>
 
           <main
