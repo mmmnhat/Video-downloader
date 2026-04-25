@@ -225,6 +225,7 @@ export type TtsVoice = {
   name: string;
   previewUrl?: string;
   category?: string;
+  isOwner?: boolean;
   labels: Record<string, string>;
 };
 
@@ -474,8 +475,9 @@ export async function listTtsBatches() {
   return requestJson<TtsBatchSummary[]>("/api/tts/batches");
 }
 
-export async function listTtsVoices() {
-  return requestJson<TtsVoice[]>("/api/tts/voices");
+export async function listTtsVoices(refresh = false) {
+  const suffix = refresh ? "?refresh=1" : "";
+  return requestJson<TtsVoice[]>(`/api/tts/voices${suffix}`);
 }
 
 export async function getTtsBatch(batchId: string) {

@@ -106,6 +106,14 @@ function isExportableItem(item: TtsItem) {
   return item.takes.some((take) => take.status === "completed");
 }
 
+function isMyVoice(voice: TtsVoice) {
+  if (voice.isOwner === false) {
+    return false;
+  }
+  const category = (voice.category ?? "").trim().toLowerCase();
+  return !!category && category !== "premade" && category !== "professional";
+}
+
 export default function TtsManager() {
   const [sessionStatus, setSessionStatus] = useState<TtsSessionStatus | null>(null);
   // Persist form fields to localStorage so they survive tab switching
@@ -139,11 +147,7 @@ export default function TtsManager() {
   const sessionRefreshInFlightRef = useRef(false);
   const voicesLoadInFlightRef = useRef(false);
   const myVoices = useMemo(
-    () =>
-      voices.filter((voice) => {
-        const category = (voice.category ?? "").trim().toLowerCase();
-        return !!category && category !== "premade";
-      }),
+    () => voices.filter((voice) => isMyVoice(voice)),
     [voices],
   );
 
@@ -199,7 +203,41 @@ export default function TtsManager() {
       setVoicesLoading(false);
       return;
     }
-    void loadVoices({ silent: true });
+    void loadVoices({ silent: true, refresh: true });
+  }, [sessionStatus?.authenticated, sessionStatus?.dependencies_ready]);
+
+  useEffect(() => {
+    if (!sessionStatus?.authenticated || !sessionStatus.dependencies_ready) {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      void loadVoices({ silent: true, refresh: true });
+    }, 45_000);
+
+    return () => window.clearInterval(intervalId);
+  }, [sessionStatus?.authenticated, sessionStatus?.dependencies_ready]);
+
+  useEffect(() => {
+    if (!sessionStatus?.authenticated || !sessionStatus.dependencies_ready) {
+      return;
+    }
+
+    const handleFocus = () => {
+      void loadVoices({ silent: true, refresh: true });
+    };
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        void loadVoices({ silent: true, refresh: true });
+      }
+    };
+
+    window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
   }, [sessionStatus?.authenticated, sessionStatus?.dependencies_ready]);
 
   useEffect(() => {
@@ -255,21 +293,19 @@ export default function TtsManager() {
     }
   }
 
-  async function loadVoices(options?: { silent?: boolean }) {
+  async function loadVoices(options?: { silent?: boolean; refresh?: boolean }) {
     const silent = options?.silent ?? false;
+    const refresh = options?.refresh ?? false;
     if (voicesLoadInFlightRef.current) {
       return;
     }
     voicesLoadInFlightRef.current = true;
     setVoicesLoading(true);
     try {
-      const nextVoices = await listTtsVoices();
+      const nextVoices = await listTtsVoices(refresh);
       startTransition(() => {
         setVoices(nextVoices);
-        const nextMyVoices = nextVoices.filter((voice) => {
-          const category = (voice.category ?? "").trim().toLowerCase();
-          return !!category && category !== "premade";
-        });
+        const nextMyVoices = nextVoices.filter((voice) => isMyVoice(voice));
         if (voiceQuery && !nextMyVoices.some((voice) => voice.voiceId === voiceQuery)) {
           const matchedByName = nextMyVoices.find(
             (voice) => voice.name.toLowerCase() === voiceQuery.trim().toLowerCase(),
@@ -311,7 +347,7 @@ export default function TtsManager() {
       const status = await getTtsSessionStatus(true);
       startTransition(() => setSessionStatus(status));
       if (status.authenticated && shouldLoadVoices) {
-        await loadVoices({ silent: true });
+        await loadVoices({ silent: true, refresh: true });
       }
       if (!silent && status.authenticated) {
         toast.success("Phiên ElevenLabs đã sẵn sàng.");

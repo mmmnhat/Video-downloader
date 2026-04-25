@@ -157,10 +157,26 @@ def _looks_like_elevenlabs_voice_id(value: str) -> bool:
 
 
 def _is_my_voice_entry(voice: dict) -> bool:
+    is_owner = voice.get("is_owner")
+    if isinstance(is_owner, bool):
+        return is_owner
+    is_owner_camel = voice.get("isOwner")
+    if isinstance(is_owner_camel, bool):
+        return is_owner_camel
+
     category = str(voice.get("category", "")).strip().lower()
     if not category:
         return False
-    return category != "premade"
+    if category in {"premade", "professional"}:
+        return False
+
+    sharing = voice.get("sharing")
+    if isinstance(sharing, dict):
+        sharing_status = str(sharing.get("status", "")).strip().lower()
+        if sharing_status == "copied":
+            return True
+
+    return category in {"generated", "cloned", "designed", "voice_design"}
 
 
 def _voice_query_variants(query: str) -> list[str]:
@@ -395,7 +411,10 @@ def _cookie_count_for_domain(cookie_path: Path, domain: str) -> int:
         return 0
     finally:
         if temp_copy is not None:
-            temp_copy.unlink(missing_ok=True)
+            try:
+                temp_copy.unlink(missing_ok=True)
+            except Exception:
+                pass
 
     return int(row[0]) if row else 0
 
@@ -405,9 +424,18 @@ def _choose_profile_dir(user_data_dir: Path, domain: str = TTS_AUTH_DOMAIN) -> P
     if not profile_dirs:
         return None
 
+    def profile_cookie_count(profile_dir: Path) -> int:
+        # Chromium cookie DB may exist at either:
+        # - <profile>/Network/Cookies (modern)
+        # - <profile>/Cookies (legacy)
+        return max(
+            _cookie_count_for_domain(profile_dir / "Network" / "Cookies", domain),
+            _cookie_count_for_domain(profile_dir / "Cookies", domain),
+        )
+
     ranked_profiles: list[tuple[int, Path]] = []
     for profile_dir in profile_dirs:
-        ranked_profiles.append((_cookie_count_for_domain(profile_dir / "Cookies", domain), profile_dir))
+        ranked_profiles.append((profile_cookie_count(profile_dir), profile_dir))
 
     ranked_profiles.sort(key=lambda item: item[0], reverse=True)
     if ranked_profiles and ranked_profiles[0][0] > 0:
@@ -420,17 +448,35 @@ def _choose_profile_dir(user_data_dir: Path, domain: str = TTS_AUTH_DOMAIN) -> P
 
 
 def detect_tts_browser_profile() -> TtsBrowserProfile:
+    ranked_candidates: list[tuple[int, TtsBrowserProfile]] = []
+    fallback_profiles: list[TtsBrowserProfile] = []
+
     for candidate in _available_browser_candidates():
         profile_dir = _choose_profile_dir(candidate.user_data_dir)
         if profile_dir is None:
             continue
-        return TtsBrowserProfile(
+        profile = TtsBrowserProfile(
             name=candidate.name,
             app_path=candidate.app_path,
             executable_path=candidate.executable_path,
             user_data_dir=candidate.user_data_dir,
             profile_dir=profile_dir,
         )
+        cookie_count = max(
+            _cookie_count_for_domain(profile_dir / "Network" / "Cookies", TTS_AUTH_DOMAIN),
+            _cookie_count_for_domain(profile_dir / "Cookies", TTS_AUTH_DOMAIN),
+        )
+        if cookie_count > 0:
+            ranked_candidates.append((cookie_count, profile))
+        else:
+            fallback_profiles.append(profile)
+
+    if ranked_candidates:
+        ranked_candidates.sort(key=lambda item: item[0], reverse=True)
+        return ranked_candidates[0][1]
+
+    if fallback_profiles:
+        return fallback_profiles[0]
 
     raise ElevenLabsError(
         "Khong tim thay CocCoc/Chrome/Edge co the dung cho ElevenLabs tren may nay."
@@ -1205,10 +1251,13 @@ class ElevenLabsAutomation:
         assert self._page is not None
 
         # --- Strategy 0: Use cached custom voices intercepted during page load ---
-        # The user only wants to see voices in "My Voices" (not the default ElevenLabs voices)
+        # Keep intercepted data as fallback only. Do not return early because
+        # first intercepted payload can be partial and miss voices.
+        intercepted_fallback: list[dict] = []
         if hasattr(self, "_cached_custom_voices") and self._cached_custom_voices:
-            print(f"[TTS] Returning {len(self._cached_custom_voices)} intercepted custom voices (My Voices).", flush=True)
-            return self._cached_custom_voices
+            intercepted_fallback = [
+                voice for voice in self._cached_custom_voices if isinstance(voice, dict)
+            ]
 
         # --- Strategy 1: Direct API call using xi-api-key captured from browser request headers ---
         # This is the most reliable and gets ALL voices including My Voices (cloned/generated)
@@ -1292,6 +1341,13 @@ class ElevenLabsAutomation:
                 return captured
         except Exception:
             pass
+
+        if intercepted_fallback:
+            print(
+                f"[TTS] Using {len(intercepted_fallback)} intercepted custom voices fallback (My Voices).",
+                flush=True,
+            )
+            return intercepted_fallback
 
         # --- Fallback: DOM scraping (original method) ---
         try:
@@ -1584,6 +1640,14 @@ class TtsManager:
         if refresh:
             self._voice_cache = None
             self._voice_cache_time = 0
+        elif self._voice_cache:
+            cache_has_ownership_flag = any(
+                isinstance(voice, dict) and ("isOwner" in voice or "is_owner" in voice)
+                for voice in self._voice_cache
+            )
+            if not cache_has_ownership_flag:
+                self._voice_cache = None
+                self._voice_cache_time = 0
         
         # Load from memory or disk cache
         if self._voice_cache is None and cache_file.exists():
@@ -1591,12 +1655,20 @@ class TtsManager:
                 cached_data = json.loads(cache_file.read_text(encoding="utf-8"))
                 if isinstance(cached_data, dict) and "voices" in cached_data and "time" in cached_data:
                     cached_voices = cached_data["voices"] if isinstance(cached_data["voices"], list) else []
-                    self._voice_cache = [
-                        voice
+                    cache_has_ownership_flag = any(
+                        isinstance(voice, dict) and ("isOwner" in voice or "is_owner" in voice)
                         for voice in cached_voices
-                        if isinstance(voice, dict) and _is_my_voice_entry(voice)
-                    ]
-                    self._voice_cache_time = cached_data["time"]
+                    )
+                    if cached_voices and not cache_has_ownership_flag:
+                        self._voice_cache = None
+                        self._voice_cache_time = 0
+                    else:
+                        self._voice_cache = [
+                            voice
+                            for voice in cached_voices
+                            if isinstance(voice, dict) and _is_my_voice_entry(voice)
+                        ]
+                        self._voice_cache_time = cached_data["time"]
             except Exception:
                 pass
 
@@ -1618,7 +1690,7 @@ class TtsManager:
         for voice in voices:
             if not _is_my_voice_entry(voice):
                 continue
-            voice_id = str(voice.get("voice_id", "")).strip()
+            voice_id = str(voice.get("voice_id") or voice.get("voiceId") or "").strip()
             name = str(voice.get("name", "")).strip()
             if not voice_id or not name:
                 continue
@@ -1632,12 +1704,17 @@ class TtsManager:
                 "name": name,
                 "labels": labels,
             }
-            preview_url = str(voice.get("preview_url", "")).strip()
+            preview_url = str(voice.get("preview_url") or voice.get("previewUrl") or "").strip()
             if preview_url:
                 payload["previewUrl"] = preview_url
             category = str(voice.get("category", "")).strip()
             if category:
                 payload["category"] = category
+            is_owner = voice.get("is_owner")
+            if not isinstance(is_owner, bool):
+                is_owner = voice.get("isOwner")
+            if isinstance(is_owner, bool):
+                payload["isOwner"] = is_owner
             results.append(payload)
         
         self._voice_cache = results

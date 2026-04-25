@@ -210,3 +210,12 @@ python -m pytest tests/test_tts_sheet.py tests/test_tts_manager.py
 ## Disclaimer
 
 Công cụ phục vụ tự động hóa workflow nội bộ/cá nhân. Người dùng tự chịu trách nhiệm về bản quyền nội dung và điều khoản sử dụng của từng nền tảng.
+
+## TTS updates (2026-04-25)
+
+- Auto-scan danh sach `My Voice` khi tab TTS mo va phien ElevenLabs san sang.
+- Auto-refresh `My Voice` theo chu ky va khi nguoi dung quay lai tab/cua so app.
+- Chi cho phep tao batch bang voice thuoc `My Voice` cua phien hien tai.
+- Co co che lam moi danh sach qua `GET /api/tts/voices?refresh=1`.
+- Uu tien fetch full list qua ElevenLabs API/session; du lieu intercept chi dung fallback.
+- Browser/profile cho TTS duoc chon theo profile co cookie ElevenLabs phu hop nhat.
