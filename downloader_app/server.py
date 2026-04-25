@@ -427,6 +427,8 @@ class AppHandler(BaseHTTPRequestHandler):
                 return
 
             try:
+                requested_channel_prefix = str(payload.get("channelPrefix", "")).strip()
+                default_channel_prefix = str(manager.get_settings().get("channel_prefix", "")).strip()
                 batch = tts_manager.create_batch(
                     sheet_url=sheet_url,
                     voice_query=str(payload.get("voice_query", "")).strip(),
@@ -438,6 +440,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     worker_count=int(payload.get("worker_count", 1)),
                     headless=bool(payload.get("headless", False)),
                     filename_prefix=str(payload.get("filenamePrefix", "")).strip() or None,
+                    channel_prefix=requested_channel_prefix or default_channel_prefix or None,
                     tag_text=str(payload.get("tag_text", "")).strip(),
                     text_column=str(payload.get("text_column", "")).strip() or None,
                 )

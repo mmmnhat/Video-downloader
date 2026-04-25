@@ -65,6 +65,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
+import { SessionStatusAlert } from "@/components/ui/session-status-alert";
 import { TooltipFieldLabel } from "@/components/ui/tooltip-field-label";
 import {
   Table,
@@ -113,6 +114,7 @@ const EMPTY_SETTINGS: Settings = {
   concurrent_downloads: 20,
   retry_count: 1,
   use_browser_cookies: true,
+  channel_prefix: "",
   cookies_map: {},
 };
 
@@ -808,48 +810,45 @@ function App() {
 
       <div className="flex h-dvh overflow-hidden bg-background text-foreground">
         {/* Sidebar */}
-        <aside className="w-[72px] md:w-64 flex flex-col border-r border-border bg-card py-4 transition-all duration-300 z-10">
-          <div className="flex items-center justify-center md:justify-start md:px-6 mb-8 gap-3">
-             <div className="bg-primary/10 p-2 rounded-md"><DownloadCloud className="w-5 h-5 text-primary" /></div>
-             <span className="font-bold text-lg hidden md:block">Trình tải video</span>
+        <aside className="w-[72px] flex flex-col border-r border-border bg-card py-4 transition-all duration-300 z-10">
+          <div className="mb-8 flex items-center justify-center">
+            <div className="bg-primary/10 p-2 rounded-md">
+              <DownloadCloud className="w-5 h-5 text-primary" />
+            </div>
           </div>
           
           <nav className="flex-1 px-3 space-y-2">
              <Button 
                 variant={currentView === "downloader" ? "secondary" : "ghost"} 
-                className="w-full justify-center md:justify-start" 
+                className="w-full justify-center" 
                 onClick={() => setCurrentView("downloader")}
                 title="Bảng điều khiển"
              >
-                <DownloadCloud className="w-4 h-4 md:mr-2" />
-                <span className="hidden md:block">Bảng điều khiển</span>
+                <DownloadCloud className="h-4 w-4" />
              </Button>
              <Button 
                 variant={currentView === "story" ? "secondary" : "ghost"} 
-                className="w-full justify-center md:justify-start" 
+                className="w-full justify-center" 
                 onClick={() => setCurrentView("story")}
                 title="Story Pipeline"
              >
-                <Clapperboard className="w-4 h-4 md:mr-2" />
-                <span className="hidden md:block">Story Pipeline</span>
+                <Clapperboard className="h-4 w-4" />
              </Button>
              <Button 
                 variant={currentView === "tts" ? "secondary" : "ghost"} 
-                className="w-full justify-center md:justify-start" 
+                className="w-full justify-center" 
                 onClick={() => setCurrentView("tts")}
                 title="Studio TTS"
              >
-                <AudioLines className="w-4 h-4 md:mr-2" />
-                <span className="hidden md:block">Studio TTS</span>
+                <AudioLines className="h-4 w-4" />
              </Button>
              <Button 
                 variant={currentView === "cookies" ? "secondary" : "ghost"} 
-                className="w-full justify-center md:justify-start" 
+                className="w-full justify-center" 
                 onClick={() => setCurrentView("cookies")}
                 title="Quản lý Cookie"
              >
-                <Cookie className="w-4 h-4 md:mr-2" />
-                <span className="hidden md:block">Quản lý Cookie</span>
+                <Cookie className="h-4 w-4" />
              </Button>
           </nav>
 
@@ -876,14 +875,11 @@ function App() {
 
           <Card className="border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)] lg:sticky lg:top-6 lg:h-[calc(100dvh-3rem)] lg:overflow-hidden">
             <CardContent className="flex flex-col gap-6 pt-6 lg:h-full lg:overflow-auto">
-              <Alert>
-                <AlertTitle>
-                  {authStatus?.authenticated
-                    ? "Phiên trình duyệt đã sẵn sàng"
-                    : "Phiên trình duyệt chưa sẵn sàng"}
-                </AlertTitle>
-                <AlertDescription>{authSummary(authStatus)}</AlertDescription>
-              </Alert>
+              <SessionStatusAlert
+                authenticated={Boolean(authStatus?.authenticated)}
+                notReadyTitle={"Phiên trình duyệt chưa sẵn sàng"}
+                message={authSummary(authStatus)}
+              />
 
               <div className="flex flex-wrap gap-2">
                 <Button
@@ -891,7 +887,7 @@ function App() {
                   variant="outline"
                   onClick={() => void handleOpenGoogleLogin()}
                 >
-                  Mở đăng nhập Google
+                  {"Mở đăng nhập Google"}
                 </Button>
                 <Button
                   type="button"
@@ -1010,6 +1006,29 @@ function App() {
                       </InputGroupButton>
                     </InputGroupAddon>
                   </InputGroup>
+                </Field>
+
+                <Field>
+                  <TooltipFieldLabel
+                    htmlFor="channel-prefix"
+                    tooltip="Tien to ten kenh de ghep thanh channel.stt cho video. Neu de trong, file se chi dung stt."
+                  >
+                    Tên kênh (Prefix)
+                  </TooltipFieldLabel>
+                  <Input
+                    id="channel-prefix"
+                    value={settingsDraft.channel_prefix}
+                    onChange={(event) =>
+                      setSettingsDraft((current) => ({
+                        ...current,
+                        channel_prefix: event.target.value,
+                      }))
+                    }
+                    type="text"
+                    name="channel_prefix"
+                    autoComplete="off"
+                    placeholder="Ví dụ: theoof"
+                  />
                 </Field>
 
                 <FieldSet>
@@ -1452,6 +1471,7 @@ function clampNumber(value: string, min: number, max: number) {
 function normalizeSettings(settings: Settings): Settings {
   return {
     ...settings,
+    channel_prefix: settings.channel_prefix ?? "",
     cookies_map: settings.cookies_map || {},
   };
 }
@@ -1468,3 +1488,4 @@ function getErrorMessage(error: unknown) {
 }
 
 export default App;
+

@@ -42,6 +42,7 @@ COOKIE_DOMAIN_HINTS = {
     "dailymotion": ["dailymotion.com", "dai.ly"],
     "yandex": ["yandex.ru", "yandex.com", "yandex.by", "yandex.kz", "yandex.ua", "yandex.com.tr"],
     "nicovideo": ["nicovideo.jp", "nico.ms"],
+    "28lab": ["28lab.com"],
 }
 FINAL_BATCH_STATUSES = {"completed", "completed_with_errors", "cancelled"}
 MAX_EVENT_BACKLOG = 500
@@ -57,10 +58,17 @@ def sanitize_file_stem(value: str) -> str:
     return stem or "video"
 
 
-def build_sheet_sequence_stem(sheet_title: str | None, sequence_label: str | None) -> str:
-    title_stem = sanitize_file_stem(sheet_title or "sheet")
+def build_sheet_sequence_stem(
+    sheet_title: str | None,
+    sequence_label: str | None,
+    channel_prefix: str | None = None,
+) -> str:
+    raw_channel_prefix = (channel_prefix or "").strip()
+    channel_stem = sanitize_file_stem(raw_channel_prefix) if raw_channel_prefix else ""
     sequence_stem = sanitize_file_stem(sequence_label or "item")
-    return f"{title_stem}_{sequence_stem}"
+    if channel_stem:
+        return f"{channel_stem}.{sequence_stem}"
+    return sequence_stem
 
 
 @dataclass
@@ -70,6 +78,7 @@ class DownloadSettings:
     concurrent_downloads: int = MAX_CONCURRENT_DOWNLOADS
     retry_count: int = 1
     use_browser_cookies: bool = True
+    channel_prefix: str = ""
     cookies_map: dict[str, str] = field(default_factory=dict)
 
 
@@ -113,6 +122,7 @@ class DownloadBatch:
     concurrent_downloads: int
     retry_count: int
     use_browser_cookies: bool
+    channel_prefix: str
     has_manual_cookies: bool
     discover_progress: int = 0
     cookies_map: dict[str, str] = field(default_factory=dict)
@@ -296,6 +306,7 @@ class DownloadManager:
                 concurrent_downloads=batch.concurrent_downloads,
                 retry_count=batch.retry_count,
                 use_browser_cookies=batch.use_browser_cookies,
+                channel_prefix=batch.channel_prefix,
                 cookies_map=self._batch_cookie_map.get(batch.id, {}),
             )
             batch.output_dir = settings.output_dir
@@ -303,6 +314,7 @@ class DownloadManager:
             batch.concurrent_downloads = settings.concurrent_downloads
             batch.retry_count = settings.retry_count
             batch.use_browser_cookies = settings.use_browser_cookies
+            batch.channel_prefix = settings.channel_prefix
             batch.has_manual_cookies = bool(settings.cookies_map)
 
             for item in retriable:
@@ -405,7 +417,11 @@ class DownloadManager:
 
         for entry in scan_result.entries:
             match = detect_platform(entry.url)
-            base_name = build_sheet_sequence_stem(scan_result.sheet_title, entry.sequence_label)
+            base_name = build_sheet_sequence_stem(
+                scan_result.sheet_title,
+                entry.sequence_label,
+                settings.channel_prefix,
+            )
             suffix = used_names.get(base_name, 0) + 1
             used_names[base_name] = suffix
             output_name = base_name if suffix == 1 else f"{base_name}-{suffix}"
@@ -440,6 +456,7 @@ class DownloadManager:
             concurrent_downloads=settings.concurrent_downloads,
             retry_count=settings.retry_count,
             use_browser_cookies=settings.use_browser_cookies,
+            channel_prefix=settings.channel_prefix,
             has_manual_cookies=bool(settings.cookies_map),
             last_updated_at=utc_now(),
             items=items,
@@ -736,7 +753,10 @@ class DownloadManager:
 
                     attempt_url = item.source_url
                     if attempt.label == "dumpert_html_scraping_fallback":
-                        direct_url = self._resolve_dumpert_direct_url(item.source_url)
+                        direct_url = self._resolve_dumpert_direct_url(
+                            item.source_url,
+                            cookie_file_path=cookie_file_path,
+                        )
                         if not direct_url:
                             last_error = "Could not scrape direct MP4 URL from Dumpert HTML."
                             continue
@@ -771,6 +791,17 @@ class DownloadManager:
                         attempt_url = direct_url
                         print(f"[DEBUG] Yandex scraper found embedded URL: {attempt_url}", flush=True)
 
+                    if attempt.label == "28lab_html_scraping_fallback":
+                        direct_url = self._resolve_28lab_direct_url(
+                            item.source_url,
+                            cookie_file_path=cookie_file_path,
+                        )
+                        if not direct_url:
+                            last_error = "Could not scrape direct MP4 URL from 28lab page."
+                            continue
+                        attempt_url = direct_url
+                        print(f"[DEBUG] 28lab scraper found direct URL: {attempt_url}", flush=True)
+
                     command = self._build_yt_dlp_command(
                         item=item,
                         attempt_url=attempt_url,
@@ -792,7 +823,11 @@ class DownloadManager:
 
                     if returncode == 0:
                         lines = [line.strip() for line in stdout.splitlines() if line.strip()]
-                        final_output_path = lines[-1] if lines else str(target_dir / item.output_name)
+                        final_output_path = self._resolve_final_output_path(
+                            target_dir=target_dir,
+                            output_name=item.output_name,
+                            yt_dlp_lines=lines,
+                        )
                         final_output_path = self._ensure_h264_output(batch_id, item, final_output_path, cancel_event)
                         return self._auto_cut_file(batch_id, item, final_output_path, cancel_event)
 
@@ -802,6 +837,8 @@ class DownloadManager:
                         pass
 
                     last_error = (stderr or stdout or "yt-dlp failed").strip()
+                    if "could not find firefox cookies database" in last_error.lower():
+                        continue
 
                     # If yt-dlp rejected our --impersonate flag, permanently disable
                     # impersonation for this session and retry the same attempt without it.
@@ -830,10 +867,16 @@ class DownloadManager:
                             raise BatchCancelledError("Batch stopped by user.")
                         if returncode == 0:
                             lines = [line.strip() for line in stdout.splitlines() if line.strip()]
-                            final_output_path = lines[-1] if lines else str(target_dir / item.output_name)
+                            final_output_path = self._resolve_final_output_path(
+                                target_dir=target_dir,
+                                output_name=item.output_name,
+                                yt_dlp_lines=lines,
+                            )
                             final_output_path = self._ensure_h264_output(batch_id, item, final_output_path, cancel_event)
                             return self._auto_cut_file(batch_id, item, final_output_path, cancel_event)
                         last_error = (stderr or stdout or "yt-dlp failed").strip()
+                        if "could not find firefox cookies database" in last_error.lower():
+                            continue
 
                     if not self._should_retry_yt_dlp_attempt(item, attempt.label, last_error):
                         break
@@ -842,6 +885,57 @@ class DownloadManager:
 
             raise RuntimeError(self._format_download_error(item, last_error))
 
+    def _resolve_final_output_path(
+        self,
+        target_dir: Path,
+        output_name: str,
+        yt_dlp_lines: list[str],
+    ) -> str:
+        expected_mp4 = target_dir / f"{output_name}.mp4"
+        if expected_mp4.exists():
+            return str(expected_mp4)
+
+        candidates: list[Path] = []
+        for line in yt_dlp_lines:
+            candidate = Path(line.strip())
+            if candidate.exists() and candidate.is_file():
+                candidates.append(candidate)
+
+        if not candidates:
+            candidates = [path for path in target_dir.glob(f"{output_name}*") if path.is_file()]
+        if not candidates:
+            return str(expected_mp4)
+
+        def score(path: Path) -> int:
+            name = path.name.lower()
+            has_video = self._probe_video_codec(path) is not None
+            value = 0
+            if path == expected_mp4:
+                value += 1000
+            if has_video:
+                value += 500
+            if path.suffix.lower() == ".mp4":
+                value += 120
+            elif path.suffix.lower() in {".mkv", ".webm"}:
+                value += 80
+            if ".fau" in name or ".fdash-" in name:
+                value -= 300
+            if ".fvh" in name or ".fhls-" in name:
+                value -= 120
+            return value
+
+        best = max(candidates, key=score)
+        if best.exists() and best != expected_mp4:
+            if expected_mp4.exists():
+                return str(expected_mp4)
+            if self._probe_video_codec(best) is not None:
+                try:
+                    best.replace(expected_mp4)
+                    return str(expected_mp4)
+                except OSError:
+                    return str(best)
+        return str(best)
+
     def _yt_dlp_attempts_for(self, item: DownloadItem) -> list[YtDlpAttempt]:
         attempts = [YtDlpAttempt(label="default")]
         if item.platform == "youtube":
@@ -849,16 +943,17 @@ class DownloadManager:
             # yt-dlp doesn't know 'coccoc' by name, but Coc Coc is Chromium-based. 
             # We can use the 'chrome' engine and point it to the Coc Coc User Data directory.
             coccoc_path = os.path.expandvars(r"%LOCALAPPDATA%\CocCoc\Browser\User Data")
-            attempts.append(
-                YtDlpAttempt(
-                    label="youtube_native_cookie_fallback",
-                    use_cookie_file=False,
-                    extra_args=(
-                        "--cookies-from-browser",
-                        f"chrome:{coccoc_path}",
-                    ),
+            if self._is_chromium_profile_available(coccoc_path):
+                attempts.append(
+                    YtDlpAttempt(
+                        label="youtube_native_cookie_fallback",
+                        use_cookie_file=False,
+                        extra_args=(
+                            "--cookies-from-browser",
+                            f"chrome:{coccoc_path}",
+                        ),
+                    )
                 )
-            )
             # Try progressively more compatible YouTube player clients
             for client in ("android", "tv_embedded", "mweb"):
                 attempts.append(
@@ -881,6 +976,19 @@ class DownloadManager:
                     ),
                 )
             )
+            # Final fallback set: extract cookies directly from common local browsers
+            # instead of relying only on the exported batch cookie file.
+            for browser in self._available_cookie_browsers(("chrome", "edge", "firefox")):
+                attempts.append(
+                    YtDlpAttempt(
+                        label=f"youtube_{browser}_cookies_fallback",
+                        use_cookie_file=False,
+                        extra_args=(
+                            "--cookies-from-browser",
+                            browser,
+                        ),
+                    )
+                )
         if item.platform == "dumpert":
             # Fallback 1: add typical browser headers to pass CDN anti-leech check
             attempts.append(
@@ -950,7 +1058,79 @@ class DownloadManager:
                     extra_args=(),
                 )
             )
+        if item.platform == "nicovideo":
+            # Some Nico links fail with stale/partial cookies; retry without cookie file.
+            attempts.append(
+                YtDlpAttempt(
+                    label="nicovideo_no_cookie_fallback",
+                    use_cookie_file=False,
+                )
+            )
+            # Then try browser-native cookie extraction.
+            for browser in self._available_cookie_browsers(("chrome", "edge", "firefox")):
+                attempts.append(
+                    YtDlpAttempt(
+                        label=f"nicovideo_{browser}_cookies_fallback",
+                        use_cookie_file=False,
+                        extra_args=(
+                            "--cookies-from-browser",
+                            browser,
+                        ),
+                    )
+                )
+            # Last retry for environments where impersonation/curl backends are unstable.
+            attempts.append(
+                YtDlpAttempt(
+                    label="nicovideo_no_impersonate_fallback",
+                    use_impersonation=False,
+                )
+            )
+        if item.platform == "28lab":
+            attempts.append(
+                YtDlpAttempt(
+                    label="28lab_html_scraping_fallback",
+                    extra_args=(),
+                )
+            )
         return attempts
+
+    def _available_cookie_browsers(self, candidates: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(browser for browser in candidates if self._is_browser_cookie_source_available(browser))
+
+    def _is_browser_cookie_source_available(self, browser: str) -> bool:
+        browser_key = (browser or "").strip().lower()
+        if browser_key == "chrome":
+            return self._is_chromium_profile_available(os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\User Data"))
+        if browser_key == "edge":
+            return self._is_chromium_profile_available(os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\Edge\User Data"))
+        if browser_key == "firefox":
+            profiles_dir = Path(os.path.expandvars(r"%APPDATA%\Mozilla\Firefox\Profiles"))
+            if not profiles_dir.exists() or not profiles_dir.is_dir():
+                return False
+            try:
+                for profile in profiles_dir.iterdir():
+                    if profile.is_dir() and (profile / "cookies.sqlite").exists():
+                        return True
+            except OSError:
+                return False
+            return False
+        return False
+
+    def _is_chromium_profile_available(self, user_data_dir: str) -> bool:
+        user_data = Path(user_data_dir)
+        if not user_data.exists() or not user_data.is_dir():
+            return False
+        if (user_data / "Local State").exists():
+            return True
+        try:
+            for profile_name in ("Default", "Profile 1", "Profile 2"):
+                if (user_data / profile_name / "Network" / "Cookies").exists():
+                    return True
+                if (user_data / profile_name / "Cookies").exists():
+                    return True
+        except OSError:
+            return False
+        return False
 
     def _build_yt_dlp_command(
         self,
@@ -1001,6 +1181,11 @@ class DownloadManager:
             return ["--concurrent-fragments", "2"]
         if item.platform == "dumpert":
             # Dumpert CDN may not support many concurrent range requests
+            return []
+        if item.platform == "nicovideo":
+            # Nico can throttle aggressively when segment concurrency is high.
+            return ["--concurrent-fragments", "2"]
+        if item.platform == "28lab":
             return []
         return ["--concurrent-fragments", "4"]
 
@@ -1060,6 +1245,19 @@ class DownloadManager:
         if item.platform == "yandex":
             return attempt_label == "default"
 
+        if item.platform == "28lab":
+            return attempt_label == "default"
+
+        if item.platform == "nicovideo":
+            return attempt_label in {
+                "default",
+                "nicovideo_no_cookie_fallback",
+                "nicovideo_chrome_cookies_fallback",
+                "nicovideo_edge_cookies_fallback",
+                "nicovideo_firefox_cookies_fallback",
+                "nicovideo_no_impersonate_fallback",
+            }
+
         if item.platform != "youtube":
             return False
 
@@ -1078,6 +1276,10 @@ class DownloadManager:
             "youtube_android_fallback",
             "youtube_tv_embedded_fallback",
             "youtube_mweb_fallback",
+            "youtube_android_no_cookie_fallback",
+            "youtube_chrome_cookies_fallback",
+            "youtube_edge_cookies_fallback",
+            "youtube_firefox_cookies_fallback",
         }
 
         if non_retriable:
@@ -1092,9 +1294,13 @@ class DownloadManager:
         # Allow chaining for other general errors too
         return attempt_label in youtube_chaining_labels
 
-    def _resolve_dumpert_direct_url(self, source_url: str) -> str | None:
-        import urllib.request
+    def _resolve_dumpert_direct_url(
+        self,
+        source_url: str,
+        cookie_file_path: str | None = None,
+    ) -> str | None:
         import re
+        import urllib.request
 
         if "?selectedId=" in source_url:
             video_id = source_url.split("?selectedId=")[-1]
@@ -1102,28 +1308,107 @@ class DownloadManager:
         else:
             target_url = source_url
 
-        try:
-            req = urllib.request.Request(
-                target_url,
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-                    "Accept-Language": "en-US,en;q=0.5",
-                }
+        html = self._curl_fetch_text(target_url, cookie_file_path=cookie_file_path, impersonate="chrome")
+        if not html:
+            try:
+                req = urllib.request.Request(
+                    target_url,
+                    headers={
+                        "User-Agent": (
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+                        ),
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                        "Accept-Language": "en-US,en;q=0.5",
+                    },
+                )
+                html = urllib.request.urlopen(req, timeout=15).read().decode("utf-8", errors="replace")
+            except Exception as exc:
+                print(f"[DEBUG] Dumpert HTML fallback fetch failed: {exc}", flush=True)
+                return None
+
+        html = html.replace("\\/", "/")
+        candidate_urls = list(
+            re.finditer(
+                r'https?://[^\s\"\'\>\\]+?\.(?:mp4|m3u8)(?:\?[^\s\"\'\>\\]+)?',
+                html,
             )
-            html = urllib.request.urlopen(req, timeout=15).read().decode("utf-8")
-        except Exception as exc:
-            print(f"[DEBUG] Dumpert HTML fallback fetch failed: {exc}", flush=True)
+        )
+        if not candidate_urls:
             return None
 
-        # Fix JSON escaping if present
-        html = html.replace('\\/', '/')
-        # Often Dumpert JS contains direct video urls (.mp4 or .m3u8)
-        matches = re.finditer(r'https?://[^\s\"\'\>\\]+?\.(?:mp4|m3u8)(?:\?[^\s\"\'\>\\]+)?', html)
-        for match in matches:
+        best_url: str | None = None
+        best_score = -1
+        for match in candidate_urls:
             url = match.group(0)
-            if "dumpert.nl" in url:
-                return url
+            if "dumpert.nl" not in url and "media.dumpert.nl" not in url:
+                continue
+            score = 0
+            if url.endswith(".mp4") or ".mp4?" in url:
+                score += 10
+            if "m3u8" in url:
+                score += 20
+            quality_match = re.search(r"/(\d{3,4})/index\.m3u8", url)
+            if quality_match:
+                score += int(quality_match.group(1))
+            if score > best_score:
+                best_score = score
+                best_url = url
+        return best_url
+
+    def _resolve_28lab_direct_url(
+        self,
+        source_url: str,
+        cookie_file_path: str | None = None,
+    ) -> str | None:
+        import html
+        import re
+        import urllib.request
+
+        page_html = self._curl_fetch_text(source_url, cookie_file_path=cookie_file_path, impersonate="chrome")
+        if not page_html:
+            try:
+                req = urllib.request.Request(
+                    source_url,
+                    headers={
+                        "User-Agent": (
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+                        ),
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                        "Accept-Language": "en-US,en;q=0.5",
+                        "Referer": "https://28lab.com/",
+                    },
+                )
+                page_html = urllib.request.urlopen(req, timeout=20).read().decode("utf-8", errors="replace")
+            except Exception as exc:
+                print(f"[DEBUG] 28lab HTML fetch failed: {exc}", flush=True)
+                return None
+
+        page_html = page_html.replace("\\/", "/")
+        # Primary path: <video ... src="...mp4">
+        video_src_matches = re.finditer(r"<video[^>]*\bsrc=[\"']([^\"']+)[\"']", page_html, flags=re.IGNORECASE)
+        for match in video_src_matches:
+            candidate = html.unescape(match.group(1)).strip()
+            if not candidate:
+                continue
+            if candidate.startswith("//"):
+                candidate = "https:" + candidate
+            if candidate.startswith("/"):
+                parsed = urlparse(source_url)
+                candidate = f"{parsed.scheme}://{parsed.netloc}{candidate}"
+            if candidate.lower().startswith("http") and (".mp4" in candidate.lower() or ".m3u8" in candidate.lower()):
+                return candidate
+
+        # Secondary path: generic MP4/M3U8 URL in script blobs.
+        generic_matches = re.finditer(
+            r'https?://[^\s\"\'\>\\]+?\.(?:mp4|m3u8)(?:\?[^\s\"\'\>\\]+)?',
+            page_html,
+        )
+        for match in generic_matches:
+            candidate = match.group(0)
+            if "28lab.com" in candidate:
+                return candidate
         return None
 
     def _curl_fetch_text(self, url: str, cookie_file_path: str | None = None, impersonate: str = "chrome") -> str | None:
@@ -1835,11 +2120,26 @@ class DownloadManager:
             or "downloaded file is empty" in lowered
             or "fragment not found" in lowered
             or "requested format is not available" in lowered
+            or "sign in to confirm you’re not a bot" in lowered
+            or "sign in to confirm you're not a bot" in lowered
         ):
             return (
                 "YouTube dang tu choi hoac an bot format cua link nay. App da thu them "
-                "fallback Android client, co va khong co cookie browser, nhung mot so "
+                "fallback Android client, cookie fallback cho Chrome/Edge/Firefox, "
+                "va thu ca co/khong cookie browser, nhung mot so "
                 "video van can PO token/GVS access nen yt-dlp co the that bai."
+            )
+
+        if item.platform == "nicovideo" and (
+            "403" in compact
+            or "login required" in lowered
+            or "forbidden" in lowered
+            or "authentication" in lowered
+        ):
+            return (
+                "NicoVideo tu choi request hoac can session hop le. App da thu "
+                "fallback khong-cookie va cookies-from-browser (Chrome/Edge/Firefox) "
+                "nhung van that bai."
             )
 
         return compact
@@ -1868,6 +2168,7 @@ class DownloadManager:
             maximum=10,
         )
         use_browser_cookies = bool(payload.get("use_browser_cookies", base.use_browser_cookies))
+        channel_prefix = str(payload.get("channel_prefix", base.channel_prefix)).strip()
         
         cmap = payload.get("cookies_map")
         if cmap is None and "cookies_text" in payload:
@@ -1882,6 +2183,7 @@ class DownloadManager:
             concurrent_downloads=concurrent_downloads,
             retry_count=retry_count,
             use_browser_cookies=use_browser_cookies,
+            channel_prefix=channel_prefix,
             cookies_map=cmap,
         )
 
@@ -2017,6 +2319,7 @@ class DownloadManager:
             concurrent_downloads=payload.get("concurrent_downloads", MAX_CONCURRENT_DOWNLOADS),
             retry_count=payload.get("retry_count", 1),
             use_browser_cookies=payload.get("use_browser_cookies", True),
+            channel_prefix=payload.get("channel_prefix", ""),
             has_manual_cookies=bool(payload.get("cookies_map", {})),
             last_updated_at=payload.get("last_updated_at", payload.get("created_at")),
             items=items,
@@ -2055,6 +2358,7 @@ class DownloadManager:
                 "concurrentDownloads": batch.concurrent_downloads,
                 "retryCount": batch.retry_count,
                 "useBrowserCookies": batch.use_browser_cookies,
+                "channelPrefix": batch.channel_prefix,
                 "hasManualCookies": batch.has_manual_cookies,
                 "cookiesMap": batch.cookies_map,
             },

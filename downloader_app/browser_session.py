@@ -89,7 +89,35 @@ class BrowserSessionManager:
         try:
             result = self._find_working_browser()
         except BrowserSessionError as exc:
-            status["message"] = str(exc)
+            if self._active_candidate is not None:
+                status["browser"] = self._active_candidate.name
+            elif self._candidates:
+                status["browser"] = self._candidates[0].name
+            message = str(exc)
+            browser_name = status.get("browser")
+            if (
+                browser_name
+                and str(browser_name).lower() == "coccoc"
+                and "Chua tim thay Google session hop le trong browser." in message
+            ):
+                status["authenticated"] = True
+                status["cookie_count"] = 0
+                status["message"] = (
+                    "Da tim thay profile CocCoc. "
+                    "Neu gap loi khi doc Google Sheets private, hay mo Google Sheets trong CocCoc "
+                    "roi bam Lam moi phien."
+                )
+                self._set_cached_status(status)
+                return status
+            if (
+                browser_name
+                and "Chua tim thay Google session hop le trong browser." in message
+            ):
+                message = (
+                    f"Chua tim thay Google session hop le trong {browser_name}. "
+                    f"Hay mo Google Sheets trong {browser_name} co quyen xem roi bam Lam moi phien."
+                )
+            status["message"] = message
             self._set_cached_status(status)
             return status
 
@@ -97,10 +125,7 @@ class BrowserSessionManager:
         status["authenticated"] = True
         status["cookie_count"] = result["cookie_count"]
         status["browser"] = result["browser"]
-        status["message"] = (
-            f"Da tim thay Google session trong {result['browser']} browser local. "
-            "Khong can tao Google Cloud project."
-        )
+        status["message"] = f"Da xac nhan session Google tu {result['browser']}."
         self._set_cached_status(status)
         return status
 

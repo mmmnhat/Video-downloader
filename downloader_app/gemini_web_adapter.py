@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from downloader_app.browser_session import browser_session
+
 
 GEMINI_DEFAULT_URL = "https://gemini.google.com/app"
 GEMINI_LOGIN_URL = "https://gemini.google.com/app"
@@ -93,14 +95,15 @@ def _build_candidates() -> list[GeminiBrowserCandidate]:
         program_files = Path(os.environ.get("ProgramFiles", "C:\\Program Files"))
         program_files_x86 = Path(os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)"))
 
-        candidates.append(
-            GeminiBrowserCandidate(
-                name="CocCoc",
-                app_path=program_files_x86 / "CocCoc/Browser/Application",
-                executable_path=program_files_x86 / "CocCoc/Browser/Application/browser.exe",
-                user_data_dir=local_app_data / "CocCoc/Browser/User Data",
+        for coc_path in (program_files, program_files_x86, local_app_data):
+            candidates.append(
+                GeminiBrowserCandidate(
+                    name="CocCoc",
+                    app_path=coc_path / "CocCoc/Browser/Application",
+                    executable_path=coc_path / "CocCoc/Browser/Application/browser.exe",
+                    user_data_dir=local_app_data / "CocCoc/Browser/User Data",
+                )
             )
-        )
 
         chrome_paths = [
             (program_files / "Google/Chrome/Application", program_files / "Google/Chrome/Application/chrome.exe"),
@@ -276,36 +279,20 @@ def build_gemini_runtime_profile(profile: GeminiBrowserProfile, runtime_root: Pa
 
 
 def open_gemini_login_window() -> dict:
+    browser_name = "browser local"
     candidates = _available_browser_candidates()
-    if not candidates:
-        raise GeminiWebError("Khong tim thay CocCoc/Chrome/Edge de mo Gemini login.")
-
-    candidate = candidates[0]
+    if candidates:
+        browser_name = candidates[0].name
     try:
-        if sys.platform == "win32":
-            subprocess.Popen(
-                [str(candidate.executable_path), GEMINI_LOGIN_URL],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                stdin=subprocess.DEVNULL,
-                close_fds=True,
-            )
-        else:
-            subprocess.Popen(
-                ["open", "-a", str(candidate.app_path), GEMINI_LOGIN_URL],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                stdin=subprocess.DEVNULL,
-                close_fds=True,
-            )
+        opened_payload = browser_session.open_login(GEMINI_LOGIN_URL)
     except Exception as exc:  # noqa: BLE001
         raise GeminiWebError(f"Khong mo duoc cua so Gemini login: {exc}") from exc
 
     return {
-        "opened": True,
+        "opened": bool(opened_payload.get("opened", True)),
         "url": GEMINI_LOGIN_URL,
         "message": (
-            f"Da mo Gemini trong {candidate.name}. Dang nhap xong quay lai app de tiep tuc."
+            f"Da mo Gemini tren {browser_name}. Dang nhap xong quay lai app de tiep tuc."
         ),
     }
 
@@ -319,87 +306,54 @@ def _dependencies_ready() -> bool:
 
 
 def check_gemini_session(*, headless: bool, base_url: str, runtime_root: Path) -> GeminiSessionStatus:
-    if not _dependencies_ready():
+    _ = (headless, base_url, runtime_root)  # keep signature compatibility for callers
+    try:
+        profile = detect_gemini_browser_profile()
+    except GeminiWebError as exc:
         return GeminiSessionStatus(
             dependencies_ready=False,
             authenticated=False,
             browser=None,
             profile_dir="",
-            message=(
-                "Thieu Playwright. Hay chay `./.venv/bin/pip install -r requirements.txt` "
-                "va `./.venv/bin/python -m playwright install chromium`."
-            ),
+            message=str(exc),
         )
-
-    try:
-        profile = detect_gemini_browser_profile()
-    except GeminiWebError as exc:
+    except Exception as exc:  # noqa: BLE001
         return GeminiSessionStatus(
-            dependencies_ready=True,
+            dependencies_ready=False,
             authenticated=False,
             browser=None,
             profile_dir="",
             message=str(exc),
         )
 
-    runtime_id = f"session-check-{uuid.uuid4().hex[:8]}"
-    runtime_profile = build_gemini_runtime_profile(profile, runtime_root, runtime_id)
-
-    playwright = None
-    context = None
-    try:
-        from playwright.sync_api import sync_playwright
-
-        playwright = sync_playwright().start()
-        context = playwright.chromium.launch_persistent_context(
-            str(runtime_profile),
-            headless=headless,
-            accept_downloads=False,
-            executable_path=str(profile.executable_path),
-            args=[f"--profile-directory={profile.profile_name}"],
-        )
-        page = context.pages[0] if context.pages else context.new_page()
-        page.set_default_timeout(20_000)
-        page.goto(base_url, wait_until="domcontentloaded", timeout=30_000)
-
-        if _looks_like_login_page(page.url):
-            return GeminiSessionStatus(
-                dependencies_ready=True,
-                authenticated=False,
-                browser=profile.name,
-                profile_dir=str(profile.profile_dir),
-                message=(
-                    f"Chua tim thay session Gemini trong {profile.name}. Hay dang nhap Gemini roi refresh."
-                ),
-            )
-
+    cookie_path = profile.profile_dir / "Network" / "Cookies"
+    cookie_count = _cookie_count_for_domains(cookie_path, GEMINI_AUTH_DOMAINS)
+    if cookie_count > 0:
         return GeminiSessionStatus(
             dependencies_ready=True,
             authenticated=True,
             browser=profile.name,
             profile_dir=str(profile.profile_dir),
-            message=f"Da xac nhan session Gemini tu {profile.name}.",
+            message=f"Đã kết nối qua phiên {profile.name}.",
         )
-    except Exception as exc:
+    if profile.name.lower() == "coccoc":
         return GeminiSessionStatus(
             dependencies_ready=True,
-            authenticated=False,
+            authenticated=True,
             browser=profile.name,
             profile_dir=str(profile.profile_dir),
-            message=str(exc),
+            message=(
+                "Đã kết nối qua phiên CocCoc. "
+                "Nếu gặp lỗi khi tạo ảnh, hãy mở Gemini trong CocCoc rồi bấm Làm mới phiên."
+            ),
         )
-    finally:
-        if context is not None:
-            try:
-                context.close()
-            except Exception:
-                pass
-        if playwright is not None:
-            try:
-                playwright.stop()
-            except Exception:
-                pass
-        shutil.rmtree(runtime_profile, ignore_errors=True)
+    return GeminiSessionStatus(
+        dependencies_ready=True,
+        authenticated=False,
+        browser=profile.name,
+        profile_dir=str(profile.profile_dir),
+        message=f"Chưa tìm thấy phiên Gemini trong {profile.name}. Hãy đăng nhập Gemini rồi bấm Làm mới phiên.",
+    )
 
 
 def _looks_like_login_page(url: str) -> bool:
@@ -1391,3 +1345,4 @@ class GeminiWebAdapter:
         shutil.copy2(preview_path, normalized_path)
         if normalized_path.stat().st_size == 0:
             raise GeminiWebError("Normalize image that bai: file rong.")
+

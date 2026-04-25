@@ -17,6 +17,7 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { SessionStatusAlert } from "@/components/ui/session-status-alert";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
@@ -68,7 +69,7 @@ type StepSelection = {
 type QueueFilter = "all" | "running" | "review" | "queued";
 
 const STORY_SSE_EVENTS = [
-  "connected",
+  "da ket noi",
   "story.video.created",
   "story.video.updated",
   "story.step.updated",
@@ -85,18 +86,20 @@ function getErrorMessage(error: unknown) {
 
 function storyStatusLabel(status: string) {
   switch (status) {
+    case "all":
+      return "TAT CA";
     case "queued":
-      return "QUEUE";
+      return "CHO";
     case "running":
-      return "RUN";
+      return "CHAY";
     case "review":
-      return "REVIEW";
+      return "DUYET";
     case "completed":
-      return "DONE";
+      return "XONG";
     case "paused":
-      return "PAUSE";
+      return "TAM DUNG";
     case "failed":
-      return "FAILED";
+      return "LOI";
     default:
       return status.toUpperCase();
   }
@@ -649,9 +652,9 @@ export default function StoryStudio() {
   }, [markers, selectedMarkerId]);
 
   const workerSlots = useMemo(() => {
-    const maxWorkers = Math.max(1, settingsDraft?.max_parallel_videos ?? 2);
+    const maxWorker = Math.max(1, settingsDraft?.max_parallel_videos ?? 2);
     const runningVideos = videoSummaries.filter((video) => video.status === "running");
-    return Array.from({ length: maxWorkers }, (_, index) => runningVideos[index] ?? null);
+    return Array.from({ length: maxWorker }, (_, index) => runningVideos[index] ?? null);
   }, [settingsDraft?.max_parallel_videos, videoSummaries]);
 
   const pendingVideoCount = useMemo(
@@ -671,7 +674,7 @@ export default function StoryStudio() {
       const status = await getStorySessionStatus(true);
       startTransition(() => setSessionStatus(status));
       if (status.authenticated) {
-        toast.success("Gemini session san sang.");
+        toast.success("Phiên Gemini đã sẵn sàng.");
       }
     } catch (error) {
       toast.error(getErrorMessage(error));
@@ -912,19 +915,19 @@ export default function StoryStudio() {
           <CardTitle className="flex items-center justify-between text-base">
             <span className="flex items-center gap-2">
               <Clapperboard className="size-4 text-primary" />
-              Video Queue
+              Hang doi video
             </span>
             <Badge variant="outline">{videoSummaries.length}</Badge>
           </CardTitle>
           <div className="rounded-lg border border-border/70 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-            Pending {pendingVideoCount} video
+            Dang cho {pendingVideoCount} video
           </div>
           <div className="grid grid-cols-4 gap-1">
             {[
-              { value: "all", label: "ALL" },
-              { value: "running", label: "RUN" },
-              { value: "review", label: "REVIEW" },
-              { value: "queued", label: "QUEUE" },
+              { value: "all", label: "TAT CA" },
+              { value: "running", label: "CHAY" },
+              { value: "review", label: "DUYET" },
+              { value: "queued", label: "CHO" },
             ].map((item) => (
               <Button
                 key={item.value}
@@ -999,7 +1002,7 @@ export default function StoryStudio() {
 
           <div className="flex flex-col gap-2">
             <div className="text-xs font-medium uppercase text-muted-foreground">
-              Workers
+              Worker
             </div>
             <div className="flex flex-col gap-2">
               {workerSlots.map((video, index) => (
@@ -1025,7 +1028,7 @@ export default function StoryStudio() {
             onClick={() => void handleOpenOutputFolder()}
           >
             <FolderOpen className="size-4" />
-            Open output folder
+            Mo thu muc output
           </Button>
         </CardContent>
       </Card>
@@ -1033,7 +1036,7 @@ export default function StoryStudio() {
       <Card className="border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)]">
         <CardHeader className="gap-2 border-b border-border/70">
           <CardTitle className="flex items-center justify-between text-base">
-            <span>{selectedVideo?.name ?? "Timeline Marker"}</span>
+            <span>{selectedVideo?.name ?? "Moc timeline"}</span>
             {selectedVideo ? (
               <Badge variant="outline" className={storyStatusTone(selectedVideo.status).className}>
                 {storyStatusLabel(selectedVideo.status)}
@@ -1041,11 +1044,11 @@ export default function StoryStudio() {
             ) : null}
           </CardTitle>
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <span>Mode: {selectedVideo?.mode ?? "-"}</span>
+            <span>Che do: {selectedVideo?.mode ?? "-"}</span>
             {detailLoading ? (
               <span className="inline-flex items-center gap-1">
                 <Loader2 className="size-3 animate-spin" />
-                syncing
+                dang dong bo
               </span>
             ) : null}
           </div>
@@ -1059,9 +1062,9 @@ export default function StoryStudio() {
             ) : (
               <div className="flex flex-col gap-4">
                 {[
-                  { key: "active", title: "Active", markers: markerGroups.active },
-                  { key: "queued", title: "Queued", markers: markerGroups.queued },
-                  { key: "done", title: "Done", markers: markerGroups.done },
+                  { key: "active", title: "Dang xu ly", markers: markerGroups.active },
+                  { key: "queued", title: "Dang cho", markers: markerGroups.queued },
+                  { key: "done", title: "Hoan tat", markers: markerGroups.done },
                 ].map((group) => (
                   <div key={group.key} className="flex flex-col gap-2">
                     <div className="text-xs font-medium uppercase text-muted-foreground">
@@ -1253,7 +1256,7 @@ export default function StoryStudio() {
                 {selectedStep?.title ?? "Step"} · Attempt {selectedAttempt?.index ?? 0}
               </span>
             ) : (
-              "No active selection"
+              "Chua co muc dang chon"
             )}
           </div>
         </CardContent>
@@ -1261,30 +1264,20 @@ export default function StoryStudio() {
 
       <Card className="border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)]">
         <CardHeader className="gap-2 border-b border-border/70">
-          <CardTitle className="text-base">Prompt + Control</CardTitle>
+          <CardTitle className="text-base">Dieu khien Prompt</CardTitle>
         </CardHeader>
         <CardContent className="flex h-[calc(100dvh-10rem)] flex-col gap-4 pt-4">
           <div className="flex-1 overflow-auto pr-1">
             <div className="flex flex-col gap-4">
-              <Alert>
-                <AlertTitle className="flex items-center gap-2">
-                  {sessionStatus?.authenticated ? "Gemini Ready" : "Gemini Chua Ready"}
-                  {sessionStatus?.authenticated ? (
-                    <Badge variant="outline" className="border-emerald-400/40 bg-emerald-500/12 text-emerald-100">
-                      connected
-                    </Badge>
-                  ) : (
-                    <Badge variant="outline">offline</Badge>
-                  )}
-                </AlertTitle>
-                <AlertDescription className="text-xs">
-                  {sessionStatus?.message ?? "Chua co thong tin session."}
-                </AlertDescription>
-              </Alert>
+              <SessionStatusAlert
+                authenticated={Boolean(sessionStatus?.authenticated)}
+                notReadyTitle={"Phiên Gemini chưa sẵn sàng"}
+                message={sessionStatus?.message ?? "Chưa có thông tin phiên."}
+              />
 
               <div className="grid grid-cols-2 gap-2">
                 <Button type="button" variant="outline" onClick={() => void handleOpenLogin()}>
-                  Open Login
+                  {"Mở đăng nhập Gemini"}
                 </Button>
                 <Button
                   type="button"
@@ -1292,18 +1285,13 @@ export default function StoryStudio() {
                   disabled={sessionRefreshing}
                   onClick={() => void handleRefreshSession()}
                 >
-                  {sessionRefreshing ? (
-                    <Loader2 className="size-4 animate-spin" />
-                  ) : (
-                    <RefreshCw className="size-4" />
-                  )}
-                  Refresh
+                  {sessionRefreshing ? "Đang làm mới..." : "Làm mới phiên"}
                 </Button>
               </div>
 
               <div className="rounded-xl border border-border/70 bg-muted/20 p-3">
                 <div className="mb-2 text-xs font-medium uppercase text-muted-foreground">
-                  XMP Marker Scan
+                  Quet marker XMP
                 </div>
                 <Button
                   type="button"
@@ -1317,7 +1305,7 @@ export default function StoryStudio() {
                   ) : (
                     <FolderOpen className="size-4" />
                   )}
-                  Scan Premiere Project Folder
+                  Quet thu muc project Premiere
                 </Button>
               </div>
 
@@ -1325,12 +1313,12 @@ export default function StoryStudio() {
               {settingsDraft ? (
                 <div className="rounded-xl border border-border/70 bg-muted/20 p-3">
                   <div className="mb-2 text-xs font-medium uppercase text-muted-foreground">
-                    Scheduler
+                    Bo lap lich
                   </div>
                   <div className="flex flex-col gap-3">
                     <div className="flex flex-col gap-1">
                       <label className="text-xs text-muted-foreground" htmlFor="story-workers">
-                        Max workers
+                        So worker toi da
                       </label>
                       <Input
                         id="story-workers"
@@ -1355,7 +1343,7 @@ export default function StoryStudio() {
                     </div>
 
                     <div className="flex flex-col gap-1">
-                      <label className="text-xs text-muted-foreground">Select Gem (Instruction Set)</label>
+                      <label className="text-xs text-muted-foreground">Chon Gem (bo huong dan)</label>
                       <div className="flex gap-2">
                         <Select
                           value={settingsDraft.gemini_base_url}
@@ -1526,14 +1514,14 @@ export default function StoryStudio() {
 
               <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-muted/20 p-3">
                 <div className="text-xs font-medium uppercase text-muted-foreground">
-                  Merged prompt preview
+                  Xem truoc prompt gop
                 </div>
                 <Textarea value={mergedPrompt} readOnly className="min-h-24 text-xs" />
               </div>
 
               <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-muted/20 p-3">
                 <div className="text-xs font-medium uppercase text-muted-foreground">
-                  Attempt history
+                  Lich su attempt
                 </div>
                 <div className="flex gap-2 overflow-x-auto pb-1">
                   {selectedStep?.attempts
@@ -1588,7 +1576,7 @@ export default function StoryStudio() {
                 ) : (
                   <Play className="size-4" />
                 )}
-                Run
+                Chay
               </Button>
               <Button
                 type="button"
@@ -1601,7 +1589,7 @@ export default function StoryStudio() {
                 ) : (
                   <Pause className="size-4" />
                 )}
-                Pause
+                Tam dung
               </Button>
               <Button
                 type="button"
@@ -1620,7 +1608,7 @@ export default function StoryStudio() {
                 }}
               >
                 <RotateCcw className="size-4" />
-                Regen
+                Tao lai
               </Button>
               <Button
                 type="button"
@@ -1640,7 +1628,7 @@ export default function StoryStudio() {
                 }}
               >
                 <Sparkles className="size-4" />
-                Refine
+                Tinh chinh
               </Button>
             </div>
 
@@ -1655,7 +1643,7 @@ export default function StoryStudio() {
               ) : (
                 <Check className="size-4" />
               )}
-              Accept & Next
+              Chap nhan & tiep
             </Button>
 
             <Button
@@ -1671,7 +1659,7 @@ export default function StoryStudio() {
               }}
             >
               <AlertCircle className="size-4" />
-              Skip Step
+              Bo qua buoc
             </Button>
           </div>
         </CardContent>
@@ -1679,3 +1667,8 @@ export default function StoryStudio() {
     </div>
   );
 }
+
+
+
+
+

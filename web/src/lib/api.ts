@@ -20,6 +20,7 @@ export type Settings = {
   concurrent_downloads: number;
   retry_count: number;
   use_browser_cookies: boolean;
+  channel_prefix: string;
   cookies_map: Record<string, string>;
 };
 
@@ -79,6 +80,7 @@ export type BatchDetail = {
     concurrentDownloads: number;
     retryCount: number;
     useBrowserCookies: boolean;
+    channelPrefix?: string;
     hasManualCookies: boolean;
   };
   items: BatchItem[];
@@ -190,6 +192,7 @@ export type TtsBatchSummary = {
   sheetUrl: string;
   textColumn: string;
   filenamePrefix?: string | null;
+  channelPrefix?: string | null;
   voiceQuery: string;
   voiceId?: string | null;
   voiceName?: string | null;
@@ -492,6 +495,7 @@ export async function createTtsBatch(payload: {
   workerCount: number;
   headless: boolean;
   filenamePrefix?: string;
+  channelPrefix?: string;
 }) {
   return requestJson<TtsBatchDetail>("/api/tts/batches", {
     method: "POST",
@@ -509,6 +513,7 @@ export async function createTtsBatch(payload: {
       worker_count: payload.workerCount,
       headless: payload.headless,
       filenamePrefix: payload.filenamePrefix,
+      channelPrefix: payload.channelPrefix,
     }),
   });
 }

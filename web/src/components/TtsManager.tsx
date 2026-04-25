@@ -26,6 +26,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { SessionStatusAlert } from "@/components/ui/session-status-alert";
 import { TooltipFieldLabel } from "@/components/ui/tooltip-field-label";
 import { VoicePicker } from "@/components/ui/voice-picker";
 import { cn } from "@/lib/utils";
@@ -117,7 +118,7 @@ export default function TtsManager() {
   const [retryCount, setRetryCount] = useLocalStorage("tts.retryCount", 1);
   const [workerCount, setWorkerCount] = useLocalStorage("tts.workerCount", 1);
   const [headless, setHeadless] = useLocalStorage("tts.headless", false);
-  const [filenamePrefix, setFilenamePrefix] = useLocalStorage("tts.filenamePrefix", "");
+  const [channelPrefix, setChannelPrefix] = useLocalStorage("tts.channelPrefix", "");
   const [preview, setPreview] = useState<TtsPreview | null>(null);
   const [voices, setVoices] = useState<TtsVoice[]>([]);
   const [batchSummaries, setBatchSummaries] = useState<TtsBatchSummary[]>([]);
@@ -137,6 +138,14 @@ export default function TtsManager() {
   const [errorMessage, setErrorMessage] = useState("");
   const sessionRefreshInFlightRef = useRef(false);
   const voicesLoadInFlightRef = useRef(false);
+  const myVoices = useMemo(
+    () =>
+      voices.filter((voice) => {
+        const category = (voice.category ?? "").trim().toLowerCase();
+        return !!category && category !== "premade";
+      }),
+    [voices],
+  );
 
   const hasActiveBatch = batchSummaries.some((summary) =>
     ACTIVE_BATCH_STATUSES.has(summary.status),
@@ -147,14 +156,16 @@ export default function TtsManager() {
     [selectedBatch],
   );
   const selectedVoice = useMemo(
-    () => voices.find((voice) => voice.voiceId === voiceQuery),
-    [voiceQuery, voices],
+    () => myVoices.find((voice) => voice.voiceId === voiceQuery),
+    [myVoices, voiceQuery],
   );
   const selectedBatchActive = selectedBatch ? ACTIVE_BATCH_STATUSES.has(selectedBatch.status) : false;
   const voiceFieldLoading = sessionChecking || voicesLoading;
   const voiceFieldPlaceholder = voiceFieldLoading
-    ? "Đang tải danh sách giọng đọc..."
-    : "Chọn giọng từ phiên hiện tại...";
+    ? "Dang tai danh sach My Voice..."
+    : myVoices.length > 0
+      ? "Chon giong tu My Voice..."
+      : "Khong co My Voice trong phien hien tai.";
 
   useEffect(() => {
     void bootstrap();
@@ -195,7 +206,7 @@ export default function TtsManager() {
     if (!sessionStatus?.dependencies_ready) {
       return;
     }
-    if (sessionStatus.authenticated && voices.length > 0) {
+    if (sessionStatus.authenticated && myVoices.length > 0) {
       return;
     }
 
@@ -205,7 +216,7 @@ export default function TtsManager() {
     }, 4000);
 
     return () => window.clearInterval(intervalId);
-  }, [sessionStatus?.authenticated, sessionStatus?.dependencies_ready, voices.length]);
+  }, [myVoices.length, sessionStatus?.authenticated, sessionStatus?.dependencies_ready]);
 
   async function bootstrap() {
     setBootLoading(true);
@@ -255,13 +266,21 @@ export default function TtsManager() {
       const nextVoices = await listTtsVoices();
       startTransition(() => {
         setVoices(nextVoices);
-        if (voiceQuery && !nextVoices.some((voice) => voice.voiceId === voiceQuery)) {
-          const matchedByName = nextVoices.find(
+        const nextMyVoices = nextVoices.filter((voice) => {
+          const category = (voice.category ?? "").trim().toLowerCase();
+          return !!category && category !== "premade";
+        });
+        if (voiceQuery && !nextMyVoices.some((voice) => voice.voiceId === voiceQuery)) {
+          const matchedByName = nextMyVoices.find(
             (voice) => voice.name.toLowerCase() === voiceQuery.trim().toLowerCase(),
           );
           if (matchedByName) {
             setVoiceQuery(matchedByName.voiceId);
+          } else {
+            setVoiceQuery(nextMyVoices[0]?.voiceId ?? "");
           }
+        } else if (!voiceQuery && nextMyVoices.length > 0) {
+          setVoiceQuery(nextMyVoices[0].voiceId);
         }
       });
     } catch (error) {
@@ -371,9 +390,6 @@ export default function TtsManager() {
       startTransition(() => {
         setPreview(nextPreview);
         setTextColumn(nextPreview.textColumn);
-        if (!filenamePrefix.trim()) {
-          setFilenamePrefix(nextPreview.sheetTitle);
-        }
         setSelectedBatch(null);
         setSelectedBatchId(null);
         setSelectedItemIds([]);
@@ -392,8 +408,8 @@ export default function TtsManager() {
       setErrorMessage("Hãy dán URL Google Sheets trước.");
       return;
     }
-    if (!voiceQuery.trim()) {
-      setErrorMessage("Hãy nhập từ khóa hoặc ID giọng đọc.");
+    if (!selectedVoice) {
+      setErrorMessage("Hay chon 1 voice trong My Voice truoc khi bat dau.");
       return;
     }
 
@@ -403,16 +419,16 @@ export default function TtsManager() {
       const detail = await createTtsBatch({
         sheetUrl: trimmedSheetUrl,
         textColumn: textColumn || undefined,
-        voiceQuery,
-        voiceId: selectedVoice?.voiceId,
-        voiceName: selectedVoice?.name,
+        voiceQuery: selectedVoice.voiceId,
+        voiceId: selectedVoice.voiceId,
+        voiceName: selectedVoice.name,
         modelFamily,
         tagText: modelFamily === "v3" ? tagText : "",
         takeCount,
         retryCount,
         workerCount,
         headless,
-        filenamePrefix: filenamePrefix.trim() || undefined,
+        channelPrefix: channelPrefix.trim() || undefined,
       });
       startTransition(() => {
         setSelectedBatch(detail);
@@ -553,19 +569,15 @@ export default function TtsManager() {
 
       <Card className="border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)] lg:sticky lg:top-6 lg:h-[calc(100dvh-3rem)] lg:overflow-hidden">
         <CardContent className="flex flex-col gap-6 pt-6 lg:h-full lg:overflow-auto">
-          <Alert>
-            <AlertTitle>
-              {sessionStatus?.authenticated ? "Phiên ElevenLabs đã sẵn sàng" : "Phiên ElevenLabs chưa sẵn sàng"}
-            </AlertTitle>
-            <AlertDescription>
-              {sessionStatus?.message ??
-                "Mở ElevenLabs trên trình duyệt cục bộ, đăng nhập rồi quay lại làm mới phiên."}
-            </AlertDescription>
-          </Alert>
+          <SessionStatusAlert
+            authenticated={Boolean(sessionStatus?.authenticated)}
+            notReadyTitle={"Phiên ElevenLabs chưa sẵn sàng"}
+            message={sessionStatus?.message ?? "Mở ElevenLabs trên trình duyệt cục bộ, đăng nhập rồi quay lại làm mới phiên."}
+          />
 
           <div className="flex flex-wrap gap-2">
             <Button type="button" variant="outline" onClick={() => void handleOpenLogin()}>
-              Mở đăng nhập ElevenLabs
+              {"Mở đăng nhập ElevenLabs"}
             </Button>
             <Button
               type="button"
@@ -659,27 +671,17 @@ export default function TtsManager() {
             <Field>
               <TooltipFieldLabel
                 htmlFor="tts-voice-query"
-                tooltip="Chọn một giọng từ phiên hiện tại hoặc nhập tên/ID giọng ElevenLabs."
+                tooltip="Chi nhan voice thuoc My Voice trong phien ElevenLabs hien tai."
               >
-                Từ khóa / ID giọng đọc
+                My Voice
               </TooltipFieldLabel>
-              {voices.length > 0 ? (
-                <VoicePicker
-                  voices={voices}
-                  value={voiceQuery || undefined}
-                  onValueChange={(value) => setVoiceQuery(value)}
-                  disabled={voiceFieldLoading}
-                  placeholder={voiceFieldPlaceholder}
-                />
-              ) : (
-                <Input
-                  id="tts-voice-query"
-                  value={voiceQuery}
-                  onChange={(event) => setVoiceQuery(event.target.value)}
-                  disabled={voiceFieldLoading}
-                  placeholder={voiceFieldLoading ? voiceFieldPlaceholder : "Ví dụ: Adam, Rachel, voice_abc..."}
-                />
-              )}
+              <VoicePicker
+                voices={myVoices}
+                value={voiceQuery || undefined}
+                onValueChange={(value) => setVoiceQuery(value)}
+                disabled={voiceFieldLoading || myVoices.length === 0}
+                placeholder={voiceFieldPlaceholder}
+              />
             </Field>
 
             <div className="grid items-start gap-4 md:grid-cols-4">
@@ -787,16 +789,16 @@ export default function TtsManager() {
 
             <Field>
               <TooltipFieldLabel
-                htmlFor="tts-filename-prefix"
-                tooltip="Tiền tố tùy chọn cho tên file (ví dụ: KB5). Nếu để trống, hệ thống sẽ tự lấy tên sheet/tab."
+                htmlFor="tts-channel-prefix"
+                tooltip="Tien to ten kenh de ghep thanh channel.stt (vi du: theoof.1.1). Neu de trong, file se chi dung stt."
               >
-                Tên file (Prefix)
+                Tên kênh (Prefix)
               </TooltipFieldLabel>
               <Input
-                id="tts-filename-prefix"
-                value={filenamePrefix}
-                onChange={(event) => setFilenamePrefix(event.target.value)}
-                placeholder="Ví dụ: KB5"
+                id="tts-channel-prefix"
+                value={channelPrefix}
+                onChange={(event) => setChannelPrefix(event.target.value)}
+                placeholder="Vi du: theoof"
               />
             </Field>
 
@@ -1051,3 +1053,4 @@ function TtsItemCard({
     </Card>
   );
 }
+

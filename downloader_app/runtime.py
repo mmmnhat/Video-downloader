@@ -81,6 +81,18 @@ def resolve_binary(name: str, env_var: str | None = None) -> str | None:
     if path_binary:
         return path_binary
 
+    # Dev fallback: use ffmpeg binary bundled by imageio-ffmpeg if installed.
+    # This lets clip/extract flows work even when ffmpeg is not in PATH.
+    if name.lower() in {"ffmpeg", "ffmpeg.exe"}:
+        try:
+            import imageio_ffmpeg  # type: ignore[import-not-found]
+
+            bundled_ffmpeg = Path(imageio_ffmpeg.get_ffmpeg_exe())
+            if bundled_ffmpeg.exists():
+                return str(bundled_ffmpeg)
+        except Exception:
+            pass
+
     return None
 
 

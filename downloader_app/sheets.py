@@ -341,19 +341,19 @@ def _extract_sheet_tab_title_from_html(payload: str, gid: str | None) -> str | N
     if normalized_gid:
         object_patterns = [
             re.compile(
-                rf'"sheetId"\s*:\s*"?{re.escape(normalized_gid)}"?[\s\S]{{0,1000}}?"title"\s*:\s*"([^"]+)"',
+                rf'"sheetId"\s*:\s*"?{re.escape(normalized_gid)}"?[\s\S]{{0,10000}}?"title"\s*:\s*"([^"]+)"',
                 re.IGNORECASE,
             ),
             re.compile(
-                rf'"title"\s*:\s*"([^"]+)"[\s\S]{{0,1000}}?"sheetId"\s*:\s*"?{re.escape(normalized_gid)}"?',
+                rf'"title"\s*:\s*"([^"]+)"[\s\S]{{0,10000}}?"sheetId"\s*:\s*"?{re.escape(normalized_gid)}"?',
                 re.IGNORECASE,
             ),
             re.compile(
-                rf'\bsheetId\s*:\s*"?{re.escape(normalized_gid)}"?[\s\S]{{0,1000}}?\btitle\s*:\s*"([^"]+)"',
+                rf'\bsheetId\s*:\s*"?{re.escape(normalized_gid)}"?[\s\S]{{0,10000}}?\btitle\s*:\s*"([^"]+)"',
                 re.IGNORECASE,
             ),
             re.compile(
-                rf'\btitle\s*:\s*"([^"]+)"[\s\S]{{0,1000}}?\bsheetId\s*:\s*"?{re.escape(normalized_gid)}"?',
+                rf'\btitle\s*:\s*"([^"]+)"[\s\S]{{0,10000}}?\bsheetId\s*:\s*"?{re.escape(normalized_gid)}"?',
                 re.IGNORECASE,
             ),
         ]
@@ -373,6 +373,14 @@ def _extract_sheet_tab_title_from_html(payload: str, gid: str | None) -> str | N
                 rf'<[^>]+data-sheet-id="{re.escape(normalized_gid)}"[^>]*>(.*?)</[^>]+>',
                 re.IGNORECASE | re.DOTALL,
             ),
+            re.compile(
+                rf'<[^>]+data-sheet-id="{re.escape(normalized_gid)}"[^>]+aria-label="([^"]+)"[^>]*>',
+                re.IGNORECASE | re.DOTALL,
+            ),
+            re.compile(
+                rf'<[^>]+data-sheet-id="{re.escape(normalized_gid)}"[^>]+title="([^"]+)"[^>]*>',
+                re.IGNORECASE | re.DOTALL,
+            ),
         ]
         for pattern in link_patterns:
             match = pattern.search(payload)
@@ -381,10 +389,27 @@ def _extract_sheet_tab_title_from_html(payload: str, gid: str | None) -> str | N
                 if title:
                     return title
 
+        # Fallback: locate gid first, then try to infer nearby tab-title keys.
+        nearby_patterns = (
+            rf'(?:"sheetId"|"gid"|"id")\s*:\s*"?{re.escape(normalized_gid)}"?[\s\S]{{0,6000}}?(?:"title"|"name"|"sheetName"|"tabName"|"caption")\s*:\s*"((?:\\.|[^"\\])+)"',
+            rf'(?:"title"|"name"|"sheetName"|"tabName"|"caption")\s*:\s*"((?:\\.|[^"\\])+)"[\s\S]{{0,6000}}?(?:"sheetId"|"gid"|"id")\s*:\s*"?{re.escape(normalized_gid)}"?',
+        )
+        gid_matches = list(re.finditer(re.escape(normalized_gid), payload))
+        for gid_match in gid_matches:
+            start = max(0, gid_match.start() - 20000)
+            end = min(len(payload), gid_match.end() + 20000)
+            window = payload[start:end]
+            for pattern in nearby_patterns:
+                match = re.search(pattern, window, re.IGNORECASE)
+                if not match:
+                    continue
+                title = _clean_html_text(_decode_embedded_text(match.group(1)))
+                if title and "google sheets" not in title.lower():
+                    return title
+
     selected_patterns = [
         re.compile(r'<[^>]+aria-selected="true"[^>]*>(.*?)</[^>]+>', re.IGNORECASE | re.DOTALL),
         re.compile(r'<[^>]+data-active="true"[^>]*>(.*?)</[^>]+>', re.IGNORECASE | re.DOTALL),
-        re.compile(r'<div[^>]+docs-sheet-tab-caption[^>]*>(.*?)</div>', re.IGNORECASE | re.DOTALL),
     ]
     for pattern in selected_patterns:
         match = pattern.search(payload)
@@ -832,11 +857,6 @@ def _scan_private_sheet(sheet_id: str, gid: str | None) -> SheetScanResult:
     if not selected_title:
         raise SheetParseError("Khong xac dinh duoc ten tab Google Sheets can doc.")
 
-    doc_title = metadata.get("properties", {}).get("title")
-    combined_title = selected_title
-    if doc_title and doc_title.strip() and doc_title.strip() != selected_title:
-        combined_title = f"{doc_title.strip()}-{selected_title}"
-
     escaped_title = selected_title.replace("'", "''")
     requested_range = quote(f"'{escaped_title}'", safe="")
     values = google_oauth.authorized_json(
@@ -849,7 +869,7 @@ def _scan_private_sheet(sheet_id: str, gid: str | None) -> SheetScanResult:
     return SheetScanResult(
         sheet_id=sheet_id,
         gid=selected_gid,
-        sheet_title=combined_title,
+        sheet_title=selected_title,
         cells=cells,
         entries=entries,
         access_mode="private_google_oauth",
@@ -884,10 +904,7 @@ def _scan_public_sheet(sheet_id: str, gid: str | None) -> SheetScanResult:
         )
         tab_title = _extract_sheet_tab_title_from_html(landing_page, gid)
         doc_title = _extract_sheet_title_from_html(landing_page)
-        if tab_title and doc_title and tab_title != doc_title:
-            sheet_title = f"{doc_title}-{tab_title}"
-        else:
-            sheet_title = tab_title or doc_title or ""
+        sheet_title = tab_title or doc_title or ""
     except Exception:
         sheet_title = ""
 
@@ -926,10 +943,7 @@ def _scan_browser_session_sheet(sheet_id: str, gid: str | None, sheet_url: str) 
         raise SheetParseError(str(exc)) from exc
     tab_title = _extract_sheet_tab_title_from_html(landing_page, gid)
     doc_title = _extract_sheet_title_from_html(landing_page)
-    if tab_title and doc_title and tab_title != doc_title:
-        sheet_title = f"{doc_title}-{tab_title}"
-    else:
-        sheet_title = tab_title or doc_title or "sheet"
+    sheet_title = tab_title or doc_title or "sheet"
 
     last_error: Exception | None = None
 

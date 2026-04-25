@@ -112,6 +112,13 @@ PLATFORM_RULES = {
             }
         )
     ),
+    "28lab": PlatformRule(
+        domains=frozenset(
+            {
+                "28lab.com",
+            }
+        )
+    ),
 }
 
 

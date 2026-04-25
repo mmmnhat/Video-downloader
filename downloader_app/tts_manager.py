@@ -17,6 +17,7 @@ from pathlib import Path
 from queue import Empty, Queue
 from urllib.request import HTTPCookieProcessor, Request, build_opener
 
+from downloader_app.browser_session import browser_session
 from downloader_app.jobs import build_sheet_sequence_stem, sanitize_file_stem, utc_now
 from downloader_app.runtime import app_path
 from downloader_app.tts_sheet import SheetTextEntry, scan_text_sheet
@@ -77,14 +78,15 @@ def _get_browser_candidates() -> list[TtsBrowserCandidate]:
         program_files_x86 = Path(os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)"))
 
         # CocCoc
-        candidates.append(
-            TtsBrowserCandidate(
-                name="CocCoc",
-                app_path=program_files_x86 / "CocCoc/Browser/Application",
-                executable_path=program_files_x86 / "CocCoc/Browser/Application/browser.exe",
-                user_data_dir=local_app_data / "CocCoc/Browser/User Data",
+        for coc_path in (program_files, program_files_x86, local_app_data):
+            candidates.append(
+                TtsBrowserCandidate(
+                    name="CocCoc",
+                    app_path=coc_path / "CocCoc/Browser/Application",
+                    executable_path=coc_path / "CocCoc/Browser/Application/browser.exe",
+                    user_data_dir=local_app_data / "CocCoc/Browser/User Data",
+                )
             )
-        )
         # Chrome
         chrome_paths = [
             (program_files / "Google/Chrome/Application", program_files / "Google/Chrome/Application/chrome.exe"),
@@ -152,6 +154,13 @@ class ElevenLabsAuthError(ElevenLabsError):
 
 def _looks_like_elevenlabs_voice_id(value: str) -> bool:
     return bool(re.fullmatch(r"[A-Za-z0-9]{16,32}", value.strip()))
+
+
+def _is_my_voice_entry(voice: dict) -> bool:
+    category = str(voice.get("category", "")).strip().lower()
+    if not category:
+        return False
+    return category != "premade"
 
 
 def _voice_query_variants(query: str) -> list[str]:
@@ -252,6 +261,7 @@ class TtsBatch:
     headless: bool
     work_dir: str
     filename_prefix: str | None = None
+    channel_prefix: str | None = None
     items: list[TtsItem] = field(default_factory=list)
 
 
@@ -560,7 +570,7 @@ class ElevenLabsAutomation:
                         if isinstance(body, dict) and "voices" in body:
                             voices = body["voices"]
                             # Only capture custom voices (not premade) to simulate "My Voices"
-                            custom_voices = [v for v in voices if v.get("category") != "premade"]
+                            custom_voices = [v for v in voices if _is_my_voice_entry(v)]
                             if custom_voices:
                                 self._cached_custom_voices = custom_voices
                                 print(f"[TTS] Captured {len(custom_voices)} custom voices from network.", flush=True)
@@ -579,7 +589,7 @@ class ElevenLabsAutomation:
             current_url = self._page.url
             if "/sign-in" in current_url:
                 raise ElevenLabsAuthError(
-                    f"Chua tim thay session ElevenLabs trong {self.browser_name}. Hay dang nhap ElevenLabs trong {self.browser_name} roi bam Refresh Session."
+                    f"Chưa tìm thấy phiên ElevenLabs trong {self.browser_name}. Hãy đăng nhập ElevenLabs trong {self.browser_name} rồi bấm Làm mới phiên."
                 )
             
             if hasattr(self, "_cached_custom_voices") and self._cached_custom_voices:
@@ -1214,7 +1224,7 @@ class ElevenLabsAutomation:
                 with _req.urlopen(request, timeout=15) as resp:
                     data = _json.loads(resp.read().decode())
                     voices = data.get("voices", [])
-                    custom_voices = [v for v in voices if v.get("category") != "premade"]
+                    custom_voices = [v for v in voices if _is_my_voice_entry(v)]
                     if custom_voices:
                         print(f"[TTS] Fetched {len(custom_voices)} custom voices via API (My Voices).", flush=True)
                         return custom_voices
@@ -1240,7 +1250,7 @@ class ElevenLabsAutomation:
                         if response.status == 200:
                             body = response.json()
                             if isinstance(body, dict) and "voices" in body:
-                                custom_voices = [v for v in body["voices"] if v.get("category") != "premade"]
+                                custom_voices = [v for v in body["voices"] if _is_my_voice_entry(v)]
                                 captured.extend(custom_voices)
                 except Exception:
                     pass
@@ -1271,9 +1281,10 @@ class ElevenLabsAutomation:
                     with _req2.urlopen(req2, timeout=15) as resp:
                         data = _json.loads(resp.read().decode())
                         voices = data.get("voices", [])
-                        if voices:
-                            print(f"[TTS] Fetched {len(voices)} voices via API (My Voices included).", flush=True)
-                            return voices
+                        custom_voices = [v for v in voices if _is_my_voice_entry(v)]
+                        if custom_voices:
+                            print(f"[TTS] Fetched {len(custom_voices)} custom voices via API (My Voices).", flush=True)
+                            return custom_voices
                 except Exception:
                     pass
 
@@ -1475,7 +1486,7 @@ class ElevenLabsSessionManager:
             return self._last_status
 
         status = {
-            "dependencies_ready": self._dependencies_ready(),
+            "dependencies_ready": True,
             "authenticated": False,
             "profileLocked": False,
             "browser": "Local browser",
@@ -1483,67 +1494,55 @@ class ElevenLabsSessionManager:
             "message": "",
             "checkedAt": utc_now(),
         }
-        if not status["dependencies_ready"]:
-            status["message"] = (
-                "Thieu Playwright. Hay chay `./.venv/bin/pip install -r requirements.txt` "
-                "va `./.venv/bin/python -m playwright install chromium`."
-            )
+        try:
+            profile = detect_tts_browser_profile()
+        except Exception as exc:  # noqa: BLE001
+            status["dependencies_ready"] = False
+            status["message"] = str(exc)
             self._last_status = status
             return status
 
-        try:
-            with ElevenLabsAutomation(
-                TTS_BATCH_ROOT / "_scratch",
-                headless=True,
-            ) as automation:
-                automation.ensure_authenticated()
-                status["browser"] = automation.browser_name
-        except ElevenLabsAuthError as exc:
-            status["message"] = str(exc)
-        except ElevenLabsError as exc:
-            lowered = str(exc).lower()
-            status["profileLocked"] = (
-                "dang mo" in lowered
-                or "used by another process" in lowered
-                or "lock" in lowered
-                or "profile appears to be in use" in lowered
-            )
-            status["message"] = str(exc)
-        else:
+        status["browser"] = profile.name
+        status["profileDir"] = str(profile.profile_dir)
+
+        cookie_path = profile.profile_dir / "Network" / "Cookies"
+        cookie_count = _cookie_count_for_domain(cookie_path, TTS_AUTH_DOMAIN)
+        if cookie_count > 0:
             status["authenticated"] = True
-            status["message"] = f"Da xac nhan session ElevenLabs tu {status['browser']}."
+            status["message"] = f"Đã kết nối qua phiên {profile.name}."
+        elif profile.name.lower() == "coccoc":
+            # CocCoc may lock/decrypt cookies differently; treat detected active profile as ready.
+            status["authenticated"] = True
+            status["message"] = (
+                "Đã kết nối qua phiên CocCoc. "
+                "Nếu gặp lỗi khi chạy TTS, hãy mở ElevenLabs trong CocCoc rồi bấm Làm mới phiên."
+            )
+        else:
+            status["message"] = (
+                f"Chưa tìm thấy phiên ElevenLabs trong {profile.name}. "
+                f"Hãy đăng nhập ElevenLabs trong {profile.name} rồi bấm Làm mới phiên."
+            )
 
         self._last_status = status
         return status
 
     def open_login(self) -> dict:
-        browser = detect_tts_login_browser()
+        browser_name = "browser local"
         try:
-            if sys.platform == "win32":
-                subprocess.Popen(
-                    [str(browser.executable_path), ELEVENLABS_LOGIN_URL],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    stdin=subprocess.DEVNULL,
-                    close_fds=True,
-                )
-            else:
-                subprocess.Popen(
-                    ["open", "-a", str(browser.app_path), ELEVENLABS_LOGIN_URL],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    stdin=subprocess.DEVNULL,
-                    close_fds=True,
-                )
+            browser_name = detect_tts_login_browser().name
+        except Exception:
+            pass
+        try:
+            opened_payload = browser_session.open_login(ELEVENLABS_LOGIN_URL)
         except Exception as exc:  # noqa: BLE001
-            raise ElevenLabsError(f"Khong mo duoc cua so dang nhap ElevenLabs: {exc}") from exc
+            raise ElevenLabsError(f"Không mở được cửa sổ đăng nhập ElevenLabs: {exc}") from exc
 
         return {
-            "opened": True,
+            "opened": bool(opened_payload.get("opened", True)),
             "url": ELEVENLABS_LOGIN_URL,
             "message": (
-                f"Da mo ElevenLabs trong {browser.name}. Dang nhap trong {browser.name}, "
-                "roi quay lai app bam Refresh Session."
+                f"Đã mở ElevenLabs trên {browser_name}. Đăng nhập trong {browser_name}, "
+                "rồi quay lại app bấm Làm mới phiên."
             ),
         }
 
@@ -1591,7 +1590,12 @@ class TtsManager:
             try:
                 cached_data = json.loads(cache_file.read_text(encoding="utf-8"))
                 if isinstance(cached_data, dict) and "voices" in cached_data and "time" in cached_data:
-                    self._voice_cache = cached_data["voices"]
+                    cached_voices = cached_data["voices"] if isinstance(cached_data["voices"], list) else []
+                    self._voice_cache = [
+                        voice
+                        for voice in cached_voices
+                        if isinstance(voice, dict) and _is_my_voice_entry(voice)
+                    ]
                     self._voice_cache_time = cached_data["time"]
             except Exception:
                 pass
@@ -1612,6 +1616,8 @@ class TtsManager:
 
         results: list[dict] = []
         for voice in voices:
+            if not _is_my_voice_entry(voice):
+                continue
             voice_id = str(voice.get("voice_id", "")).strip()
             name = str(voice.get("name", "")).strip()
             if not voice_id or not name:
@@ -1690,11 +1696,20 @@ class TtsManager:
         worker_count: int = 1,
         headless: bool = False,
         filename_prefix: str | None = None,
+        channel_prefix: str | None = None,
         tag_text: str = "",
         text_column: str | None = None,
     ) -> dict:
         if not voice_query.strip():
             raise ValueError("voice_query is required.")
+        normalized_voice_id = (voice_id or "").strip()
+        if not normalized_voice_id:
+            raise ValueError("Chi cho phep dung voice trong My Voice. Hay chon voice tu danh sach My Voice.")
+        allowed_voices = self.list_available_voices(refresh=False)
+        allowed_map = {str(voice.get("voiceId", "")).strip(): voice for voice in allowed_voices if isinstance(voice, dict)}
+        selected_voice = allowed_map.get(normalized_voice_id)
+        if selected_voice is None:
+            raise ValueError("Voice da chon khong thuoc My Voice cua phien hien tai. Hay Lam moi phien va chon lai.")
         if model_family.strip().lower() not in {"v2", "v3"}:
             raise ValueError("model_family phai la `v2` hoac `v3`.")
         take_count = _clamp_int(take_count, default=1, minimum=1, maximum=5)
@@ -1717,9 +1732,9 @@ class TtsManager:
             gid=scan_result.gid,
             sheet_access_mode=scan_result.access_mode,
             text_column=scan_result.text_column,
-            voice_query=voice_query.strip(),
-            voice_id=(voice_id or "").strip() or None,
-            voice_name=(voice_name or "").strip() or None,
+            voice_query=normalized_voice_id,
+            voice_id=normalized_voice_id,
+            voice_name=str(selected_voice.get("name", "")).strip() or (voice_name or "").strip() or None,
             model_family=model_family.strip().lower(),
             tag_text=tag_text.strip(),
             take_count=take_count,
@@ -1728,9 +1743,11 @@ class TtsManager:
             headless=bool(headless),
             work_dir=str(batch_dir),
             filename_prefix=filename_prefix,
+            channel_prefix=(channel_prefix or "").strip() or None,
             items=self._build_items(
                 scan_result.entries,
                 filename_prefix or scan_result.sheet_title,
+                (channel_prefix or "").strip() or None,
                 batch_dir,
                 take_count,
                 model_family=model_family.strip().lower(),
@@ -2201,6 +2218,7 @@ class TtsManager:
         self,
         entries: list[SheetTextEntry],
         sheet_title: str,
+        channel_prefix: str | None,
         batch_dir: Path,
         take_count: int,
         *,
@@ -2209,7 +2227,7 @@ class TtsManager:
         items: list[TtsItem] = []
         used_names: dict[str, int] = {}
         for entry in entries:
-            base_name = build_sheet_sequence_stem(sheet_title, entry.sequence_label)
+            base_name = build_sheet_sequence_stem(sheet_title, entry.sequence_label, channel_prefix)
             suffix = used_names.get(base_name, 0) + 1
             used_names[base_name] = suffix
             output_base = base_name if suffix == 1 else f"{base_name}-{suffix}"
@@ -2252,6 +2270,7 @@ class TtsManager:
             "sheetUrl": batch.sheet_url,
             "textColumn": batch.text_column,
             "filenamePrefix": batch.filename_prefix,
+            "channelPrefix": batch.channel_prefix,
             "voiceQuery": batch.voice_query,
             "voiceId": batch.voice_id,
             "voiceName": batch.voice_name,
@@ -2409,6 +2428,8 @@ class TtsManager:
             worker_count=int(payload.get("workerCount", 1)),
             headless=bool(payload.get("headless", False)),
             work_dir=str(payload["workDir"]),
+            filename_prefix=None if payload.get("filenamePrefix") is None else str(payload.get("filenamePrefix")),
+            channel_prefix=None if payload.get("channelPrefix") is None else str(payload.get("channelPrefix")),
             items=[
                 self._deserialize_item(item_payload, model_family=str(payload["modelFamily"]))
                 for item_payload in payload.get("items", [])
