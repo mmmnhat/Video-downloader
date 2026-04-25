@@ -28,6 +28,7 @@ SUBPROCESS_KWARGS = {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x
 DEFAULT_OUTPUT_DIR = app_path("downloads")
 STATE_FILE = app_path("app_state.json")
 QUALITY_OPTIONS = {"auto", "1080", "720", "480", "360"}
+VIDEO_REPAIR_TARGET_HEIGHT = 1080
 COOKIE_DOMAIN_HINTS = {
     "youtube": ["youtube.com", "google.com", "youtu.be"],
     "facebook": ["facebook.com", "fb.watch"],
@@ -737,8 +738,22 @@ class DownloadManager:
                     should_skip = True
 
             if should_skip:
-                print(f"[DEBUG] Skipping {item.id} ({item.output_name}) as output already exists.")
-                return str(expected_base_path)
+                try:
+                    checked_path = self._ensure_video_integrity(
+                        batch_id=batch_id,
+                        item=item,
+                        output_path=str(expected_base_path),
+                        cancel_event=cancel_event,
+                    )
+                    print(f"[DEBUG] Skipping {item.id} ({item.output_name}) as output already exists.")
+                    return checked_path
+                except BatchCancelledError:
+                    raise
+                except Exception as exc:
+                    print(
+                        f"[DEBUG] Existing output failed integrity check for {item.id}, re-downloading: {exc}",
+                        flush=True,
+                    )
 
             output_template = str(target_dir / f"{item.output_name}.%(ext)s")
             # Reuse the shared cookie file built once at batch start
@@ -828,6 +843,7 @@ class DownloadManager:
                             output_name=item.output_name,
                             yt_dlp_lines=lines,
                         )
+                        final_output_path = self._ensure_video_integrity(batch_id, item, final_output_path, cancel_event)
                         final_output_path = self._ensure_h264_output(batch_id, item, final_output_path, cancel_event)
                         return self._auto_cut_file(batch_id, item, final_output_path, cancel_event)
 
@@ -872,6 +888,7 @@ class DownloadManager:
                                 output_name=item.output_name,
                                 yt_dlp_lines=lines,
                             )
+                            final_output_path = self._ensure_video_integrity(batch_id, item, final_output_path, cancel_event)
                             final_output_path = self._ensure_h264_output(batch_id, item, final_output_path, cancel_event)
                             return self._auto_cut_file(batch_id, item, final_output_path, cancel_event)
                         last_error = (stderr or stdout or "yt-dlp failed").strip()
@@ -1799,6 +1816,208 @@ class DownloadManager:
         # Keep the original file. Return the original base path so that
         # `_explode_item_details` can correctly derive clip paths (e.g. 1.1.mp4, 1.2.mp4).
         return str(source_path)
+
+    def _ensure_video_integrity(
+        self,
+        batch_id: str,
+        item: DownloadItem,
+        output_path: str,
+        cancel_event: threading.Event,
+    ) -> str:
+        source_path = Path(output_path)
+        if not source_path.exists() or not self._ffmpeg_cmd:
+            return output_path
+
+        is_healthy, reason = self._verify_video_integrity(batch_id, item, source_path, cancel_event)
+        if is_healthy:
+            return output_path
+
+        diagnostics: list[str] = [reason or "ffmpeg integrity check failed"]
+        target_path = source_path.with_suffix(".mp4")
+        remux_path = target_path.with_name(f"{target_path.stem}.repair-remux.mp4")
+        reencode_path = target_path.with_name(f"{target_path.stem}.repair-reencode.mp4")
+
+        remux_command = [
+            self._require_ffmpeg(),
+            "-y",
+            "-i",
+            str(source_path),
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a?",
+            "-c",
+            "copy",
+            "-movflags",
+            "+faststart",
+            str(remux_path),
+        ]
+        remux_code, remux_stdout, remux_stderr = self._run_ffmpeg_command(
+            batch_id=batch_id,
+            item_id=item.id,
+            command=remux_command,
+        )
+        if cancel_event.is_set():
+            remux_path.unlink(missing_ok=True)
+            reencode_path.unlink(missing_ok=True)
+            raise BatchCancelledError("Batch stopped by user.")
+        if remux_code == 0:
+            remux_ok, remux_reason = self._verify_video_integrity(batch_id, item, remux_path, cancel_event)
+            if remux_ok:
+                if source_path != target_path:
+                    source_path.unlink(missing_ok=True)
+                remux_path.replace(target_path)
+                reencode_path.unlink(missing_ok=True)
+                return str(target_path)
+            diagnostics.append(f"Remux output still invalid: {remux_reason or 'unknown error'}")
+        else:
+            diagnostics.append(
+                f"Remux failed: {self._summarize_process_message(remux_stdout, remux_stderr, 'ffmpeg remux failed')}"
+            )
+        remux_path.unlink(missing_ok=True)
+
+        reencode_command = [
+            self._require_ffmpeg(),
+            "-y",
+            "-err_detect",
+            "ignore_err",
+            "-i",
+            str(source_path),
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a?",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "18",
+            "-vf",
+            f"scale=-2:{VIDEO_REPAIR_TARGET_HEIGHT}:flags=lanczos",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-movflags",
+            "+faststart",
+            str(reencode_path),
+        ]
+        reencode_code, reencode_stdout, reencode_stderr = self._run_ffmpeg_command(
+            batch_id=batch_id,
+            item_id=item.id,
+            command=reencode_command,
+        )
+        if cancel_event.is_set():
+            remux_path.unlink(missing_ok=True)
+            reencode_path.unlink(missing_ok=True)
+            raise BatchCancelledError("Batch stopped by user.")
+        if reencode_code != 0:
+            reencode_path.unlink(missing_ok=True)
+            diagnostics.append(
+                f"Re-encode failed: {self._summarize_process_message(reencode_stdout, reencode_stderr, 'ffmpeg re-encode failed')}"
+            )
+            raise RuntimeError("; ".join(diagnostics))
+
+        reencode_ok, reencode_reason = self._verify_video_integrity(batch_id, item, reencode_path, cancel_event)
+        if not reencode_ok:
+            reencode_path.unlink(missing_ok=True)
+            diagnostics.append(f"Re-encoded output still invalid: {reencode_reason or 'unknown error'}")
+            raise RuntimeError("; ".join(diagnostics))
+
+        if source_path != target_path:
+            source_path.unlink(missing_ok=True)
+        reencode_path.replace(target_path)
+        remux_path.unlink(missing_ok=True)
+        return str(target_path)
+
+    def _verify_video_integrity(
+        self,
+        batch_id: str,
+        item: DownloadItem,
+        source_path: Path,
+        cancel_event: threading.Event,
+    ) -> tuple[bool, str | None]:
+        if not source_path.exists():
+            return False, "Output file not found."
+
+        if not self._ffmpeg_cmd:
+            return True, None
+
+        command = [
+            self._require_ffmpeg(),
+            "-v",
+            "error",
+            "-xerror",
+            "-err_detect",
+            "explode",
+            "-i",
+            str(source_path),
+            "-map",
+            "0:v:0",
+            "-f",
+            "null",
+            "-",
+        ]
+        returncode, stdout, stderr = self._run_ffmpeg_command(
+            batch_id=batch_id,
+            item_id=item.id,
+            command=command,
+        )
+        if cancel_event.is_set():
+            raise BatchCancelledError("Batch stopped by user.")
+        if returncode == 0:
+            return True, None
+
+        message = self._summarize_process_message(stdout, stderr, "ffmpeg integrity check failed")
+        lowered = message.lower()
+        if (
+            "unknown decoder" in lowered
+            or "decoder not found" in lowered
+            or "unsupported codec" in lowered
+            or "could not find codec parameters" in lowered
+        ):
+            # Decoder support varies by bundled ffmpeg build. Skip strict integrity
+            # rejection if this runtime cannot decode the source codec.
+            return True, None
+        return False, message
+
+    def _run_ffmpeg_command(
+        self,
+        batch_id: str,
+        item_id: str,
+        command: list[str],
+    ) -> tuple[int, str, str]:
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            **SUBPROCESS_KWARGS,
+        )
+        with self._lock:
+            self._active_processes.setdefault(batch_id, {})[item_id] = process
+
+        try:
+            stdout, stderr = process.communicate()
+        finally:
+            with self._lock:
+                self._active_processes.get(batch_id, {}).pop(item_id, None)
+
+        if process.returncode != 0:
+            print(f"[DEBUG ffmpeg] Failed for {item_id}\nSTDERR: {stderr}\nSTDOUT: {stdout}", flush=True)
+        return process.returncode, stdout, stderr
+
+    def _summarize_process_message(self, stdout: str, stderr: str, fallback: str) -> str:
+        message = (stderr or stdout or fallback).strip()
+        if not message:
+            return fallback
+        lines = [line.strip() for line in message.splitlines() if line.strip()]
+        if not lines:
+            return fallback
+        return lines[-1]
 
     def _ensure_h264_output(
         self,

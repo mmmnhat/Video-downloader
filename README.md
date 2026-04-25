@@ -219,3 +219,13 @@ Công cụ phục vụ tự động hóa workflow nội bộ/cá nhân. Người
 - Co co che lam moi danh sach qua `GET /api/tts/voices?refresh=1`.
 - Uu tien fetch full list qua ElevenLabs API/session; du lieu intercept chi dung fallback.
 - Browser/profile cho TTS duoc chon theo profile co cookie ElevenLabs phu hop nhat.
+
+## Video download resilience updates (2026-04-25)
+
+- Added post-download video integrity verification using `ffmpeg` decode check.
+- If a file is corrupted, downloader now auto-attempts:
+  1. MP4 remux (`-c copy`)
+  2. Fallback re-encode (`libx264 + aac`)
+- Re-encoded repair output is upscaled to 1080p with:
+  `scale=-2:1080:flags=lanczos`
+- Existing output files are also verified before skip; invalid files are re-downloaded.

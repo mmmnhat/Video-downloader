@@ -32,6 +32,7 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { TooltipFieldLabel } from "@/components/ui/tooltip-field-label";
 import { cn } from "@/lib/utils";
 import {
   applyStoryAction,
@@ -81,27 +82,57 @@ function getErrorMessage(error: unknown) {
   if (error instanceof Error) {
     return error.message;
   }
-  return "Yeu cau that bai.";
+  return "Yêu cầu thất bại.";
 }
 
 function storyStatusLabel(status: string) {
   switch (status) {
     case "all":
-      return "TAT CA";
+      return "Tất cả";
     case "queued":
-      return "CHO";
+      return "Chờ";
     case "running":
-      return "CHAY";
+      return "Chạy";
     case "review":
-      return "DUYET";
+      return "Duyệt";
     case "completed":
-      return "XONG";
+      return "Xong";
     case "paused":
-      return "TAM DUNG";
+      return "Tạm dừng";
     case "failed":
-      return "LOI";
+      return "Lỗi";
     default:
       return status.toUpperCase();
+  }
+}
+
+function storyActionLabel(action: StoryActionType) {
+  switch (action) {
+    case "accept":
+      return "duyệt";
+    case "regenerate":
+      return "tạo lại";
+    case "refine":
+      return "tinh chỉnh";
+    case "skip":
+      return "bỏ qua";
+    default:
+      return action;
+  }
+}
+
+function storyModeLabel(mode: string | null | undefined) {
+  switch (mode) {
+    case "chain":
+      return "Chuỗi";
+    case "from_source":
+      return "Từ nguồn";
+    case null:
+    case undefined:
+    case "":
+      return "-";
+    default:
+      return mode;
   }
 }
 
@@ -286,7 +317,7 @@ function VideoThumb({
   if (!path) {
     return (
       <div className={cn("flex items-center justify-center rounded-md border border-border/70 bg-muted/35 text-xs text-muted-foreground", className)}>
-        no preview
+        không có xem trước
       </div>
     );
   }
@@ -523,7 +554,7 @@ export default function StoryStudio() {
         try {
           const payload = JSON.parse(messageEvent.data) as { type?: string };
           if (payload.type === "story.video.created") {
-            toast("Story video moi da vao queue.");
+            toast("Video Story mới đã vào hàng đợi.");
           }
         } catch {
           // no-op
@@ -686,7 +717,7 @@ export default function StoryStudio() {
   const handleOpenLogin = useCallback(async () => {
     try {
       await openStoryLogin();
-      toast.success("Da mo trinh duyet de dang nhap Gemini.");
+      toast.success("Đã mở trình duyệt để đăng nhập Gemini.");
     } catch (error) {
       toast.error(getErrorMessage(error));
     }
@@ -695,12 +726,12 @@ export default function StoryStudio() {
   const handleOpenOutputFolder = useCallback(async () => {
     const outputRoot = settingsDraft?.output_root?.trim() ?? "";
     if (!outputRoot) {
-      toast.error("Chua co output_root trong Story settings.");
+      toast.error("Chưa có thư mục output trong cài đặt Story.");
       return;
     }
     try {
       await openFolder(outputRoot);
-      toast.success("Da mo thu muc output.");
+      toast.success("Đã mở thư mục output.");
     } catch (error) {
       toast.error(getErrorMessage(error));
     }
@@ -716,7 +747,7 @@ export default function StoryStudio() {
       startTransition(() => {
         setSettingsDraft(next);
       });
-      toast.success("Da luu Story settings.");
+      toast.success("Đã lưu cài đặt Story.");
       await handleRefreshSession();
     } catch (error) {
       toast.error(getErrorMessage(error));
@@ -733,7 +764,7 @@ export default function StoryStudio() {
         setGlobalPrompt(result.globalPrompt);
         setGlobalPromptDraft(result.globalPrompt);
       });
-      toast.success("Da cap nhat Global prompt.");
+      toast.success("Đã cập nhật prompt tổng.");
     } catch (error) {
       toast.error(getErrorMessage(error));
     } finally {
@@ -748,12 +779,12 @@ export default function StoryStudio() {
       const gems = await listStoryGems();
       setAvailableGems(gems);
       if (gems.length > 0) {
-        toast.success(`Da quet duoc ${gems.length} Gem.`);
+        toast.success(`Đã quét được ${gems.length} Gem.`);
       } else {
-        toast.info("Khong tim thay Gem nao. Hay dam bao ban da dang nhap Gemini.");
+        toast.info("Không tìm thấy Gem nào. Hãy bảo đảm bạn đã đăng nhập Gemini.");
       }
     } catch (error) {
-      toast.error("Loi khi quet danh sach Gem.");
+      toast.error("Lỗi khi quét danh sách Gem.");
     } finally {
       setFetchingGems(false);
     }
@@ -768,12 +799,12 @@ export default function StoryStudio() {
       setScanningFolder(true);
       const imported = await scanStoryFolder(path);
       if (imported.length === 0) {
-        toast.info("Khong tim thay video co marker XMP.");
+        toast.info("Không tìm thấy video có marker XMP.");
         return;
       }
       applyVideoDetail(imported[0]);
       await refreshSummaries(true);
-      toast.success(`Da quet va import ${imported.length} video.`);
+      toast.success(`Đã quét và import ${imported.length} video.`);
     } catch (error) {
       toast.error(getErrorMessage(error));
     } finally {
@@ -789,7 +820,7 @@ export default function StoryStudio() {
     try {
       const detail = await runStoryVideo(selectedVideoId);
       applyVideoDetail(detail);
-      toast.success("Da chay video.");
+      toast.success("Đã chạy video.");
     } catch (error) {
       toast.error(getErrorMessage(error));
     } finally {
@@ -805,7 +836,7 @@ export default function StoryStudio() {
     try {
       const detail = await pauseStoryVideo(selectedVideoId);
       applyVideoDetail(detail);
-      toast.success("Da tam dung video.");
+      toast.success("Đã tạm dừng video.");
     } catch (error) {
       toast.error(getErrorMessage(error));
     } finally {
@@ -835,7 +866,7 @@ export default function StoryStudio() {
             attemptId: attemptId ?? null,
           },
         });
-        toast.success(`Da thuc hien ${action.toUpperCase()}.`);
+        toast.success(`Đã ${storyActionLabel(action)}.`);
       } catch (error) {
         toast.error(getErrorMessage(error));
       } finally {
@@ -865,7 +896,7 @@ export default function StoryStudio() {
       applyVideoDetail(detail, {
         preferred: nextStep ?? undefined,
       });
-      toast.success("Da ACCEPT va chuyen step tiep theo.");
+      toast.success("Đã duyệt và chuyển sang bước tiếp theo.");
     } catch (error) {
       toast.error(getErrorMessage(error));
     } finally {
@@ -895,7 +926,7 @@ export default function StoryStudio() {
       <Card className="border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)]">
         <CardContent className="flex items-center justify-center gap-3 py-16 text-sm text-muted-foreground">
           <Loader2 className="size-4 animate-spin" />
-          Dang tai Story Pipeline...
+          Đang tải Story Pipeline...
         </CardContent>
       </Card>
     );
@@ -905,7 +936,7 @@ export default function StoryStudio() {
     <div className="grid gap-4 lg:grid-cols-[19rem_minmax(0,1fr)_22rem]">
       {bootError ? (
         <Alert className="lg:col-span-3" variant="destructive">
-          <AlertTitle>Khong tai duoc Story bootstrap</AlertTitle>
+          <AlertTitle>Không tải được dữ liệu khởi tạo Story</AlertTitle>
           <AlertDescription>{bootError}</AlertDescription>
         </Alert>
       ) : null}
@@ -915,19 +946,18 @@ export default function StoryStudio() {
           <CardTitle className="flex items-center justify-between text-base">
             <span className="flex items-center gap-2">
               <Clapperboard className="size-4 text-primary" />
-              Hang doi video
+              Hàng đợi video
             </span>
-            <Badge variant="outline">{videoSummaries.length}</Badge>
+            <Badge variant="outline" title={`Đang chờ ${pendingVideoCount} video`}>
+              {videoSummaries.length}
+            </Badge>
           </CardTitle>
-          <div className="rounded-lg border border-border/70 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-            Dang cho {pendingVideoCount} video
-          </div>
           <div className="grid grid-cols-4 gap-1">
             {[
-              { value: "all", label: "TAT CA" },
-              { value: "running", label: "CHAY" },
-              { value: "review", label: "DUYET" },
-              { value: "queued", label: "CHO" },
+              { value: "all", label: "Tất cả" },
+              { value: "running", label: "Chạy" },
+              { value: "review", label: "Duyệt" },
+              { value: "queued", label: "Chờ" },
             ].map((item) => (
               <Button
                 key={item.value}
@@ -992,7 +1022,7 @@ export default function StoryStudio() {
               })}
               {filteredVideoSummaries.length === 0 ? (
                 <div className="rounded-lg border border-dashed border-border/70 px-3 py-4 text-xs text-muted-foreground">
-                  Khong co video phu hop filter {storyStatusLabel(queueFilter)}.
+                  Không có video phù hợp với bộ lọc {storyStatusLabel(queueFilter)}.
                 </div>
               ) : null}
             </div>
@@ -1001,9 +1031,12 @@ export default function StoryStudio() {
           <Separator />
 
           <div className="flex flex-col gap-2">
-            <div className="text-xs font-medium uppercase text-muted-foreground">
-              Worker
-            </div>
+            <TooltipFieldLabel
+              tooltip="Hiển thị các video đang chạy trên từng luồng xử lý song song."
+              className="text-sm font-medium text-foreground"
+            >
+              Luồng xử lý
+            </TooltipFieldLabel>
             <div className="flex flex-col gap-2">
               {workerSlots.map((video, index) => (
                 <div
@@ -1012,7 +1045,7 @@ export default function StoryStudio() {
                 >
                   <span className="text-muted-foreground">W{index + 1}</span>
                   <span className="max-w-[11rem] truncate text-right text-foreground">
-                    {video ? video.name : "Idle"}
+                    {video ? video.name : "Rảnh"}
                   </span>
                 </div>
               ))}
@@ -1028,7 +1061,7 @@ export default function StoryStudio() {
             onClick={() => void handleOpenOutputFolder()}
           >
             <FolderOpen className="size-4" />
-            Mo thu muc output
+            Mở thư mục output
           </Button>
         </CardContent>
       </Card>
@@ -1036,44 +1069,45 @@ export default function StoryStudio() {
       <Card className="border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)]">
         <CardHeader className="gap-2 border-b border-border/70">
           <CardTitle className="flex items-center justify-between text-base">
-            <span>{selectedVideo?.name ?? "Moc timeline"}</span>
+            <TooltipFieldLabel
+              tooltip={`Chế độ: ${storyModeLabel(selectedVideo?.mode)}`}
+              className="text-base font-semibold text-foreground"
+            >
+              {selectedVideo?.name ?? "Mốc timeline"}
+            </TooltipFieldLabel>
             {selectedVideo ? (
               <Badge variant="outline" className={storyStatusTone(selectedVideo.status).className}>
                 {storyStatusLabel(selectedVideo.status)}
               </Badge>
             ) : null}
           </CardTitle>
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <span>Che do: {selectedVideo?.mode ?? "-"}</span>
-            {detailLoading ? (
-              <span className="inline-flex items-center gap-1">
-                <Loader2 className="size-3 animate-spin" />
-                dang dong bo
-              </span>
-            ) : null}
-          </div>
+          {detailLoading ? (
+            <span title="Đang đồng bộ">
+              <Loader2 className="size-4 animate-spin text-muted-foreground" />
+            </span>
+          ) : null}
         </CardHeader>
         <CardContent className="flex h-[calc(100dvh-10rem)] flex-col gap-4 pt-4">
           <div className="flex-1 overflow-auto pr-1">
             {!selectedVideo ? (
               <div className="rounded-xl border border-border/70 bg-muted/20 px-4 py-5 text-sm text-muted-foreground">
-                Chua co video. Hay import manifest de bat dau.
+                Chưa có video. Hãy import manifest để bắt đầu.
               </div>
             ) : (
               <div className="flex flex-col gap-4">
                 {[
-                  { key: "active", title: "Dang xu ly", markers: markerGroups.active },
-                  { key: "queued", title: "Dang cho", markers: markerGroups.queued },
-                  { key: "done", title: "Hoan tat", markers: markerGroups.done },
+                  { key: "active", title: "Đang xử lý", markers: markerGroups.active },
+                  { key: "queued", title: "Đang chờ", markers: markerGroups.queued },
+                  { key: "done", title: "Hoàn tất", markers: markerGroups.done },
                 ].map((group) => (
                   <div key={group.key} className="flex flex-col gap-2">
-                    <div className="text-xs font-medium uppercase text-muted-foreground">
+                    <div className="text-sm font-medium text-foreground">
                       {group.title}
                     </div>
                     <div className="flex flex-col gap-2">
                       {group.markers.length === 0 ? (
                         <div className="rounded-lg border border-dashed border-border/70 px-3 py-2 text-xs text-muted-foreground">
-                          Khong co marker
+                          Không có marker
                         </div>
                       ) : null}
                       {group.markers.map((marker) => {
@@ -1097,7 +1131,7 @@ export default function StoryStudio() {
                             >
                               <div className="min-w-0">
                                 <div className="truncate text-sm font-medium text-foreground">
-                                  M{String(marker.index).padStart(3, "0")} · {marker.label}
+                                  {`M${String(marker.index).padStart(3, "0")} - ${marker.label}`}
                                 </div>
                                 <div className="mt-0.5 text-xs text-muted-foreground tabular-nums">
                                   {formatTimestampMs(marker.timestampMs)}
@@ -1161,7 +1195,7 @@ export default function StoryStudio() {
                                                 {normalizedReady ? (
                                                   <span className="absolute right-1 top-1 inline-flex items-center gap-1 rounded-full border border-emerald-300/40 bg-emerald-500/20 px-2 py-0.5 text-[10px] text-emerald-100">
                                                     <Check className="size-3" />
-                                                    norm
+                                                    chuẩn
                                                   </span>
                                                 ) : null}
                                               </div>
@@ -1184,7 +1218,7 @@ export default function StoryStudio() {
                                                 {stepBusyAccept ? (
                                                   <Loader2 className="size-3 animate-spin" />
                                                 ) : (
-                                                  "Accept"
+                                                  "Duyệt"
                                                 )}
                                               </Button>
                                               <Button
@@ -1248,23 +1282,12 @@ export default function StoryStudio() {
             )}
           </div>
 
-          <Separator />
-          <div className="rounded-lg border border-border/70 bg-muted/35 px-3 py-2 text-xs text-muted-foreground">
-            {selectedVideo ? (
-              <span className="tabular-nums">
-                {selectedVideo.name} &gt; M{selectedMarker ? String(selectedMarker.index).padStart(3, "0") : "---"} &gt;{" "}
-                {selectedStep?.title ?? "Step"} · Attempt {selectedAttempt?.index ?? 0}
-              </span>
-            ) : (
-              "Chua co muc dang chon"
-            )}
-          </div>
         </CardContent>
       </Card>
 
       <Card className="border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)]">
         <CardHeader className="gap-2 border-b border-border/70">
-          <CardTitle className="text-base">Dieu khien Prompt</CardTitle>
+          <CardTitle className="text-base">Điều khiển prompt</CardTitle>
         </CardHeader>
         <CardContent className="flex h-[calc(100dvh-10rem)] flex-col gap-4 pt-4">
           <div className="flex-1 overflow-auto pr-1">
@@ -1290,36 +1313,35 @@ export default function StoryStudio() {
               </div>
 
               <div className="rounded-xl border border-border/70 bg-muted/20 p-3">
-                <div className="mb-2 text-xs font-medium uppercase text-muted-foreground">
-                  Quet marker XMP
-                </div>
                 <Button
                   type="button"
                   variant="outline"
                   className="w-full"
                   disabled={scanningFolder}
                   onClick={() => void handleScanFolder()}
+                  title="Quét marker XMP từ thư mục project Premiere để tạo danh sách video Story."
                 >
                   {scanningFolder ? (
                     <Loader2 className="size-4 animate-spin" />
                   ) : (
                     <FolderOpen className="size-4" />
                   )}
-                  Quet thu muc project Premiere
+                  Quét thư mục project Premiere
                 </Button>
               </div>
 
 
               {settingsDraft ? (
                 <div className="rounded-xl border border-border/70 bg-muted/20 p-3">
-                  <div className="mb-2 text-xs font-medium uppercase text-muted-foreground">
-                    Bo lap lich
-                  </div>
                   <div className="flex flex-col gap-3">
                     <div className="flex flex-col gap-1">
-                      <label className="text-xs text-muted-foreground" htmlFor="story-workers">
-                        So worker toi da
-                      </label>
+                      <TooltipFieldLabel
+                        htmlFor="story-workers"
+                        tooltip="Số video tối đa được xử lý đồng thời trong Story Pipeline."
+                        className="text-sm font-medium text-foreground"
+                      >
+                        Số luồng tối đa
+                      </TooltipFieldLabel>
                       <Input
                         id="story-workers"
                         type="number"
@@ -1343,7 +1365,12 @@ export default function StoryStudio() {
                     </div>
 
                     <div className="flex flex-col gap-1">
-                      <label className="text-xs text-muted-foreground">Chon Gem (bo huong dan)</label>
+                      <TooltipFieldLabel
+                        tooltip="Chọn Gem mặc định để điều hướng prompt. Có thể bấm nút làm mới để quét lại danh sách."
+                        className="text-sm font-medium text-foreground"
+                      >
+                        Chọn Gem
+                      </TooltipFieldLabel>
                       <div className="flex gap-2">
                         <Select
                           value={settingsDraft.gemini_base_url}
@@ -1354,12 +1381,12 @@ export default function StoryStudio() {
                           }
                         >
                           <SelectTrigger className="flex-1">
-                            <SelectValue placeholder="Choose a Gem..." />
+                            <SelectValue placeholder="Chọn một Gem..." />
                           </SelectTrigger>
                           <SelectContent>
                             <SelectGroup>
-                              <SelectLabel>My Gems</SelectLabel>
-                              <SelectItem value="https://gemini.google.com/app">Default Gemini</SelectItem>
+                              <SelectLabel>Gem của tôi</SelectLabel>
+                              <SelectItem value="https://gemini.google.com/app">Gemini mặc định</SelectItem>
                               {availableGems.map((gem) => (
                                 <SelectItem key={gem.url} value={gem.url}>
                                   {gem.name}
@@ -1374,6 +1401,7 @@ export default function StoryStudio() {
                           size="icon"
                           disabled={fetchingGems}
                           onClick={() => void handleFetchGems()}
+                          title="Làm mới danh sách Gem"
                         >
                           {fetchingGems ? (
                             <Loader2 className="size-4 animate-spin" />
@@ -1385,9 +1413,13 @@ export default function StoryStudio() {
                     </div>
 
                     <div className="flex flex-col gap-1">
-                      <label className="text-xs text-muted-foreground" htmlFor="gemini-url">
-                        Custom Gem URL (Manual)
-                      </label>
+                      <TooltipFieldLabel
+                        htmlFor="gemini-url"
+                        tooltip='Dán link Gem chuyên dụng, ví dụ Gem "Tạo ảnh", để tối ưu kết quả.'
+                        className="text-sm font-medium text-foreground"
+                      >
+                        URL Gem tùy chỉnh
+                      </TooltipFieldLabel>
                       <Input
                         id="gemini-url"
                         value={settingsDraft.gemini_base_url}
@@ -1403,13 +1435,15 @@ export default function StoryStudio() {
                         }
                         placeholder="https://gemini.google.com/app/gems/..."
                       />
-                      <p className="text-[10px] text-muted-foreground">
-                        Dan link Gem chuyen dung (vi du Gem "Tao anh") de co ket qua tot nhat.
-                      </p>
                     </div>
 
                     <div className="flex items-center justify-between rounded-lg border border-border/70 px-3 py-2">
-                      <span className="text-sm text-foreground">Selector debug</span>
+                      <TooltipFieldLabel
+                        tooltip="Bật để lưu log bộ chọn khi Gemini tự động thao tác trên trình duyệt."
+                        className="text-sm font-medium text-foreground"
+                      >
+                        Ghi log bộ chọn
+                      </TooltipFieldLabel>
                       <Switch
                         checked={settingsDraft.gemini_selector_debug}
                         onCheckedChange={(checked) =>
@@ -1426,12 +1460,17 @@ export default function StoryStudio() {
                     </div>
 
                     <div className="flex flex-col gap-1">
-                      <label className="text-xs text-muted-foreground">Debug directory (Browser logs)</label>
+                      <TooltipFieldLabel
+                        tooltip="Thư mục lưu log debug của trình duyệt khi bật chế độ ghi log bộ chọn."
+                        className="text-sm font-medium text-foreground"
+                      >
+                        Thư mục log debug
+                      </TooltipFieldLabel>
                       <div className="flex gap-2">
                         <Input
                           value={settingsDraft.gemini_selector_debug_dir}
                           readOnly
-                          placeholder="Select folder for debug logs..."
+                          placeholder="Chọn thư mục lưu log debug..."
                         />
                         <Button
                           type="button"
@@ -1460,7 +1499,7 @@ export default function StoryStudio() {
                       {savingSettings ? (
                         <Loader2 className="size-4 animate-spin" />
                       ) : (
-                        "Save settings"
+                        "Lưu cài đặt"
                       )}
                     </Button>
                   </div>
@@ -1468,9 +1507,14 @@ export default function StoryStudio() {
               ) : null}
 
               <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-muted/20 p-3">
-                <div className="flex items-center gap-2 text-xs font-medium uppercase text-muted-foreground">
+                <div className="flex items-center gap-2">
                   <Badge className="bg-primary/85 text-primary-foreground">Global</Badge>
-                  base prompt
+                  <TooltipFieldLabel
+                    tooltip="Prompt tổng áp dụng cho toàn bộ quy trình Story Pipeline."
+                    className="text-sm font-medium text-foreground"
+                  >
+                    Prompt tổng
+                  </TooltipFieldLabel>
                 </div>
                 <Textarea
                   value={globalPromptDraft}
@@ -1483,22 +1527,32 @@ export default function StoryStudio() {
                   disabled={savingPrompt || globalPromptDraft.trim() === globalPrompt.trim()}
                   onClick={() => void handleSaveGlobalPrompt()}
                 >
-                  {savingPrompt ? <Loader2 className="size-4 animate-spin" /> : "Save global prompt"}
+                  {savingPrompt ? <Loader2 className="size-4 animate-spin" /> : "Lưu prompt tổng"}
                 </Button>
               </div>
 
               <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-muted/20 p-3">
-                <div className="flex items-center gap-2 text-xs font-medium uppercase text-muted-foreground">
+                <div className="flex items-center gap-2">
                   <Badge className="bg-indigo-500/80 text-indigo-50">Video</Badge>
-                  context prompt
+                  <TooltipFieldLabel
+                    tooltip="Ngữ cảnh prompt riêng của video đang chọn."
+                    className="text-sm font-medium text-foreground"
+                  >
+                    Prompt ngữ cảnh
+                  </TooltipFieldLabel>
                 </div>
                 <Textarea value={selectedVideo?.videoPrompt ?? ""} readOnly className="min-h-16" />
               </div>
 
               <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-muted/20 p-3">
-                <div className="flex items-center gap-2 text-xs font-medium uppercase text-muted-foreground">
+                <div className="flex items-center gap-2">
                   <Badge className="bg-amber-500/80 text-amber-50">Step</Badge>
-                  seed + modifier
+                  <TooltipFieldLabel
+                    tooltip="Gồm seed prompt của marker và modifier prompt của bước hiện tại."
+                    className="text-sm font-medium text-foreground"
+                  >
+                    Seed và modifier
+                  </TooltipFieldLabel>
                 </div>
                 <Textarea
                   value={[
@@ -1513,16 +1567,22 @@ export default function StoryStudio() {
               </div>
 
               <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-muted/20 p-3">
-                <div className="text-xs font-medium uppercase text-muted-foreground">
-                  Xem truoc prompt gop
-                </div>
+                <TooltipFieldLabel
+                  tooltip="Bản ghép cuối cùng của prompt tổng, prompt video và prompt bước."
+                  className="text-sm font-medium text-foreground"
+                >
+                  Xem trước prompt gộp
+                </TooltipFieldLabel>
                 <Textarea value={mergedPrompt} readOnly className="min-h-24 text-xs" />
               </div>
 
               <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-muted/20 p-3">
-                <div className="text-xs font-medium uppercase text-muted-foreground">
-                  Lich su attempt
-                </div>
+                <TooltipFieldLabel
+                  tooltip="Danh sách các lần render của bước hiện tại để so sánh và chọn lại."
+                  className="text-sm font-medium text-foreground"
+                >
+                  Lịch sử lần thử
+                </TooltipFieldLabel>
                 <div className="flex gap-2 overflow-x-auto pb-1">
                   {selectedStep?.attempts
                     ?.slice()
@@ -1543,18 +1603,18 @@ export default function StoryStudio() {
                         >
                           <VideoThumb
                             path={attempt.previewPath ?? attempt.normalizedPath}
-                            alt={`Attempt ${attempt.index}`}
+                            alt={`Lần thử ${attempt.index}`}
                             className="h-14 w-full"
                           />
                           <div className="mt-1 truncate text-[11px] text-foreground">
-                            A{attempt.index} · {attempt.mode}
+                            {`A${attempt.index} - ${attempt.mode}`}
                           </div>
                         </button>
                       );
                     })}
                   {!selectedStep || selectedStep.attempts.length === 0 ? (
                     <div className="rounded-lg border border-dashed border-border/70 px-3 py-4 text-xs text-muted-foreground">
-                      Chua co attempt.
+                      Chưa có lần thử.
                     </div>
                   ) : null}
                 </div>
@@ -1576,7 +1636,7 @@ export default function StoryStudio() {
                 ) : (
                   <Play className="size-4" />
                 )}
-                Chay
+                Chạy
               </Button>
               <Button
                 type="button"
@@ -1589,7 +1649,7 @@ export default function StoryStudio() {
                 ) : (
                   <Pause className="size-4" />
                 )}
-                Tam dung
+                Tạm dừng
               </Button>
               <Button
                 type="button"
@@ -1608,7 +1668,7 @@ export default function StoryStudio() {
                 }}
               >
                 <RotateCcw className="size-4" />
-                Tao lai
+                Tạo lại
               </Button>
               <Button
                 type="button"
@@ -1628,7 +1688,7 @@ export default function StoryStudio() {
                 }}
               >
                 <Sparkles className="size-4" />
-                Tinh chinh
+                Tinh chỉnh
               </Button>
             </div>
 
@@ -1643,7 +1703,7 @@ export default function StoryStudio() {
               ) : (
                 <Check className="size-4" />
               )}
-              Chap nhan & tiep
+              Duyệt và tiếp
             </Button>
 
             <Button
@@ -1659,7 +1719,7 @@ export default function StoryStudio() {
               }}
             >
               <AlertCircle className="size-4" />
-              Bo qua buoc
+              Bỏ qua bước
             </Button>
           </div>
         </CardContent>
