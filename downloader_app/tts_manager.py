@@ -15,6 +15,7 @@ from http.cookiejar import Cookie, CookieJar
 from dataclasses import dataclass, field
 from pathlib import Path
 from queue import Empty, Queue
+from urllib.parse import urlparse
 from urllib.request import HTTPCookieProcessor, Request, build_opener
 
 from downloader_app.browser_session import browser_session
@@ -35,6 +36,7 @@ TTS_AUTH_DOMAIN = "elevenlabs.io"
 TTS_PROFILE_ROOT_ITEMS = ("Local State",)
 TTS_PROFILE_ITEMS = (
     "Cookies",
+    "Network",
     "Local Storage",
     "Session Storage",
     "Preferences",
@@ -47,6 +49,11 @@ TTS_DOWNLOAD_WAIT_TIMEOUT_MS = 8_000
 TTS_EXPECT_DOWNLOAD_TIMEOUT_MS = 15_000
 TTS_UI_SETTLE_TIMEOUT_MS = 8_000
 TTS_MAX_WORKERS = 6
+ELEVENLABS_VOICE_API_URLS = (
+    "https://api.elevenlabs.io/v1/voices?show_legacy=false",
+    "https://api.us.elevenlabs.io/v1/voices?show_legacy=false",
+    "https://api.eu.elevenlabs.io/v1/voices?show_legacy=false",
+)
 
 
 @dataclass(frozen=True)
@@ -177,6 +184,27 @@ def _is_my_voice_entry(voice: dict) -> bool:
             return True
 
     return category in {"generated", "cloned", "designed", "voice_design"}
+
+
+def _is_elevenlabs_api_url(url: str) -> bool:
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    host = (parsed.netloc or "").strip().lower()
+    if not host:
+        return False
+    return host.startswith("api") and host.endswith("elevenlabs.io")
+
+
+def _is_elevenlabs_voices_url(url: str) -> bool:
+    if not _is_elevenlabs_api_url(url):
+        return False
+    try:
+        path = urlparse(url).path.lower()
+    except Exception:
+        return False
+    return "/voices" in path
 
 
 def _voice_query_variants(query: str) -> list[str]:
@@ -556,19 +584,43 @@ class ElevenLabsAutomation:
         self._browser_profile = detect_tts_browser_profile()
         runtime_id = f"{self._downloads_dir.name}-{uuid.uuid4().hex[:8]}"
         self._runtime_profile_dir = build_tts_runtime_profile(self._browser_profile, runtime_id)
-        try:
-            self._context = self._playwright.chromium.launch_persistent_context(
-                str(self._runtime_profile_dir),
+        runtime_root = self._runtime_profile_dir
+        runtime_selected_profile = runtime_root / self._browser_profile.profile_name
+
+        def _launch_context(user_data_dir: Path, args: list[str] | None = None):
+            launch_args = args if args is not None else []
+            return self._playwright.chromium.launch_persistent_context(
+                str(user_data_dir),
                 headless=self._headless,
                 accept_downloads=True,
                 executable_path=str(self._browser_profile.executable_path),
+                args=launch_args,
+            )
+        try:
+            self._context = _launch_context(
+                runtime_root,
                 args=[f"--profile-directory={self._browser_profile.profile_name}"],
             )
             browser_name = self._browser_profile.name
-        except PlaywrightError as exc:
-            self._playwright.stop()
-            self._playwright = None
-            raise ElevenLabsError(str(exc)) from exc
+        except PlaywrightError as primary_exc:
+            # Some Chromium builds/profiles crash immediately when combining
+            # --profile-directory with a copied runtime user-data-dir.
+            # Retry by launching directly from the copied profile folder.
+            try:
+                if not runtime_selected_profile.exists():
+                    raise primary_exc
+                self._context = _launch_context(runtime_selected_profile, args=[])
+                browser_name = self._browser_profile.name
+                print(
+                    f"[TTS] Retried launch without --profile-directory for {browser_name} and succeeded.",
+                    flush=True,
+                )
+            except PlaywrightError as fallback_exc:
+                self._playwright.stop()
+                self._playwright = None
+                raise ElevenLabsError(
+                    f"{_format_exception_message(primary_exc)} | fallback failed: {_format_exception_message(fallback_exc)}"
+                ) from fallback_exc
 
         self._browser_name = browser_name
         self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
@@ -578,7 +630,7 @@ class ElevenLabsAutomation:
         def _capture_xi_key(request) -> None:
             if self._xi_api_key:
                 return
-            if "api.elevenlabs.io" in request.url:
+            if _is_elevenlabs_api_url(request.url):
                 key = request.headers.get("xi-api-key", "")
                 if key and len(key) > 10:
                     self._xi_api_key = key
@@ -602,7 +654,7 @@ class ElevenLabsAutomation:
         def _capture_key_on_load(request) -> None:
             if self._xi_api_key:
                 return
-            if "api.elevenlabs.io" in request.url:
+            if _is_elevenlabs_api_url(request.url):
                 key = request.headers.get("xi-api-key", "")
                 if key and len(key) > 10:
                     self._xi_api_key = key
@@ -611,7 +663,7 @@ class ElevenLabsAutomation:
         def _capture_voices_on_load(response) -> None:
             try:
                 if response.status == 200 and response.request.resource_type in ["fetch", "xhr"]:
-                    if "api.elevenlabs.io/v1/voices" in response.url or "api.us.elevenlabs.io/v1/voices" in response.url:
+                    if _is_elevenlabs_voices_url(response.url):
                         body = response.json()
                         if isinstance(body, dict) and "voices" in body:
                             voices = body["voices"]
@@ -1265,18 +1317,18 @@ class ElevenLabsAutomation:
             try:
                 import urllib.request as _req
                 import json as _json
-                url = "https://api.elevenlabs.io/v1/voices?show_legacy=false"
-                request = _req.Request(url, headers={
-                    "xi-api-key": self._xi_api_key,
-                    "Accept": "application/json",
-                })
-                with _req.urlopen(request, timeout=15) as resp:
-                    data = _json.loads(resp.read().decode())
-                    voices = data.get("voices", [])
-                    custom_voices = [v for v in voices if _is_my_voice_entry(v)]
-                    if custom_voices:
-                        print(f"[TTS] Fetched {len(custom_voices)} custom voices via API (My Voices).", flush=True)
-                        return custom_voices
+                for url in ELEVENLABS_VOICE_API_URLS:
+                    request = _req.Request(url, headers={
+                        "xi-api-key": self._xi_api_key,
+                        "Accept": "application/json",
+                    })
+                    with _req.urlopen(request, timeout=15) as resp:
+                        data = _json.loads(resp.read().decode())
+                        voices = data.get("voices", [])
+                        custom_voices = [v for v in voices if _is_my_voice_entry(v)]
+                        if custom_voices:
+                            print(f"[TTS] Fetched {len(custom_voices)} custom voices via API (My Voices).", flush=True)
+                            return custom_voices
             except Exception as exc:
                 print(f"[TTS] API call with xi-api-key failed: {exc}", flush=True)
 
@@ -1287,7 +1339,7 @@ class ElevenLabsAutomation:
             captured_key: list[str] = []
 
             def handle_request(request) -> None:
-                if not captured_key and "api.elevenlabs.io" in request.url:
+                if not captured_key and _is_elevenlabs_api_url(request.url):
                     key = request.headers.get("xi-api-key", "")
                     if key and len(key) > 10:
                         captured_key.append(key)
@@ -1295,7 +1347,7 @@ class ElevenLabsAutomation:
 
             def handle_response(response) -> None:
                 try:
-                    if "api.elevenlabs.io/v1/voices" in response.url or "api.us.elevenlabs.io/v1/voices" in response.url:
+                    if _is_elevenlabs_voices_url(response.url):
                         if response.status == 200:
                             body = response.json()
                             if isinstance(body, dict) and "voices" in body:
@@ -1322,18 +1374,18 @@ class ElevenLabsAutomation:
             if captured_key:
                 try:
                     import urllib.request as _req2
-                    url = "https://api.elevenlabs.io/v1/voices?show_legacy=false"
-                    req2 = _req2.Request(url, headers={
-                        "xi-api-key": captured_key[0],
-                        "Accept": "application/json",
-                    })
-                    with _req2.urlopen(req2, timeout=15) as resp:
-                        data = _json.loads(resp.read().decode())
-                        voices = data.get("voices", [])
-                        custom_voices = [v for v in voices if _is_my_voice_entry(v)]
-                        if custom_voices:
-                            print(f"[TTS] Fetched {len(custom_voices)} custom voices via API (My Voices).", flush=True)
-                            return custom_voices
+                    for url in ELEVENLABS_VOICE_API_URLS:
+                        req2 = _req2.Request(url, headers={
+                            "xi-api-key": captured_key[0],
+                            "Accept": "application/json",
+                        })
+                        with _req2.urlopen(req2, timeout=15) as resp:
+                            data = _json.loads(resp.read().decode())
+                            voices = data.get("voices", [])
+                            custom_voices = [v for v in voices if _is_my_voice_entry(v)]
+                            if custom_voices:
+                                print(f"[TTS] Fetched {len(custom_voices)} custom voices via API (My Voices).", flush=True)
+                                return custom_voices
                 except Exception:
                     pass
 
@@ -1561,8 +1613,10 @@ class ElevenLabsSessionManager:
         status["browser"] = profile.name
         status["profileDir"] = str(profile.profile_dir)
 
-        cookie_path = profile.profile_dir / "Network" / "Cookies"
-        cookie_count = _cookie_count_for_domain(cookie_path, TTS_AUTH_DOMAIN)
+        cookie_count = max(
+            _cookie_count_for_domain(profile.profile_dir / "Network" / "Cookies", TTS_AUTH_DOMAIN),
+            _cookie_count_for_domain(profile.profile_dir / "Cookies", TTS_AUTH_DOMAIN),
+        )
         if cookie_count > 0:
             status["authenticated"] = True
             status["message"] = f"Đã kết nối qua phiên {profile.name}."
@@ -1584,22 +1638,51 @@ class ElevenLabsSessionManager:
 
     def open_login(self) -> dict:
         browser_name = "browser local"
+        profile_dir = ""
+        warning_message: str | None = None
+        opened = False
+
         try:
-            browser_name = detect_tts_login_browser().name
-        except Exception:
-            pass
-        try:
-            opened_payload = browser_session.open_login(ELEVENLABS_LOGIN_URL)
-        except Exception as exc:  # noqa: BLE001
-            raise ElevenLabsError(f"Không mở được cửa sổ đăng nhập ElevenLabs: {exc}") from exc
+            profile = detect_tts_browser_profile()
+            browser_name = profile.name
+            profile_dir = str(profile.profile_dir)
+
+            launch_command = [str(profile.executable_path)]
+            if profile.profile_name:
+                launch_command.append(f"--profile-directory={profile.profile_name}")
+            launch_command.append(ELEVENLABS_LOGIN_URL)
+
+            popen_kwargs: dict[str, object] = {}
+            if sys.platform == "win32":
+                popen_kwargs["creationflags"] = (
+                    getattr(subprocess, "DETACHED_PROCESS", 0)
+                    | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                )
+            subprocess.Popen(launch_command, **popen_kwargs)
+            opened = True
+        except Exception as exc:
+            warning_message = _format_exception_message(exc)
+            try:
+                opened_payload = browser_session.open_login(ELEVENLABS_LOGIN_URL)
+                opened = bool(opened_payload.get("opened", True))
+            except Exception as fallback_exc:  # noqa: BLE001
+                raise ElevenLabsError(
+                    f"Khong mo duoc cua so dang nhap ElevenLabs: {fallback_exc}"
+                ) from fallback_exc
+
+        message = (
+            f"Da mo ElevenLabs tren {browser_name}. Dang nhap trong {browser_name}, "
+            "roi quay lai app bam Lam moi phien."
+        )
+        if warning_message:
+            message += f" (Fallback default browser: {warning_message})"
 
         return {
-            "opened": bool(opened_payload.get("opened", True)),
+            "opened": opened,
             "url": ELEVENLABS_LOGIN_URL,
-            "message": (
-                f"Đã mở ElevenLabs trên {browser_name}. Đăng nhập trong {browser_name}, "
-                "rồi quay lại app bấm Làm mới phiên."
-            ),
+            "browser": browser_name,
+            "profileDir": profile_dir,
+            "message": message,
         }
 
     def _dependencies_ready(self) -> bool:
@@ -1675,15 +1758,31 @@ class TtsManager:
         if not refresh and self._voice_cache is not None and (time.time() - self._voice_cache_time) < 3600:
             return self._voice_cache
 
-        try:
-            with ElevenLabsAutomation(
-                TTS_BATCH_ROOT / "_scratch",
-                headless=True,
-            ) as automation:
-                automation.ensure_authenticated(wait_for_workspace=False)
-                voices = automation._fetch_available_voices(open_picker=False)
-        except Exception as exc:
-            print(f"[TTS] Failed to fetch voices: {exc}", flush=True)
+        voices: list[dict] | None = None
+        last_error: Exception | None = None
+        for headless_mode in (True, False):
+            try:
+                with ElevenLabsAutomation(
+                    TTS_BATCH_ROOT / "_scratch",
+                    headless=headless_mode,
+                ) as automation:
+                    automation.ensure_authenticated(wait_for_workspace=False)
+                    fetched = automation._fetch_available_voices(open_picker=False)
+                voices = fetched
+                if fetched:
+                    break
+            except Exception as exc:
+                last_error = exc
+                safe_error = ascii(_format_exception_message(exc))
+                print(
+                    f"[TTS] Failed to fetch voices (headless={headless_mode}): {safe_error}",
+                    flush=True,
+                )
+
+        if voices is None:
+            if last_error is not None:
+                safe_error = ascii(_format_exception_message(last_error))
+                print(f"[TTS] Failed to fetch voices: {safe_error}", flush=True)
             return self._voice_cache or []
 
         results: list[dict] = []

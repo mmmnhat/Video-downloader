@@ -219,6 +219,8 @@ Công cụ phục vụ tự động hóa workflow nội bộ/cá nhân. Người
 - Co co che lam moi danh sach qua `GET /api/tts/voices?refresh=1`.
 - Uu tien fetch full list qua ElevenLabs API/session; du lieu intercept chi dung fallback.
 - Browser/profile cho TTS duoc chon theo profile co cookie ElevenLabs phu hop nhat.
+- Runtime TTS profile now copies Chromium `Network/Cookies` to keep ElevenLabs login in Playwright session.
+- Session status check now reads both `Network/Cookies` and legacy `Cookies`.
 
 ## Video download resilience updates (2026-04-25)
 

@@ -107,11 +107,17 @@ function isExportableItem(item: TtsItem) {
 }
 
 function isMyVoice(voice: TtsVoice) {
+  if (voice.isOwner === true) {
+    return true;
+  }
   if (voice.isOwner === false) {
     return false;
   }
   const category = (voice.category ?? "").trim().toLowerCase();
-  return !!category && category !== "premade" && category !== "professional";
+  if (!category) {
+    return true;
+  }
+  return category !== "premade" && category !== "professional";
 }
 
 export default function TtsManager() {
