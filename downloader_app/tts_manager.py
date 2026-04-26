@@ -21,6 +21,7 @@ from urllib.request import HTTPCookieProcessor, Request, build_opener
 from downloader_app.browser_session import browser_session
 from downloader_app.jobs import build_sheet_sequence_stem, sanitize_file_stem, utc_now
 from downloader_app.runtime import app_path
+from downloader_app.sheets import filter_entries_by_sequence_range
 from downloader_app.tts_sheet import SheetTextEntry, scan_text_sheet
 
 
@@ -54,6 +55,50 @@ ELEVENLABS_VOICE_API_URLS = (
     "https://api.us.elevenlabs.io/v1/voices?show_legacy=false",
     "https://api.eu.elevenlabs.io/v1/voices?show_legacy=false",
 )
+
+
+def _resolve_macos_app_bundle(
+    default_path: Path,
+    *,
+    bundle_ids: tuple[str, ...] = (),
+    app_names: tuple[str, ...] = (),
+) -> Path:
+    if sys.platform != "darwin":
+        return default_path
+
+    direct_candidates = [
+        default_path,
+        Path("/Applications") / default_path.name,
+        Path.home() / "Applications" / default_path.name,
+    ]
+    for candidate in direct_candidates:
+        if candidate.exists():
+            return candidate
+
+    queries: list[str] = []
+    for bundle_id in bundle_ids:
+        queries.append(f"kMDItemCFBundleIdentifier == '{bundle_id}'")
+    for app_name in (default_path.name, *app_names):
+        queries.append(f'kMDItemFSName == "{app_name}"c')
+
+    for query in queries:
+        try:
+            completed = subprocess.run(
+                ["mdfind", query],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=5,
+            )
+        except Exception:
+            continue
+
+        for raw_line in completed.stdout.splitlines():
+            candidate = Path(raw_line.strip())
+            if candidate.suffix.lower() == ".app" and candidate.exists():
+                return candidate
+
+    return default_path
 
 
 @dataclass(frozen=True)
@@ -124,31 +169,49 @@ def _get_browser_candidates() -> list[TtsBrowserCandidate]:
                 )
             )
     else:
-        # macOS paths
-        candidates.extend([
-            TtsBrowserCandidate(
-                name="CocCoc",
-                app_path=Path("/Applications/CocCoc.app"),
-                executable_path=Path("/Applications/CocCoc.app/Contents/MacOS/CocCoc"),
-                user_data_dir=Path.home() / "Library/Application Support/CocCoc/Browser",
-            ),
-            TtsBrowserCandidate(
-                name="Chrome",
-                app_path=Path("/Applications/Google Chrome.app"),
-                executable_path=Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
-                user_data_dir=Path.home() / "Library/Application Support/Google/Chrome",
-            ),
-            TtsBrowserCandidate(
-                name="Edge",
-                app_path=Path("/Applications/Microsoft Edge.app"),
-                executable_path=Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
-                user_data_dir=Path.home() / "Library/Application Support/Microsoft Edge",
-            ),
-        ])
+        # macOS apps may live outside /Applications (for example on an external volume),
+        # so resolve the real bundle path before composing the executable path.
+        mac_browser_specs = [
+            {
+                "name": "CocCoc",
+                "default_app_path": Path("/Applications/CocCoc.app"),
+                "executable_name": "CocCoc",
+                "user_data_dir": Path.home() / "Library/Application Support/CocCoc/Browser",
+                "bundle_ids": ("com.coccoc.Coccoc",),
+                "app_names": ("Cốc Cốc.app",),
+            },
+            {
+                "name": "Chrome",
+                "default_app_path": Path("/Applications/Google Chrome.app"),
+                "executable_name": "Google Chrome",
+                "user_data_dir": Path.home() / "Library/Application Support/Google/Chrome",
+                "bundle_ids": ("com.google.Chrome",),
+                "app_names": (),
+            },
+            {
+                "name": "Edge",
+                "default_app_path": Path("/Applications/Microsoft Edge.app"),
+                "executable_name": "Microsoft Edge",
+                "user_data_dir": Path.home() / "Library/Application Support/Microsoft Edge",
+                "bundle_ids": ("com.microsoft.edgemac",),
+                "app_names": (),
+            },
+        ]
+        for spec in mac_browser_specs:
+            app_path = _resolve_macos_app_bundle(
+                spec["default_app_path"],
+                bundle_ids=spec["bundle_ids"],
+                app_names=spec["app_names"],
+            )
+            candidates.append(
+                TtsBrowserCandidate(
+                    name=spec["name"],
+                    app_path=app_path,
+                    executable_path=app_path / "Contents" / "MacOS" / spec["executable_name"],
+                    user_data_dir=spec["user_data_dir"],
+                )
+            )
     return candidates
-
-
-TTS_BROWSER_CANDIDATES = _get_browser_candidates()
 
 
 class ElevenLabsError(RuntimeError):
@@ -166,22 +229,24 @@ def _looks_like_elevenlabs_voice_id(value: str) -> bool:
 def _is_my_voice_entry(voice: dict) -> bool:
     is_owner = voice.get("is_owner")
     if isinstance(is_owner, bool):
-        return is_owner
+        if is_owner:
+            return True
     is_owner_camel = voice.get("isOwner")
     if isinstance(is_owner_camel, bool):
-        return is_owner_camel
+        if is_owner_camel:
+            return True
+
+    sharing = voice.get("sharing")
+    if isinstance(sharing, dict):
+        sharing_status = str(sharing.get("status", "")).strip().lower()
+        if sharing_status in {"copied", "saved", "library"}:
+            return True
 
     category = str(voice.get("category", "")).strip().lower()
     if not category:
         return False
     if category in {"premade", "professional"}:
         return False
-
-    sharing = voice.get("sharing")
-    if isinstance(sharing, dict):
-        sharing_status = str(sharing.get("status", "")).strip().lower()
-        if sharing_status == "copied":
-            return True
 
     return category in {"generated", "cloned", "designed", "voice_design"}
 
@@ -254,6 +319,22 @@ def _format_exception_message(exc: Exception) -> str:
     if detail:
         return detail
     return exc.__class__.__name__
+
+
+def _dedupe_voice_entries(voices: list[dict]) -> list[dict]:
+    deduped: list[dict] = []
+    seen_keys: set[tuple[str, str]] = set()
+    for voice in voices:
+        if not isinstance(voice, dict):
+            continue
+        voice_id = str(voice.get("voice_id") or voice.get("voiceId") or "").strip()
+        name = str(voice.get("name", "")).strip()
+        dedupe_key = (voice_id.lower(), name.lower())
+        if dedupe_key == ("", "") or dedupe_key in seen_keys:
+            continue
+        seen_keys.add(dedupe_key)
+        deduped.append(voice)
+    return deduped
 
 
 @dataclass
@@ -398,7 +479,7 @@ def _tts_debug(message: str) -> None:
 
 def _available_browser_candidates() -> list[TtsBrowserCandidate]:
     available = []
-    for candidate in TTS_BROWSER_CANDIDATES:
+    for candidate in _get_browser_candidates():
         app_exists = candidate.app_path.exists()
         exe_exists = candidate.executable_path.exists()
         data_exists = candidate.user_data_dir.exists()
@@ -667,11 +748,10 @@ class ElevenLabsAutomation:
                         body = response.json()
                         if isinstance(body, dict) and "voices" in body:
                             voices = body["voices"]
-                            # Only capture custom voices (not premade) to simulate "My Voices"
-                            custom_voices = [v for v in voices if _is_my_voice_entry(v)]
-                            if custom_voices:
-                                self._cached_custom_voices = custom_voices
-                                print(f"[TTS] Captured {len(custom_voices)} custom voices from network.", flush=True)
+                            my_voices = [v for v in voices if _is_my_voice_entry(v)]
+                            if my_voices:
+                                self._cached_custom_voices = my_voices
+                                print(f"[TTS] Captured {len(my_voices)} My Voice entries from network.", flush=True)
             except Exception:
                 pass
 
@@ -1302,17 +1382,15 @@ class ElevenLabsAutomation:
     def _fetch_available_voices(self, open_picker: bool = True) -> list[dict]:
         assert self._page is not None
 
-        # --- Strategy 0: Use cached custom voices intercepted during page load ---
-        # Keep intercepted data as fallback only. Do not return early because
-        # first intercepted payload can be partial and miss voices.
+        # --- Strategy 0: Use cached My Voice entries intercepted during page load ---
         intercepted_fallback: list[dict] = []
         if hasattr(self, "_cached_custom_voices") and self._cached_custom_voices:
-            intercepted_fallback = [
+            intercepted_fallback = _dedupe_voice_entries([
                 voice for voice in self._cached_custom_voices if isinstance(voice, dict)
-            ]
+            ])
 
         # --- Strategy 1: Direct API call using xi-api-key captured from browser request headers ---
-        # This is the most reliable and gets ALL voices including My Voices (cloned/generated)
+        # This is the most reliable and gets ALL voices that appear in My Voice.
         if self._xi_api_key:
             try:
                 import urllib.request as _req
@@ -1325,12 +1403,19 @@ class ElevenLabsAutomation:
                     with _req.urlopen(request, timeout=15) as resp:
                         data = _json.loads(resp.read().decode())
                         voices = data.get("voices", [])
-                        custom_voices = [v for v in voices if _is_my_voice_entry(v)]
-                        if custom_voices:
-                            print(f"[TTS] Fetched {len(custom_voices)} custom voices via API (My Voices).", flush=True)
-                            return custom_voices
+                        my_voices = _dedupe_voice_entries([v for v in voices if _is_my_voice_entry(v)])
+                        if my_voices:
+                            print(f"[TTS] Fetched {len(my_voices)} My Voice entries via API.", flush=True)
+                            return my_voices
             except Exception as exc:
                 print(f"[TTS] API call with xi-api-key failed: {exc}", flush=True)
+
+        if intercepted_fallback and not open_picker:
+            print(
+                f"[TTS] Using {len(intercepted_fallback)} intercepted My Voice entries from page load.",
+                flush=True,
+            )
+            return intercepted_fallback
 
         # --- Strategy 2: Navigate page, intercept network, extract xi-api-key + voice data ---
         try:
@@ -1351,26 +1436,24 @@ class ElevenLabsAutomation:
                         if response.status == 200:
                             body = response.json()
                             if isinstance(body, dict) and "voices" in body:
-                                custom_voices = [v for v in body["voices"] if _is_my_voice_entry(v)]
-                                captured.extend(custom_voices)
+                                my_voices = [v for v in body["voices"] if _is_my_voice_entry(v)]
+                                captured.extend(my_voices)
                 except Exception:
                     pass
 
             self._page.on("request", handle_request)
             self._page.on("response", handle_response)
             try:
-                # Force a fresh load by navigating away first (prevents browser cache serving old data)
-                self._page.goto("about:blank", wait_until="load", timeout=5_000)
                 self._page.goto("https://elevenlabs.io/app/speech-synthesis/text-to-speech",
-                                wait_until="networkidle", timeout=25_000)
-                self._page.wait_for_timeout(2000)
+                                wait_until="domcontentloaded", timeout=12_000)
+                self._page.wait_for_timeout(1500)
             except Exception:
                 pass
             finally:
                 self._page.remove_listener("request", handle_request)
                 self._page.remove_listener("response", handle_response)
 
-            # If we captured the key, try a direct API call to get ALL voices including My Voices
+            # If we captured the key, try a direct API call to get all voices visible in My Voice.
             if captured_key:
                 try:
                     import urllib.request as _req2
@@ -1382,21 +1465,21 @@ class ElevenLabsAutomation:
                         with _req2.urlopen(req2, timeout=15) as resp:
                             data = _json.loads(resp.read().decode())
                             voices = data.get("voices", [])
-                            custom_voices = [v for v in voices if _is_my_voice_entry(v)]
-                            if custom_voices:
-                                print(f"[TTS] Fetched {len(custom_voices)} custom voices via API (My Voices).", flush=True)
-                                return custom_voices
+                            my_voices = _dedupe_voice_entries([v for v in voices if _is_my_voice_entry(v)])
+                            if my_voices:
+                                print(f"[TTS] Fetched {len(my_voices)} My Voice entries via API.", flush=True)
+                                return my_voices
                 except Exception:
                     pass
 
             if captured:
-                return captured
+                return _dedupe_voice_entries(captured)
         except Exception:
             pass
 
         if intercepted_fallback:
             print(
-                f"[TTS] Using {len(intercepted_fallback)} intercepted custom voices fallback (My Voices).",
+                f"[TTS] Using {len(intercepted_fallback)} intercepted My Voice entries fallback.",
                 flush=True,
             )
             return intercepted_fallback
@@ -1786,6 +1869,7 @@ class TtsManager:
             return self._voice_cache or []
 
         results: list[dict] = []
+        seen_voice_ids: set[str] = set()
         for voice in voices:
             if not _is_my_voice_entry(voice):
                 continue
@@ -1793,6 +1877,10 @@ class TtsManager:
             name = str(voice.get("name", "")).strip()
             if not voice_id or not name:
                 continue
+            voice_key = voice_id.lower()
+            if voice_key in seen_voice_ids:
+                continue
+            seen_voice_ids.add(voice_key)
             raw_labels = voice.get("labels") if isinstance(voice.get("labels"), dict) else {}
             labels = {str(key): value for key, value in raw_labels.items()}
             description = str(voice.get("description", "")).strip()
@@ -1802,6 +1890,7 @@ class TtsManager:
                 "voiceId": voice_id,
                 "name": name,
                 "labels": labels,
+                "isMyVoice": True,
             }
             preview_url = str(voice.get("preview_url") or voice.get("previewUrl") or "").strip()
             if preview_url:
@@ -1809,6 +1898,11 @@ class TtsManager:
             category = str(voice.get("category", "")).strip()
             if category:
                 payload["category"] = category
+            sharing = voice.get("sharing")
+            if isinstance(sharing, dict):
+                sharing_status = str(sharing.get("status", "")).strip()
+                if sharing_status:
+                    payload["sharingStatus"] = sharing_status
             is_owner = voice.get("is_owner")
             if not isinstance(is_owner, bool):
                 is_owner = voice.get("isOwner")
@@ -1833,11 +1927,26 @@ class TtsManager:
     def open_login(self) -> dict:
         return self._session.open_login()
 
-    def preview_sheet(self, sheet_url: str, text_column: str | None = None) -> dict:
+    def preview_sheet(
+        self,
+        sheet_url: str,
+        text_column: str | None = None,
+        *,
+        sequence_start: int | None = None,
+        sequence_end: int | None = None,
+    ) -> dict:
         scan_result = scan_text_sheet(sheet_url, preferred_text_column=text_column)
+        filtered_entries = filter_entries_by_sequence_range(
+            scan_result.entries,
+            sequence_start=sequence_start,
+            sequence_end=sequence_end,
+        )
         warnings: list[str] = []
-        if not scan_result.entries:
-            warnings.append("Khong tim thay dong nao co text de gen voice.")
+        if not filtered_entries:
+            if sequence_start is not None or sequence_end is not None:
+                warnings.append("Khong tim thay dong nao trong pham vi STT da chon.")
+            else:
+                warnings.append("Khong tim thay dong nao co text de gen voice.")
         if scan_result.skipped_rows > 0:
             warnings.append(f"Bo qua {scan_result.skipped_rows} dong vi cot text dang trong.")
         return {
@@ -1847,7 +1956,7 @@ class TtsManager:
             "sheetTitle": scan_result.sheet_title,
             "textColumn": scan_result.text_column,
             "availableColumns": scan_result.available_columns,
-            "rowCount": len(scan_result.entries),
+            "rowCount": len(filtered_entries),
             "skippedRowCount": scan_result.skipped_rows,
             "warnings": warnings,
             "rows": [
@@ -1856,7 +1965,7 @@ class TtsManager:
                     "rowNumber": entry.row_index + 1,
                     "text": entry.text,
                 }
-                for entry in scan_result.entries[:120]
+                for entry in filtered_entries[:120]
             ],
         }
 
@@ -1875,6 +1984,8 @@ class TtsManager:
         channel_prefix: str | None = None,
         tag_text: str = "",
         text_column: str | None = None,
+        sequence_start: int | None = None,
+        sequence_end: int | None = None,
     ) -> dict:
         if not voice_query.strip():
             raise ValueError("voice_query is required.")
@@ -1893,7 +2004,14 @@ class TtsManager:
         worker_count = _clamp_int(worker_count, default=1, minimum=1, maximum=TTS_MAX_WORKERS)
 
         scan_result = scan_text_sheet(sheet_url, preferred_text_column=text_column)
-        if not scan_result.entries:
+        filtered_entries = filter_entries_by_sequence_range(
+            scan_result.entries,
+            sequence_start=sequence_start,
+            sequence_end=sequence_end,
+        )
+        if not filtered_entries:
+            if sequence_start is not None or sequence_end is not None:
+                raise ValueError("Khong tim thay dong nao trong pham vi STT da chon.")
             raise ValueError("Khong tim thay dong nao co text de gen voice.")
 
         batch_id = str(uuid.uuid4())
@@ -1921,7 +2039,7 @@ class TtsManager:
             filename_prefix=filename_prefix,
             channel_prefix=(channel_prefix or "").strip() or None,
             items=self._build_items(
-                scan_result.entries,
+                filtered_entries,
                 filename_prefix or scan_result.sheet_title,
                 (channel_prefix or "").strip() or None,
                 batch_dir,

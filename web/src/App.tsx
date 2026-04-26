@@ -107,6 +107,16 @@ import {
   qualityLabel,
   statusLabel,
 } from "@/lib/format";
+import {
+  resolveSequenceRangeInput,
+  type SequenceRangeMode,
+} from "@/lib/sequence-range";
+import {
+  TAB_CARD_GAP_CLASS,
+  TAB_PAGE_PADDING_CLASS,
+  TAB_STICKY_TOP_CLASS,
+  TAB_VIEWPORT_CARD_HEIGHT_CLASS,
+} from "@/lib/layout";
 
 const EMPTY_SETTINGS: Settings = {
   output_dir: "",
@@ -166,6 +176,10 @@ function App() {
   const [settingsDraft, setSettingsDraft] =
     useState<Settings>(EMPTY_SETTINGS);
   const [sheetUrl, setSheetUrl] = useState("");
+  const [sequenceRangeMode, setSequenceRangeMode] =
+    useState<SequenceRangeMode>("all");
+  const [sequenceStart, setSequenceStart] = useState("");
+  const [sequenceEnd, setSequenceEnd] = useState("");
   const [preview, setPreview] = useState<SheetPreview | null>(null);
   const [previewError, setPreviewError] = useState("");
   const [bootError, setBootError] = useState("");
@@ -510,11 +524,23 @@ function App() {
       return null;
     }
 
+    let sequenceRange;
+    try {
+      sequenceRange = resolveSequenceRangeInput(
+        sequenceRangeMode,
+        sequenceStart,
+        sequenceEnd,
+      );
+    } catch (error) {
+      setPreviewError(getErrorMessage(error));
+      return null;
+    }
+
     setPreviewLoading(true);
     setPreviewError("");
 
     try {
-      const nextPreview = await previewSheet(trimmedSheetUrl);
+      const nextPreview = await previewSheet(trimmedSheetUrl, sequenceRange);
       startTransition(() => {
         setPreview(nextPreview);
         setTableSource(TABLE_SOURCE_PREVIEW);
@@ -537,10 +563,26 @@ function App() {
       return;
     }
 
+    let sequenceRange;
+    try {
+      sequenceRange = resolveSequenceRangeInput(
+        sequenceRangeMode,
+        sequenceStart,
+        sequenceEnd,
+      );
+    } catch (error) {
+      setPreviewError(getErrorMessage(error));
+      return;
+    }
+
     setStartLoading(true);
     try {
       const batchSettings = normalizeSettings(settingsDraft);
-      const detail = await createBatch(trimmedSheetUrl, batchSettings);
+      const detail = await createBatch(
+        trimmedSheetUrl,
+        batchSettings,
+        sequenceRange,
+      );
       startTransition(() => {
         setPersistedSettings(batchSettings);
         setSettingsDraft(batchSettings);
@@ -562,6 +604,10 @@ function App() {
 
   async function handleSubmitSheetUrl(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    await handlePreviewSheetClick();
+  }
+
+  async function handlePreviewSheetClick() {
     await loadPreviewForSheet(sheetUrl);
   }
 
@@ -862,7 +908,7 @@ function App() {
           <main
             className={
               currentView === "downloader"
-                ? "mx-auto grid w-full max-w-[1520px] gap-6 px-4 py-6 sm:px-6 lg:grid-cols-[minmax(22rem,28rem)_minmax(0,1fr)] lg:px-8"
+                ? `grid w-full ${TAB_CARD_GAP_CLASS} ${TAB_PAGE_PADDING_CLASS} lg:grid-cols-[minmax(22rem,28rem)_minmax(0,1fr)]`
                 : "hidden"
             }
           >
@@ -873,8 +919,8 @@ function App() {
                 </Alert>
               ) : null}
 
-          <Card className="border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)] lg:sticky lg:top-6 lg:h-[calc(100dvh-3rem)] lg:overflow-hidden">
-            <CardContent className="flex flex-col gap-6 pt-6 lg:h-full lg:overflow-auto">
+          <Card className={`border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)] lg:sticky ${TAB_STICKY_TOP_CLASS} ${TAB_VIEWPORT_CARD_HEIGHT_CLASS} lg:overflow-hidden`}>
+            <CardContent className="flex min-h-0 flex-1 flex-col gap-6 lg:overflow-auto">
               <SessionStatusAlert
                 authenticated={Boolean(authStatus?.authenticated)}
                 notReadyTitle={"Phiên trình duyệt chưa sẵn sàng"}
@@ -900,7 +946,7 @@ function App() {
               </div>
 
               <form className="flex flex-col gap-6" onSubmit={handleSubmitSheetUrl}>
-                  <Field data-invalid={Boolean(previewError)}>
+                <Field data-invalid={Boolean(previewError)}>
                   <TooltipFieldLabel
                     htmlFor="sheet-url"
                     tooltip="Dán liên kết Google Sheets chứa các video cần xử lý."
@@ -938,27 +984,6 @@ function App() {
                   </InputGroup>
                   <FieldError>{previewError}</FieldError>
                 </Field>
-
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    type="submit"
-                    variant="outline"
-                    disabled={previewLoading || startLoading}
-                  >
-                    {previewLoading ? "Đang kiểm tra..." : "Xem trước"}
-                  </Button>
-                  <Button
-                    type="button"
-                    disabled={
-                      startLoading ||
-                      previewLoading ||
-                      !sheetUrl.trim()
-                    }
-                    onClick={() => void handleStartBatchClick()}
-                  >
-                    {startLoading ? "Đang bắt đầu..." : "Bắt đầu"}
-                  </Button>
-                </div>
               </form>
 
               <Separator />
@@ -1011,9 +1036,9 @@ function App() {
                 <Field>
                   <TooltipFieldLabel
                     htmlFor="channel-prefix"
-                    tooltip="Tien to ten kenh de ghep thanh channel.stt cho video. Neu de trong, file se chi dung stt."
+                    tooltip="Tiền tố tên kênh để ghép thành channel.stt cho video. Nếu để trống, file sẽ chỉ dùng stt."
                   >
-                    Tên kênh (Prefix)
+                    Tên kênh
                   </TooltipFieldLabel>
                   <Input
                     id="channel-prefix"
@@ -1030,6 +1055,106 @@ function App() {
                     placeholder="Ví dụ: theoof"
                   />
                 </Field>
+
+                <FieldSet>
+                  <FieldLegend variant="label">Phạm vi STT</FieldLegend>
+                  <FieldGroup className="md:grid md:grid-cols-[minmax(0,12rem)_minmax(0,1fr)_minmax(0,1fr)]">
+                    <Field>
+                      <TooltipFieldLabel
+                        htmlFor="sheet-range-mode"
+                        tooltip="Chọn tải toàn bộ sheet hoặc chỉ preview/tải theo khoảng STT."
+                      >
+                        Chế độ
+                      </TooltipFieldLabel>
+                      <Select
+                        value={sequenceRangeMode}
+                        onValueChange={(value) => {
+                          setSequenceRangeMode(value as SequenceRangeMode);
+                          setPreview(null);
+                          setPreviewError("");
+                        }}
+                      >
+                        <SelectTrigger id="sheet-range-mode" className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectGroup>
+                            <SelectItem value="all">Tải hết</SelectItem>
+                            <SelectItem value="range">Theo khoảng STT</SelectItem>
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
+                    </Field>
+
+                    <Field>
+                      <TooltipFieldLabel
+                        htmlFor="sheet-range-start"
+                        tooltip="Nhập STT bắt đầu. Có thể để trống nếu chỉ muốn đến STT kết thúc."
+                      >
+                        Từ STT
+                      </TooltipFieldLabel>
+                      <Input
+                        id="sheet-range-start"
+                        value={sequenceStart}
+                        onChange={(event) => {
+                          setSequenceStart(event.target.value);
+                          setPreview(null);
+                          setPreviewError("");
+                        }}
+                        type="number"
+                        min={1}
+                        inputMode="numeric"
+                        disabled={sequenceRangeMode !== "range"}
+                        placeholder="Ví dụ: 10"
+                      />
+                    </Field>
+
+                    <Field>
+                      <TooltipFieldLabel
+                        htmlFor="sheet-range-end"
+                        tooltip="Nhập STT kết thúc. Có thể để trống nếu chỉ muốn từ STT bắt đầu trở đi."
+                      >
+                        Đến STT
+                      </TooltipFieldLabel>
+                      <Input
+                        id="sheet-range-end"
+                        value={sequenceEnd}
+                        onChange={(event) => {
+                          setSequenceEnd(event.target.value);
+                          setPreview(null);
+                          setPreviewError("");
+                        }}
+                        type="number"
+                        min={1}
+                        inputMode="numeric"
+                        disabled={sequenceRangeMode !== "range"}
+                        placeholder="Ví dụ: 30"
+                      />
+                    </Field>
+                  </FieldGroup>
+                </FieldSet>
+
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={previewLoading || startLoading}
+                    onClick={() => void handlePreviewSheetClick()}
+                  >
+                    {previewLoading ? "Đang kiểm tra..." : "Xem trước"}
+                  </Button>
+                  <Button
+                    type="button"
+                    disabled={
+                      startLoading ||
+                      previewLoading ||
+                      !sheetUrl.trim()
+                    }
+                    onClick={() => void handleStartBatchClick()}
+                  >
+                    {startLoading ? "Đang bắt đầu..." : "Bắt đầu"}
+                  </Button>
+                </div>
 
                 <FieldSet>
                   <FieldLegend variant="label">Thiết lập tải mặc định</FieldLegend>
@@ -1120,7 +1245,7 @@ function App() {
           </Card>
 
           {SHOW_UNIFIED_TABLE ? (
-            <Card className="border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)] lg:h-[calc(100dvh-3rem)] lg:overflow-hidden">
+            <Card className={`border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)] ${TAB_VIEWPORT_CARD_HEIGHT_CLASS} lg:overflow-hidden`}>
               {SHOW_TABLE_CONTEXT ? (
                 <CardHeader className="gap-4 border-b border-border/70">
                   <div>
@@ -1181,7 +1306,7 @@ function App() {
                   </div>
                 </CardHeader>
               ) : null}
-              <CardContent className="flex flex-col gap-5 lg:h-full lg:min-h-0">
+              <CardContent className="flex min-h-0 flex-1 flex-col gap-5">
                 <div className="flex justify-end">
                   <Button
                     type="button"
@@ -1389,7 +1514,7 @@ function App() {
           <main
             className={
               currentView === "story"
-                ? "mx-auto w-full max-w-[1680px] px-4 py-6 sm:px-6 lg:px-8"
+                ? `w-full ${TAB_PAGE_PADDING_CLASS}`
                 : "hidden"
             }
           >
@@ -1409,7 +1534,7 @@ function App() {
           <main
             className={
               currentView === "tts"
-                ? "mx-auto w-full max-w-[1520px] px-4 py-6 sm:px-6 lg:px-8"
+                ? `w-full ${TAB_PAGE_PADDING_CLASS}`
                 : "hidden"
             }
           >
@@ -1429,7 +1554,7 @@ function App() {
           <main
             className={
               currentView === "cookies"
-                ? "mx-auto w-full px-4 py-8 sm:px-6 lg:px-12"
+                ? `w-full ${TAB_PAGE_PADDING_CLASS}`
                 : "hidden"
             }
           >
@@ -1488,4 +1613,3 @@ function getErrorMessage(error: unknown) {
 }
 
 export default App;
-

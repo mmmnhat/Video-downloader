@@ -4,7 +4,6 @@ import {
   AlertCircle,
   Check,
   ChevronRight,
-  Clapperboard,
   FolderOpen,
   Loader2,
   Pause,
@@ -30,9 +29,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
-import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { TooltipFieldLabel } from "@/components/ui/tooltip-field-label";
+import {
+  TAB_CARD_GAP_CLASS,
+  TAB_VIEWPORT_CARD_HEIGHT_CLASS,
+} from "@/lib/layout";
 import { cn } from "@/lib/utils";
 import {
   applyStoryAction,
@@ -47,10 +49,8 @@ import {
   openStoryLogin,
   pauseStoryVideo,
   runStoryVideo,
-  scanStoryFolder,
   updateStoryGlobalPrompt,
   updateStorySettings,
-  type StoryBootstrapPayload,
   type StoryMarker,
   type StorySessionStatus,
   type StorySettings,
@@ -68,6 +68,10 @@ type StepSelection = {
 };
 
 type QueueFilter = "all" | "running" | "review" | "queued";
+type GemOption = { name: string; url: string };
+
+const SEGMENTED_TAB_LIST_CLASS = "rounded-xl border border-border/70 bg-muted/20 p-1";
+const SEGMENTED_TAB_TRIGGER_CLASS = "rounded-lg px-3 py-2 text-sm font-medium whitespace-nowrap transition-colors";
 
 const STORY_SSE_EVENTS = [
   "da ket noi",
@@ -77,12 +81,28 @@ const STORY_SSE_EVENTS = [
   "story.settings.updated",
   "story.global_prompt.updated",
 ];
+const GEMINI_DEFAULT_URL = "https://gemini.google.com/app";
 
 function getErrorMessage(error: unknown) {
   if (error instanceof Error) {
     return error.message;
   }
   return "Yêu cầu thất bại.";
+}
+
+function hasGemOption(gems: GemOption[], url: string) {
+  const normalizedUrl = url.trim();
+  return normalizedUrl === GEMINI_DEFAULT_URL || gems.some((gem) => gem.url === normalizedUrl);
+}
+
+function sanitizeGeminiSettings(settings: StorySettings, gems: GemOption[]) {
+  if (!settings.gemini_base_url || hasGemOption(gems, settings.gemini_base_url)) {
+    return settings;
+  }
+  return {
+    ...settings,
+    gemini_base_url: GEMINI_DEFAULT_URL,
+  };
 }
 
 function storyStatusLabel(status: string) {
@@ -118,21 +138,6 @@ function storyActionLabel(action: StoryActionType) {
       return "bỏ qua";
     default:
       return action;
-  }
-}
-
-function storyModeLabel(mode: string | null | undefined) {
-  switch (mode) {
-    case "chain":
-      return "Chuỗi";
-    case "from_source":
-      return "Từ nguồn";
-    case null:
-    case undefined:
-    case "":
-      return "-";
-    default:
-      return mode;
   }
 }
 
@@ -351,19 +356,22 @@ export default function StoryStudio() {
   const [expandedMarkerIds, setExpandedMarkerIds] = useState<string[]>([]);
 
   const [savingPrompt, setSavingPrompt] = useState(false);
-  const [savingSettings, setSavingSettings] = useState(false);
+  const [, setSavingSettings] = useState(false);
+  const [choosingOutputFolder, setChoosingOutputFolder] = useState(false);
   const [sessionRefreshing, setSessionRefreshing] = useState(false);
-  const [scanningFolder, setScanningFolder] = useState(false);
-  const [availableGems, setAvailableGems] = useState<{ name: string; url: string }[]>([]);
+  const [availableGems, setAvailableGems] = useState<GemOption[]>([]);
   const [fetchingGems, setFetchingGems] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [actionBusyKey, setActionBusyKey] = useState<string | null>(null);
   const [queueFilter, setQueueFilter] = useState<QueueFilter>("all");
+  const [rightPanelTab, setRightPanelTab] = useState<"gemini" | "prompt" | "history" | "workers">("prompt");
 
   const [videoThumbs, setVideoThumbs] = useState<Record<string, string>>({});
   const thumbInflightRef = useRef<Set<string>>(new Set());
   const lastStoryEventIdRef = useRef(0);
   const sseRefreshTimerRef = useRef<number | null>(null);
+  const lastSavedSettingsRef = useRef<string | null>(null);
+  const lastFailedSettingsRef = useRef<string | null>(null);
 
   const applyVideoDetail = useCallback(
     (video: StoryVideoDetail, options?: { preferred?: Partial<StepSelection> }) => {
@@ -450,15 +458,22 @@ export default function StoryStudio() {
     setBootLoading(true);
     setBootError("");
     try {
-      const payload: StoryBootstrapPayload = await getStoryBootstrap();
+      const [payload, gems] = await Promise.all([
+        getStoryBootstrap(),
+        listStoryGems().catch(() => null),
+      ]);
+      const nextSettings = gems ? sanitizeGeminiSettings(payload.settings, gems) : payload.settings;
+      lastSavedSettingsRef.current = JSON.stringify(nextSettings);
+      lastFailedSettingsRef.current = null;
       const initialVideoId = payload.activeVideoId ?? payload.videoSummaries[0]?.id ?? null;
       startTransition(() => {
-        setSettingsDraft(payload.settings);
+        setSettingsDraft(nextSettings);
         setGlobalPrompt(payload.globalPrompt);
         setGlobalPromptDraft(payload.globalPrompt);
         setVideoSummaries(payload.videoSummaries);
         setActiveVideoId(payload.activeVideoId);
         setSessionStatus(payload.sessionStatus);
+        setAvailableGems(gems ?? []);
       });
       if (initialVideoId) {
         await loadVideoDetail(initialVideoId, { silent: true });
@@ -688,8 +703,13 @@ export default function StoryStudio() {
     return Array.from({ length: maxWorker }, (_, index) => runningVideos[index] ?? null);
   }, [settingsDraft?.max_parallel_videos, videoSummaries]);
 
-  const pendingVideoCount = useMemo(
-    () => videoSummaries.filter((video) => video.status === "queued").length,
+  const queueCounts = useMemo(
+    () => ({
+      all: videoSummaries.length,
+      running: videoSummaries.filter((video) => video.status === "running").length,
+      review: videoSummaries.filter((video) => video.status === "review").length,
+      queued: videoSummaries.filter((video) => video.status === "queued").length,
+    }),
     [videoSummaries],
   );
   const filteredVideoSummaries = useMemo(() => {
@@ -737,24 +757,32 @@ export default function StoryStudio() {
     }
   }, [settingsDraft?.output_root]);
 
-  const handleSaveSettings = useCallback(async () => {
+  const handleChooseOutputFolder = useCallback(async () => {
     if (!settingsDraft) {
       return;
     }
-    setSavingSettings(true);
+    setChoosingOutputFolder(true);
     try {
-      const next = await updateStorySettings(settingsDraft);
+      const { path } = await chooseFolder();
+      if (!path) {
+        return;
+      }
+      const next = await updateStorySettings({
+        ...settingsDraft,
+        output_root: path,
+      });
+      lastSavedSettingsRef.current = JSON.stringify(next);
+      lastFailedSettingsRef.current = null;
       startTransition(() => {
         setSettingsDraft(next);
       });
-      toast.success("Đã lưu cài đặt Story.");
-      await handleRefreshSession();
+      toast.success("Đã cập nhật thư mục output.");
     } catch (error) {
       toast.error(getErrorMessage(error));
     } finally {
-      setSavingSettings(false);
+      setChoosingOutputFolder(false);
     }
-  }, [handleRefreshSession, settingsDraft]);
+  }, [settingsDraft]);
 
   const handleSaveGlobalPrompt = useCallback(async () => {
     setSavingPrompt(true);
@@ -777,40 +805,65 @@ export default function StoryStudio() {
     setFetchingGems(true);
     try {
       const gems = await listStoryGems();
-      setAvailableGems(gems);
+      startTransition(() => {
+        setAvailableGems(gems);
+        setSettingsDraft((current) => (current ? sanitizeGeminiSettings(current, gems) : current));
+      });
       if (gems.length > 0) {
         toast.success(`Đã quét được ${gems.length} Gem.`);
       } else {
         toast.info("Không tìm thấy Gem nào. Hãy bảo đảm bạn đã đăng nhập Gemini.");
       }
-    } catch (error) {
+    } catch {
       toast.error("Lỗi khi quét danh sách Gem.");
     } finally {
       setFetchingGems(false);
     }
   }, []);
 
-  const handleScanFolder = useCallback(async () => {
-    try {
-      const { path } = await chooseFolder();
-      if (!path) {
-        return;
-      }
-      setScanningFolder(true);
-      const imported = await scanStoryFolder(path);
-      if (imported.length === 0) {
-        toast.info("Không tìm thấy video có marker XMP.");
-        return;
-      }
-      applyVideoDetail(imported[0]);
-      await refreshSummaries(true);
-      toast.success(`Đã quét và import ${imported.length} video.`);
-    } catch (error) {
-      toast.error(getErrorMessage(error));
-    } finally {
-      setScanningFolder(false);
+  const currentGemUrl = settingsDraft?.gemini_base_url?.trim() ?? "";
+  const showStoredGemOption =
+    currentGemUrl.length > 0 && !hasGemOption(availableGems, currentGemUrl);
+
+  useEffect(() => {
+    if (!settingsDraft || choosingOutputFolder) {
+      return;
     }
-  }, [applyVideoDetail, refreshSummaries]);
+
+    const draftSnapshot = JSON.stringify(settingsDraft);
+    if (
+      draftSnapshot === lastSavedSettingsRef.current ||
+      draftSnapshot === lastFailedSettingsRef.current
+    ) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      void (async () => {
+        setSavingSettings(true);
+        try {
+          const next = await updateStorySettings(settingsDraft);
+          lastSavedSettingsRef.current = JSON.stringify(next);
+          lastFailedSettingsRef.current = null;
+          startTransition(() => {
+            setSettingsDraft((current) => {
+              if (!current) {
+                return current;
+              }
+              return JSON.stringify(current) === draftSnapshot ? next : current;
+            });
+          });
+        } catch (error) {
+          lastFailedSettingsRef.current = draftSnapshot;
+          toast.error(getErrorMessage(error));
+        } finally {
+          setSavingSettings(false);
+        }
+      })();
+    }, 500);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [choosingOutputFolder, settingsDraft]);
 
   const handleRunVideo = useCallback(async () => {
     if (!selectedVideoId) {
@@ -933,7 +986,7 @@ export default function StoryStudio() {
   }
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[19rem_minmax(0,1fr)_22rem]">
+    <div className={cn("grid lg:grid-cols-[22rem_minmax(0,1fr)_19rem]", TAB_CARD_GAP_CLASS)}>
       {bootError ? (
         <Alert className="lg:col-span-3" variant="destructive">
           <AlertTitle>Không tải được dữ liệu khởi tạo Story</AlertTitle>
@@ -941,38 +994,43 @@ export default function StoryStudio() {
         </Alert>
       ) : null}
 
-      <Card className="border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)]">
-        <CardHeader className="gap-3 border-b border-border/70">
-          <CardTitle className="flex items-center justify-between text-base">
-            <span className="flex items-center gap-2">
-              <Clapperboard className="size-4 text-primary" />
-              Hàng đợi video
-            </span>
-            <Badge variant="outline" title={`Đang chờ ${pendingVideoCount} video`}>
-              {videoSummaries.length}
-            </Badge>
-          </CardTitle>
-          <div className="grid grid-cols-4 gap-1">
+      <Card className={`border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)] ${TAB_VIEWPORT_CARD_HEIGHT_CLASS} lg:order-3 lg:overflow-hidden`}>
+        <CardContent className="flex min-h-0 flex-1 flex-col gap-4">
+          <div
+            role="tablist"
+            aria-label="Lọc hàng đợi video"
+            className={cn("grid grid-cols-4 gap-2", SEGMENTED_TAB_LIST_CLASS)}
+          >
             {[
               { value: "all", label: "Tất cả" },
               { value: "running", label: "Chạy" },
               { value: "review", label: "Duyệt" },
               { value: "queued", label: "Chờ" },
             ].map((item) => (
-              <Button
+              <button
                 key={item.value}
+                role="tab"
+                aria-selected={queueFilter === item.value}
                 type="button"
-                size="sm"
-                variant={queueFilter === item.value ? "secondary" : "outline"}
-                className="h-7 px-2 text-[11px]"
+                className={cn(
+                  "flex min-h-12 flex-col items-center justify-center gap-1 px-2 text-center",
+                  SEGMENTED_TAB_TRIGGER_CLASS,
+                  queueFilter === item.value
+                    ? "bg-primary text-primary-foreground shadow-sm"
+                    : "text-muted-foreground hover:bg-background/70 hover:text-foreground",
+                )}
                 onClick={() => setQueueFilter(item.value as QueueFilter)}
               >
-                {item.label}
-              </Button>
+                <span className="text-[11px] leading-none">{item.label}</span>
+                <span className="text-xs font-semibold leading-none tabular-nums">
+                  {queueCounts[item.value as QueueFilter]}
+                </span>
+              </button>
             ))}
           </div>
-        </CardHeader>
-        <CardContent className="flex h-[calc(100dvh-10rem)] flex-col gap-4 pt-4">
+
+          <Separator />
+
           <div className="flex-1 overflow-auto">
             <div className="flex flex-col gap-2">
               {filteredVideoSummaries.map((video) => {
@@ -1028,53 +1086,12 @@ export default function StoryStudio() {
             </div>
           </div>
 
-          <Separator />
-
-          <div className="flex flex-col gap-2">
-            <TooltipFieldLabel
-              tooltip="Hiển thị các video đang chạy trên từng luồng xử lý song song."
-              className="text-sm font-medium text-foreground"
-            >
-              Luồng xử lý
-            </TooltipFieldLabel>
-            <div className="flex flex-col gap-2">
-              {workerSlots.map((video, index) => (
-                <div
-                  key={`worker-${index + 1}`}
-                  className="flex items-center justify-between rounded-lg border border-border/70 bg-muted/30 px-2 py-2 text-xs"
-                >
-                  <span className="text-muted-foreground">W{index + 1}</span>
-                  <span className="max-w-[11rem] truncate text-right text-foreground">
-                    {video ? video.name : "Rảnh"}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="w-full"
-            disabled={!settingsDraft?.output_root?.trim()}
-            onClick={() => void handleOpenOutputFolder()}
-          >
-            <FolderOpen className="size-4" />
-            Mở thư mục output
-          </Button>
         </CardContent>
       </Card>
 
-      <Card className="border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)]">
-        <CardHeader className="gap-2 border-b border-border/70">
+      <Card className={`border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)] ${TAB_VIEWPORT_CARD_HEIGHT_CLASS} lg:order-2 lg:overflow-hidden`}>
+        <CardHeader className="gap-2">
           <CardTitle className="flex items-center justify-between text-base">
-            <TooltipFieldLabel
-              tooltip={`Chế độ: ${storyModeLabel(selectedVideo?.mode)}`}
-              className="text-base font-semibold text-foreground"
-            >
-              {selectedVideo?.name ?? "Mốc timeline"}
-            </TooltipFieldLabel>
             {selectedVideo ? (
               <Badge variant="outline" className={storyStatusTone(selectedVideo.status).className}>
                 {storyStatusLabel(selectedVideo.status)}
@@ -1087,7 +1104,7 @@ export default function StoryStudio() {
             </span>
           ) : null}
         </CardHeader>
-        <CardContent className="flex h-[calc(100dvh-10rem)] flex-col gap-4 pt-4">
+        <CardContent className="flex min-h-0 flex-1 flex-col gap-4">
           <div className="flex-1 overflow-auto pr-1">
             {!selectedVideo ? (
               <div className="rounded-xl border border-border/70 bg-muted/20 px-4 py-5 text-sm text-muted-foreground">
@@ -1285,341 +1302,344 @@ export default function StoryStudio() {
         </CardContent>
       </Card>
 
-      <Card className="border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)]">
-        <CardHeader className="gap-2 border-b border-border/70">
-          <CardTitle className="text-base">Điều khiển prompt</CardTitle>
-        </CardHeader>
-        <CardContent className="flex h-[calc(100dvh-10rem)] flex-col gap-4 pt-4">
+      <Card className={`border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)] ${TAB_VIEWPORT_CARD_HEIGHT_CLASS} lg:order-1 lg:overflow-hidden`}>
+        <CardContent className="flex min-h-0 flex-1 flex-col gap-4">
+          <div className={cn("grid grid-cols-4 gap-2", SEGMENTED_TAB_LIST_CLASS)}>
+            {[
+              { value: "gemini" as const, label: "Gemini" },
+              { value: "prompt" as const, label: "Prompt" },
+              { value: "history" as const, label: "Lịch sử" },
+              { value: "workers" as const, label: "Luồng" },
+            ].map((tab) => (
+              <button
+                key={tab.value}
+                type="button"
+                aria-pressed={rightPanelTab === tab.value}
+                onClick={() => setRightPanelTab(tab.value)}
+                className={cn(
+                  SEGMENTED_TAB_TRIGGER_CLASS,
+                  rightPanelTab === tab.value
+                    ? "bg-primary text-primary-foreground shadow-sm"
+                    : "text-muted-foreground hover:bg-background/70 hover:text-foreground",
+                )}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
           <div className="flex-1 overflow-auto pr-1">
-            <div className="flex flex-col gap-4">
-              <SessionStatusAlert
-                authenticated={Boolean(sessionStatus?.authenticated)}
-                notReadyTitle={"Phiên Gemini chưa sẵn sàng"}
-                message={sessionStatus?.message ?? "Chưa có thông tin phiên."}
-              />
+            {rightPanelTab === "gemini" ? (
+              <div className="flex flex-col gap-4">
+                <SessionStatusAlert
+                  authenticated={Boolean(sessionStatus?.authenticated)}
+                  notReadyTitle={"Phiên Gemini chưa sẵn sàng"}
+                  message={sessionStatus?.message ?? "Chưa có thông tin phiên."}
+                />
 
-              <div className="grid grid-cols-2 gap-2">
-                <Button type="button" variant="outline" onClick={() => void handleOpenLogin()}>
-                  {"Mở đăng nhập Gemini"}
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  disabled={sessionRefreshing}
-                  onClick={() => void handleRefreshSession()}
-                >
-                  {sessionRefreshing ? "Đang làm mới..." : "Làm mới phiên"}
-                </Button>
-              </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <Button type="button" variant="outline" onClick={() => void handleOpenLogin()}>
+                    {"Mở đăng nhập Gemini"}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={sessionRefreshing}
+                    onClick={() => void handleRefreshSession()}
+                  >
+                    {sessionRefreshing ? "Đang làm mới..." : "Làm mới phiên"}
+                  </Button>
+                </div>
 
-              <div className="rounded-xl border border-border/70 bg-muted/20 p-3">
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="w-full"
-                  disabled={scanningFolder}
-                  onClick={() => void handleScanFolder()}
-                  title="Quét marker XMP từ thư mục project Premiere để tạo danh sách video Story."
-                >
-                  {scanningFolder ? (
-                    <Loader2 className="size-4 animate-spin" />
-                  ) : (
-                    <FolderOpen className="size-4" />
-                  )}
-                  Quét thư mục project Premiere
-                </Button>
-              </div>
-
-
-              {settingsDraft ? (
-                <div className="rounded-xl border border-border/70 bg-muted/20 p-3">
-                  <div className="flex flex-col gap-3">
-                    <div className="flex flex-col gap-1">
-                      <TooltipFieldLabel
-                        htmlFor="story-workers"
-                        tooltip="Số video tối đa được xử lý đồng thời trong Story Pipeline."
-                        className="text-sm font-medium text-foreground"
-                      >
-                        Số luồng tối đa
-                      </TooltipFieldLabel>
-                      <Input
-                        id="story-workers"
-                        type="number"
-                        min={1}
-                        max={8}
-                        value={settingsDraft.max_parallel_videos}
-                        onChange={(event) =>
-                          setSettingsDraft((current) =>
-                            current
-                              ? {
-                                  ...current,
-                                  max_parallel_videos: Math.min(
-                                    8,
-                                    Math.max(1, Number(event.target.value) || 1),
-                                  ),
-                                }
-                              : current,
-                          )
-                        }
-                      />
-                    </div>
-
-                    <div className="flex flex-col gap-1">
-                      <TooltipFieldLabel
-                        tooltip="Chọn Gem mặc định để điều hướng prompt. Có thể bấm nút làm mới để quét lại danh sách."
-                        className="text-sm font-medium text-foreground"
-                      >
-                        Chọn Gem
-                      </TooltipFieldLabel>
-                      <div className="flex gap-2">
-                        <Select
-                          value={settingsDraft.gemini_base_url}
-                          onValueChange={(value) =>
+                {settingsDraft ? (
+                  <div className="rounded-xl border border-border/70 bg-muted/20 p-3">
+                    <div className="flex flex-col gap-3">
+                      <div className="flex flex-col gap-1">
+                        <TooltipFieldLabel
+                          htmlFor="story-workers"
+                          tooltip="Số video tối đa được xử lý đồng thời trong Story Pipeline."
+                          className="text-sm font-medium text-foreground"
+                        >
+                          Số luồng tối đa
+                        </TooltipFieldLabel>
+                        <Input
+                          id="story-workers"
+                          type="number"
+                          min={1}
+                          max={8}
+                          value={settingsDraft.max_parallel_videos}
+                          onChange={(event) =>
                             setSettingsDraft((current) =>
-                              current ? { ...current, gemini_base_url: value } : current
+                              current
+                                ? {
+                                    ...current,
+                                    max_parallel_videos: Math.min(
+                                      8,
+                                      Math.max(1, Number(event.target.value) || 1),
+                                    ),
+                                  }
+                                : current,
                             )
                           }
-                        >
-                          <SelectTrigger className="flex-1">
-                            <SelectValue placeholder="Chọn một Gem..." />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectGroup>
-                              <SelectLabel>Gem của tôi</SelectLabel>
-                              <SelectItem value="https://gemini.google.com/app">Gemini mặc định</SelectItem>
-                              {availableGems.map((gem) => (
-                                <SelectItem key={gem.url} value={gem.url}>
-                                  {gem.name}
-                                </SelectItem>
-                              ))}
-                            </SelectGroup>
-                          </SelectContent>
-                        </Select>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="icon"
-                          disabled={fetchingGems}
-                          onClick={() => void handleFetchGems()}
-                          title="Làm mới danh sách Gem"
-                        >
-                          {fetchingGems ? (
-                            <Loader2 className="size-4 animate-spin" />
-                          ) : (
-                            <RefreshCw className="size-4" />
-                          )}
-                        </Button>
-                      </div>
-                    </div>
-
-                    <div className="flex flex-col gap-1">
-                      <TooltipFieldLabel
-                        htmlFor="gemini-url"
-                        tooltip='Dán link Gem chuyên dụng, ví dụ Gem "Tạo ảnh", để tối ưu kết quả.'
-                        className="text-sm font-medium text-foreground"
-                      >
-                        URL Gem tùy chỉnh
-                      </TooltipFieldLabel>
-                      <Input
-                        id="gemini-url"
-                        value={settingsDraft.gemini_base_url}
-                        onChange={(event) =>
-                          setSettingsDraft((current) =>
-                            current
-                              ? {
-                                  ...current,
-                                  gemini_base_url: event.target.value,
-                                }
-                              : current,
-                          )
-                        }
-                        placeholder="https://gemini.google.com/app/gems/..."
-                      />
-                    </div>
-
-                    <div className="flex items-center justify-between rounded-lg border border-border/70 px-3 py-2">
-                      <TooltipFieldLabel
-                        tooltip="Bật để lưu log bộ chọn khi Gemini tự động thao tác trên trình duyệt."
-                        className="text-sm font-medium text-foreground"
-                      >
-                        Ghi log bộ chọn
-                      </TooltipFieldLabel>
-                      <Switch
-                        checked={settingsDraft.gemini_selector_debug}
-                        onCheckedChange={(checked) =>
-                          setSettingsDraft((current) =>
-                            current
-                              ? {
-                                  ...current,
-                                  gemini_selector_debug: checked,
-                                }
-                              : current,
-                          )
-                        }
-                      />
-                    </div>
-
-                    <div className="flex flex-col gap-1">
-                      <TooltipFieldLabel
-                        tooltip="Thư mục lưu log debug của trình duyệt khi bật chế độ ghi log bộ chọn."
-                        className="text-sm font-medium text-foreground"
-                      >
-                        Thư mục log debug
-                      </TooltipFieldLabel>
-                      <div className="flex gap-2">
-                        <Input
-                          value={settingsDraft.gemini_selector_debug_dir}
-                          readOnly
-                          placeholder="Chọn thư mục lưu log debug..."
                         />
+                      </div>
+
+                      <div className="flex flex-col gap-1">
+                        <TooltipFieldLabel
+                          tooltip="Chọn Gem mặc định để điều hướng prompt. Có thể bấm nút làm mới để quét lại danh sách."
+                          className="text-sm font-medium text-foreground"
+                        >
+                          Chọn Gem
+                        </TooltipFieldLabel>
+                        <div className="flex gap-2">
+                          <Select
+                            value={currentGemUrl || GEMINI_DEFAULT_URL}
+                            onValueChange={(value) =>
+                              setSettingsDraft((current) =>
+                                current ? { ...current, gemini_base_url: value } : current
+                              )
+                            }
+                          >
+                            <SelectTrigger className="flex-1">
+                              <SelectValue placeholder="Chọn một Gem..." />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectGroup>
+                                <SelectLabel>Gem khả dụng</SelectLabel>
+                                <SelectItem value={GEMINI_DEFAULT_URL}>Gemini mặc định</SelectItem>
+                                {showStoredGemOption ? (
+                                  <SelectItem value={currentGemUrl}>Gem đang lưu</SelectItem>
+                                ) : null}
+                                {availableGems.map((gem) => (
+                                  <SelectItem key={gem.url} value={gem.url}>
+                                    {gem.name}
+                                  </SelectItem>
+                                ))}
+                              </SelectGroup>
+                            </SelectContent>
+                          </Select>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="icon"
+                            disabled={fetchingGems}
+                            onClick={() => void handleFetchGems()}
+                            title="Làm mới danh sách Gem"
+                          >
+                            {fetchingGems ? (
+                              <Loader2 className="size-4 animate-spin" />
+                            ) : (
+                              <RefreshCw className="size-4" />
+                            )}
+                          </Button>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-col gap-1">
+                        <TooltipFieldLabel
+                          tooltip="Chọn nơi lưu toàn bộ output của Story Pipeline."
+                          className="text-sm font-medium text-foreground"
+                        >
+                          Thư mục output
+                        </TooltipFieldLabel>
+                        <div className="flex gap-2">
+                          <Input
+                            value={settingsDraft.output_root}
+                            readOnly
+                            placeholder="Chọn thư mục output..."
+                            className="text-xs"
+                          />
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="icon"
+                            disabled={choosingOutputFolder}
+                            onClick={() => void handleChooseOutputFolder()}
+                            title="Chọn thư mục output"
+                          >
+                            {choosingOutputFolder ? (
+                              <Loader2 className="size-4 animate-spin" />
+                            ) : (
+                              <FolderOpen className="size-4" />
+                            )}
+                          </Button>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 gap-2">
                         <Button
                           type="button"
                           variant="outline"
-                          size="icon"
-                          onClick={async () => {
-                            const { path } = await chooseFolder();
-                            if (path) {
-                              setSettingsDraft((current) =>
-                                current ? { ...current, gemini_selector_debug_dir: path } : current
-                              );
-                            }
-                          }}
+                          size="sm"
+                          disabled={!settingsDraft.output_root.trim()}
+                          onClick={() => void handleOpenOutputFolder()}
                         >
                           <FolderOpen className="size-4" />
+                          Mở thư mục output
                         </Button>
                       </div>
-                    </div>
 
-                    <Button
-                      type="button"
-                      disabled={savingSettings}
-                      variant="outline"
-                      onClick={() => void handleSaveSettings()}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            ) : rightPanelTab === "prompt" ? (
+              <div className="flex flex-col gap-4">
+                <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-muted/20 p-3">
+                  <div className="flex items-center gap-2">
+                    <Badge className="bg-primary/85 text-primary-foreground">Global</Badge>
+                    <TooltipFieldLabel
+                      tooltip="Prompt tổng áp dụng cho toàn bộ quy trình Story Pipeline."
+                      className="text-sm font-medium text-foreground"
                     >
-                      {savingSettings ? (
-                        <Loader2 className="size-4 animate-spin" />
-                      ) : (
-                        "Lưu cài đặt"
-                      )}
-                    </Button>
+                      Prompt tổng
+                    </TooltipFieldLabel>
+                  </div>
+                  <Textarea
+                    value={globalPromptDraft}
+                    onChange={(event) => setGlobalPromptDraft(event.target.value)}
+                    className="min-h-20"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={savingPrompt || globalPromptDraft.trim() === globalPrompt.trim()}
+                    onClick={() => void handleSaveGlobalPrompt()}
+                  >
+                    {savingPrompt ? <Loader2 className="size-4 animate-spin" /> : "Lưu prompt tổng"}
+                  </Button>
+                </div>
+
+                <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-muted/20 p-3">
+                  <div className="flex items-center gap-2">
+                    <Badge className="bg-indigo-500/80 text-indigo-50">Video</Badge>
+                    <TooltipFieldLabel
+                      tooltip="Ngữ cảnh prompt riêng của video đang chọn."
+                      className="text-sm font-medium text-foreground"
+                    >
+                      Prompt ngữ cảnh
+                    </TooltipFieldLabel>
+                  </div>
+                  <Textarea value={selectedVideo?.videoPrompt ?? ""} readOnly className="min-h-16" />
+                </div>
+
+                <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-muted/20 p-3">
+                  <div className="flex items-center gap-2">
+                    <Badge className="bg-amber-500/80 text-amber-50">Step</Badge>
+                    <TooltipFieldLabel
+                      tooltip="Gồm seed prompt của marker và modifier prompt của bước hiện tại."
+                      className="text-sm font-medium text-foreground"
+                    >
+                      Seed và modifier
+                    </TooltipFieldLabel>
+                  </div>
+                  <Textarea
+                    value={[
+                      selectedMarker?.seedPrompt ?? "",
+                      selectedStep?.modifierPrompt ?? "",
+                    ]
+                      .filter(Boolean)
+                      .join("\n\n")}
+                    readOnly
+                    className="min-h-20"
+                  />
+                </div>
+
+                <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-muted/20 p-3">
+                  <TooltipFieldLabel
+                    tooltip="Bản ghép cuối cùng của prompt tổng, prompt video và prompt bước."
+                    className="text-sm font-medium text-foreground"
+                  >
+                    Xem trước prompt gộp
+                  </TooltipFieldLabel>
+                  <Textarea value={mergedPrompt} readOnly className="min-h-24 text-xs" />
+                </div>
+              </div>
+            ) : rightPanelTab === "history" ? (
+              <div className="flex flex-col gap-4">
+                <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-muted/20 p-3">
+                  <div className="flex items-center gap-2">
+                    <Badge className="bg-sky-500/80 text-sky-50">History</Badge>
+                    <TooltipFieldLabel
+                      tooltip="Danh sách các lần render của bước hiện tại để so sánh và chọn lại."
+                      className="text-sm font-medium text-foreground"
+                    >
+                      Lịch sử lần thử
+                    </TooltipFieldLabel>
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    {selectedMarker && selectedStep
+                      ? `${selectedMarker.label} / ${selectedStep.title}`
+                      : "Chọn một bước để xem các lần thử đã tạo."}
+                  </div>
+                  <div className="flex gap-2 overflow-x-auto pb-1">
+                    {selectedStep?.attempts
+                      ?.slice()
+                      .reverse()
+                      .map((attempt) => {
+                        const selected = selectedAttempt?.id === attempt.id;
+                        return (
+                          <button
+                            key={attempt.id}
+                            type="button"
+                            onClick={() => setSelectedAttemptId(attempt.id)}
+                            className={cn(
+                              "w-24 shrink-0 rounded-lg border p-1.5 text-left",
+                              selected
+                                ? "border-primary/70 bg-primary/12"
+                                : "border-border/70 bg-background/50",
+                            )}
+                          >
+                            <VideoThumb
+                              path={attempt.previewPath ?? attempt.normalizedPath}
+                              alt={`Lần thử ${attempt.index}`}
+                              className="h-14 w-full"
+                            />
+                            <div className="mt-1 truncate text-[11px] text-foreground">
+                              {`A${attempt.index} - ${attempt.mode}`}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    {!selectedStep || selectedStep.attempts.length === 0 ? (
+                      <div className="rounded-lg border border-dashed border-border/70 px-3 py-4 text-xs text-muted-foreground">
+                        Chưa có lần thử.
+                      </div>
+                    ) : null}
                   </div>
                 </div>
-              ) : null}
-
-              <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-muted/20 p-3">
-                <div className="flex items-center gap-2">
-                  <Badge className="bg-primary/85 text-primary-foreground">Global</Badge>
-                  <TooltipFieldLabel
-                    tooltip="Prompt tổng áp dụng cho toàn bộ quy trình Story Pipeline."
-                    className="text-sm font-medium text-foreground"
-                  >
-                    Prompt tổng
-                  </TooltipFieldLabel>
-                </div>
-                <Textarea
-                  value={globalPromptDraft}
-                  onChange={(event) => setGlobalPromptDraft(event.target.value)}
-                  className="min-h-20"
-                />
-                <Button
-                  type="button"
-                  variant="outline"
-                  disabled={savingPrompt || globalPromptDraft.trim() === globalPrompt.trim()}
-                  onClick={() => void handleSaveGlobalPrompt()}
-                >
-                  {savingPrompt ? <Loader2 className="size-4 animate-spin" /> : "Lưu prompt tổng"}
-                </Button>
               </div>
-
-              <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-muted/20 p-3">
-                <div className="flex items-center gap-2">
-                  <Badge className="bg-indigo-500/80 text-indigo-50">Video</Badge>
-                  <TooltipFieldLabel
-                    tooltip="Ngữ cảnh prompt riêng của video đang chọn."
-                    className="text-sm font-medium text-foreground"
-                  >
-                    Prompt ngữ cảnh
-                  </TooltipFieldLabel>
-                </div>
-                <Textarea value={selectedVideo?.videoPrompt ?? ""} readOnly className="min-h-16" />
-              </div>
-
-              <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-muted/20 p-3">
-                <div className="flex items-center gap-2">
-                  <Badge className="bg-amber-500/80 text-amber-50">Step</Badge>
-                  <TooltipFieldLabel
-                    tooltip="Gồm seed prompt của marker và modifier prompt của bước hiện tại."
-                    className="text-sm font-medium text-foreground"
-                  >
-                    Seed và modifier
-                  </TooltipFieldLabel>
-                </div>
-                <Textarea
-                  value={[
-                    selectedMarker?.seedPrompt ?? "",
-                    selectedStep?.modifierPrompt ?? "",
-                  ]
-                    .filter(Boolean)
-                    .join("\n\n")}
-                  readOnly
-                  className="min-h-20"
-                />
-              </div>
-
-              <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-muted/20 p-3">
-                <TooltipFieldLabel
-                  tooltip="Bản ghép cuối cùng của prompt tổng, prompt video và prompt bước."
-                  className="text-sm font-medium text-foreground"
-                >
-                  Xem trước prompt gộp
-                </TooltipFieldLabel>
-                <Textarea value={mergedPrompt} readOnly className="min-h-24 text-xs" />
-              </div>
-
-              <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-muted/20 p-3">
-                <TooltipFieldLabel
-                  tooltip="Danh sách các lần render của bước hiện tại để so sánh và chọn lại."
-                  className="text-sm font-medium text-foreground"
-                >
-                  Lịch sử lần thử
-                </TooltipFieldLabel>
-                <div className="flex gap-2 overflow-x-auto pb-1">
-                  {selectedStep?.attempts
-                    ?.slice()
-                    .reverse()
-                    .map((attempt) => {
-                      const selected = selectedAttempt?.id === attempt.id;
-                      return (
-                        <button
-                          key={attempt.id}
-                          type="button"
-                          onClick={() => setSelectedAttemptId(attempt.id)}
-                          className={cn(
-                            "w-24 shrink-0 rounded-lg border p-1.5 text-left",
-                            selected
-                              ? "border-primary/70 bg-primary/12"
-                              : "border-border/70 bg-background/50",
-                          )}
-                        >
-                          <VideoThumb
-                            path={attempt.previewPath ?? attempt.normalizedPath}
-                            alt={`Lần thử ${attempt.index}`}
-                            className="h-14 w-full"
-                          />
-                          <div className="mt-1 truncate text-[11px] text-foreground">
-                            {`A${attempt.index} - ${attempt.mode}`}
-                          </div>
-                        </button>
-                      );
-                    })}
-                  {!selectedStep || selectedStep.attempts.length === 0 ? (
-                    <div className="rounded-lg border border-dashed border-border/70 px-3 py-4 text-xs text-muted-foreground">
-                      Chưa có lần thử.
-                    </div>
-                  ) : null}
+            ) : (
+              <div className="flex flex-col gap-4">
+                <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-muted/20 p-3">
+                  <div className="flex items-center gap-2">
+                    <Badge className="bg-emerald-500/80 text-emerald-50">Workers</Badge>
+                    <TooltipFieldLabel
+                      tooltip="Hiển thị các video đang chạy trên từng luồng xử lý song song."
+                      className="text-sm font-medium text-foreground"
+                    >
+                      Luồng xử lý
+                    </TooltipFieldLabel>
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    Theo dõi nhanh video đang chiếm từng luồng xử lý.
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    {workerSlots.map((video, index) => (
+                      <div
+                        key={`worker-tab-${index + 1}`}
+                        className="flex items-center justify-between rounded-lg border border-border/70 bg-background/60 px-3 py-2 text-sm"
+                      >
+                        <span className="font-medium text-muted-foreground">W{index + 1}</span>
+                        <span className="max-w-[14rem] truncate text-right text-foreground">
+                          {video ? video.name : "Rảnh"}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
-            </div>
+            )}
           </div>
 
           <Separator />
@@ -1727,8 +1747,3 @@ export default function StoryStudio() {
     </div>
   );
 }
-
-
-
-
-

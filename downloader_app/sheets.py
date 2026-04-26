@@ -17,6 +17,7 @@ from downloader_app.google_auth import GoogleAuthError, google_oauth
 URL_PATTERN = re.compile(r"https?://[^\s\"'<>]+")
 SHEET_ID_PATTERN = re.compile(r"/spreadsheets/d/([a-zA-Z0-9-_]+)")
 ACCOUNT_INDEX_PATTERN = re.compile(r"/spreadsheets/u/(\d+)/d/")
+INTEGERISH_SEQUENCE_PATTERN = re.compile(r"^\s*(\d+)(?:\.0+)?\s*$")
 GVIZ_PREFIX = "google.visualization.Query.setResponse("
 TIME_POINT_RAW = r"\d{1,3}(?:[:.]\d{1,2})?"
 TIME_POINT_PATTERN = re.compile(rf"^{TIME_POINT_RAW}$")
@@ -141,6 +142,82 @@ class HeaderLayout:
     header_row_index: int | None
     sequence_column: int | None
     time_columns: tuple[int, ...]
+
+
+def _coerce_positive_int(value: object, *, field_name: str) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise SheetParseError(f"{field_name} phai la so nguyen duong.") from exc
+    if parsed <= 0:
+        raise SheetParseError(f"{field_name} phai lon hon 0.")
+    return parsed
+
+
+def normalize_sequence_range(
+    start: object = None,
+    end: object = None,
+) -> tuple[int | None, int | None]:
+    normalized_start = _coerce_positive_int(start, field_name="sequence_start")
+    normalized_end = _coerce_positive_int(end, field_name="sequence_end")
+
+    if normalized_start is None and normalized_end is None:
+        return None, None
+
+    if (
+        normalized_start is not None
+        and normalized_end is not None
+        and normalized_start > normalized_end
+    ):
+        raise SheetParseError("sequence_start khong duoc lon hon sequence_end.")
+
+    return normalized_start, normalized_end
+
+
+def _entry_sequence_number(entry: object) -> int | None:
+    raw_label = str(getattr(entry, "sequence_label", "")).strip()
+    if raw_label:
+        matched = INTEGERISH_SEQUENCE_PATTERN.fullmatch(raw_label)
+        if matched:
+            return int(matched.group(1))
+
+    row_index = getattr(entry, "row_index", None)
+    if isinstance(row_index, int):
+        return row_index + 1
+
+    row_number = getattr(entry, "row_number", None)
+    if isinstance(row_number, int):
+        return row_number
+
+    return None
+
+
+def filter_entries_by_sequence_range(
+    entries: Iterable[object],
+    *,
+    sequence_start: int | None = None,
+    sequence_end: int | None = None,
+) -> list[object]:
+    if sequence_start is None and sequence_end is None:
+        return list(entries)
+
+    filtered: list[object] = []
+    for entry in entries:
+        sequence_number = _entry_sequence_number(entry)
+        if sequence_number is None:
+            continue
+        if sequence_start is not None and sequence_number < sequence_start:
+            continue
+        if sequence_end is not None and sequence_number > sequence_end:
+            continue
+        filtered.append(entry)
+    return filtered
 
 
 def extract_sheet_id(sheet_url: str) -> str:

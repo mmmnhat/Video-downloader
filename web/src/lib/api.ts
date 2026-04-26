@@ -226,6 +226,8 @@ export type TtsVoice = {
   previewUrl?: string;
   category?: string;
   isOwner?: boolean;
+  isMyVoice?: boolean;
+  sharingStatus?: string;
   labels: Record<string, string>;
 };
 
@@ -236,8 +238,6 @@ export type StorySettings = {
   gemini_headless: boolean;
   gemini_base_url: string;
   gemini_response_timeout_ms: number;
-  gemini_selector_debug: boolean;
-  gemini_selector_debug_dir: string;
   gemini_model: string;
 };
 
@@ -359,19 +359,43 @@ export async function getBatch(batchId: string) {
   return requestJson<BatchDetail>(`/api/batches/${batchId}`);
 }
 
-export async function previewSheet(sheetUrl: string) {
+export async function previewSheet(
+  sheetUrl: string,
+  sequenceRange?: { sequenceStart?: number; sequenceEnd?: number },
+) {
   return requestJson<SheetPreview>("/api/sheets/preview", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sheet_url: sheetUrl }),
+    body: JSON.stringify({
+      sheet_url: sheetUrl,
+      ...(typeof sequenceRange?.sequenceStart === "number"
+        ? { sequence_start: sequenceRange.sequenceStart }
+        : {}),
+      ...(typeof sequenceRange?.sequenceEnd === "number"
+        ? { sequence_end: sequenceRange.sequenceEnd }
+        : {}),
+    }),
   });
 }
 
-export async function createBatch(sheetUrl: string, settings: Settings) {
+export async function createBatch(
+  sheetUrl: string,
+  settings: Settings,
+  sequenceRange?: { sequenceStart?: number; sequenceEnd?: number },
+) {
   return requestJson<BatchDetail>("/api/batches", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sheet_url: sheetUrl, settings }),
+    body: JSON.stringify({
+      sheet_url: sheetUrl,
+      settings,
+      ...(typeof sequenceRange?.sequenceStart === "number"
+        ? { sequence_start: sequenceRange.sequenceStart }
+        : {}),
+      ...(typeof sequenceRange?.sequenceEnd === "number"
+        ? { sequence_end: sequenceRange.sequenceEnd }
+        : {}),
+    }),
   });
 }
 
@@ -460,13 +484,23 @@ export async function openTtsLogin() {
   });
 }
 
-export async function previewTtsSheet(sheetUrl: string, textColumn?: string) {
+export async function previewTtsSheet(
+  sheetUrl: string,
+  textColumn?: string,
+  sequenceRange?: { sequenceStart?: number; sequenceEnd?: number },
+) {
   return requestJson<TtsPreview>("/api/tts/sheets/preview", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       sheet_url: sheetUrl,
       ...(textColumn ? { text_column: textColumn } : {}),
+      ...(typeof sequenceRange?.sequenceStart === "number"
+        ? { sequence_start: sequenceRange.sequenceStart }
+        : {}),
+      ...(typeof sequenceRange?.sequenceEnd === "number"
+        ? { sequence_end: sequenceRange.sequenceEnd }
+        : {}),
     }),
   });
 }
@@ -498,6 +532,8 @@ export async function createTtsBatch(payload: {
   headless: boolean;
   filenamePrefix?: string;
   channelPrefix?: string;
+  sequenceStart?: number;
+  sequenceEnd?: number;
 }) {
   return requestJson<TtsBatchDetail>("/api/tts/batches", {
     method: "POST",
@@ -516,6 +552,8 @@ export async function createTtsBatch(payload: {
       headless: payload.headless,
       filenamePrefix: payload.filenamePrefix,
       channelPrefix: payload.channelPrefix,
+      sequence_start: payload.sequenceStart,
+      sequence_end: payload.sequenceEnd,
     }),
   });
 }

@@ -1,86 +1,74 @@
-# Flowgen - Video Downloader, Story Pipeline & TTS Studio
+# Flowgen
 
-Flowgen là ứng dụng desktop/web local để tự động hóa quy trình sản xuất content:
+Flowgen la ung dung local de xu ly 3 nhom viec trong cung mot giao dien:
 
-- Tải video hàng loạt từ Google Sheets.
-- Chạy pipeline tạo ảnh theo marker (Gemini Web qua Playwright, không cần API key Gemini).
-- Tạo voiceover hàng loạt với TTS Studio.
+- Tai video hang loat tu Google Sheets
+- Chay Story Pipeline de tao anh theo marker
+- Tao batch TTS tu Google Sheets
 
-Ứng dụng chạy backend Python tại local (`127.0.0.1:8765`), frontend React và có shell desktop PyQt6.
+Ung dung gom backend Python, frontend React build san trong `web/dist`, va shell desktop PyQt6. Khi can, app co the fallback sang mo bang trinh duyet tai `http://127.0.0.1:8765`.
 
-## Tính năng chính
+## Tinh nang chinh
 
-### 1) Video Downloader
-- Nhập nguồn từ Google Sheets.
-- Theo dõi batch realtime qua SSE.
-- Hỗ trợ nhiều nền tảng phổ biến (YouTube, TikTok, Facebook, Instagram, X, Reddit...).
-- Có retry/cancel, quản lý cookies trình duyệt và mở thư mục output nhanh.
+### 1. Video Downloader
 
-### 2) Story Pipeline (Gemini Web Adapter)
-- Kiến trúc 3 cấp: `Video -> Marker -> Step/Attempt`.
-- Scheduler chuẩn:
-  - Video chạy song song theo worker pool.
-  - Marker/Step chạy tuần tự trong từng video.
-- Prompt merge 4 tầng:
-  - `Global + Video + Seed + Step`.
-- Hỗ trợ `accept`, `regenerate`, `refine`, `skip`.
-- Có 2 mode chạy step:
-  - `chain`: step sau ăn output step trước.
-  - `from_source`: luôn bám frame nguồn.
-- Realtime UI qua SSE `/api/story/events`.
-- Có filter nhanh queue theo `RUN / REVIEW / QUEUE`.
-- Có nút mở nhanh output folder trong cột trái.
+- Doc danh sach video tu Google Sheets
+- Preview truoc khi chay batch
+- Loc theo khoang STT
+- Theo doi tien do qua SSE
+- Mo nhanh thu muc output
+- Co retry va kiem tra tinh toan ven file tai ve
 
-### 3) GeminiWebAdapter (Playwright) - chống sai ảnh
-- Tự động điều khiển Gemini web session đã login.
-- Preview-first: lấy preview trên UI trước.
-- Normalize output: chuẩn hóa ảnh local trước khi dùng tiếp.
-- Giải quyết lỗi tải nhầm ảnh do DOM/cache/blob URL không đổi.
-- Có debug selector mode để tune nhanh trên Windows:
-  - Tự lưu screenshot.
-  - Dump HTML snapshot.
-  - Dump JSON heuristic/snippet khi fail.
+### 2. Story Pipeline
 
-### 4) TTS Studio
-- Quản lý TTS batch từ Google Sheets.
-- Theo dõi tiến độ, preview và xuất audio theo lô.
+- Quan ly theo cau truc `Video -> Marker -> Step -> Attempt`
+- Chay worker pool theo video, giu thu tu tung marker/step
+- Ho tro `accept`, `regenerate`, `refine`, `skip`
+- Ho tro `chain` va `from_source`
+- Dong bo realtime qua `/api/story/events`
 
-## Cấu trúc repo
+### 3. TTS Studio
+
+- Tao batch voiceover tu Google Sheets
+- Preview truoc khi chay
+- Loc theo khoang STT
+- Doc danh sach `My Voice` cua phien hien tai
+- Theo doi batch, nghe lai audio, mo output
+
+## Kien truc tong quan
 
 ```text
 .
 ├── downloader_app/
-│   ├── server.py                  # HTTP API + SSE
-│   ├── launcher.py                # Entry chính (desktop + local server)
-│   ├── story_pipeline.py          # State machine + scheduler Story
-│   ├── gemini_web_adapter.py      # Playwright adapter cho Gemini Web
-│   └── tts_manager.py
+│   ├── launcher.py
+│   ├── server.py
+│   ├── jobs.py
+│   ├── story_pipeline.py
+│   ├── tts_manager.py
+│   └── gemini_web_adapter.py
 ├── web/
-│   ├── src/App.tsx
-│   ├── src/components/StoryStudio.tsx
-│   └── src/lib/api.ts
-├── docs/story-pipeline-spec.md
-├── tests/
-└── main.py
+│   ├── src/
+│   └── dist/
+├── docs/
+├── static/
+├── main.py
+└── requirements.txt
 ```
 
-## Yêu cầu hệ thống
+## Yeu cau
 
-- Python `3.9+`
-- Node.js `18+` (khuyến nghị 20+)
-- FFmpeg + FFprobe (để xử lý media)
+- Python 3.9+
+- Node.js 18+ (khuyen nghi 20+)
 - Chromium cho Playwright
+- FFmpeg / FFprobe
 
-## Cài đặt cho developer
+## Cai dat
 
 ```bash
 git clone https://github.com/mmmnhat/Video-downloader.git
 cd Video-downloader
 
 python -m venv .venv
-# Windows
-.venv\Scripts\activate
-# macOS/Linux
 source .venv/bin/activate
 
 pip install -r requirements.txt
@@ -90,86 +78,72 @@ npm --prefix web install
 npm --prefix web run build
 ```
 
-## Chạy ứng dụng
+Tren Windows:
 
-### Cách 1: chạy app desktop (khuyến nghị)
+```powershell
+.venv\Scripts\activate
+```
+
+## Chay ung dung
+
+### Chay desktop app
 
 ```bash
 python main.py
 ```
 
-- App sẽ tự chạy local server và mở shell desktop PyQt6.
-- Nếu thiếu PyQt6, launcher fallback sang mở trình duyệt.
+Flowgen se:
 
-### Cách 2: chạy server web local thuần
+- uu tien su dung Python trong `.venv` neu co
+- khoi dong local server tai `127.0.0.1:8765`
+- mo shell desktop PyQt6
+- fallback sang trinh duyet neu thieu PyQt6
+
+### Chay server web local
 
 ```bash
 python -c "from downloader_app.server import run; run()"
 ```
 
-Mở: `http://127.0.0.1:8765`
+Sau do mo:
 
-## Story Pipeline quickstart
+- [http://127.0.0.1:8765](http://127.0.0.1:8765)
 
-### Bước 1: chuẩn bị manifest
+## Luong su dung nhanh
 
-Có thể import bằng `manifest` object hoặc `manifest_path` JSON.
+### Video Downloader
 
-Ví dụ tối giản:
+1. Dang nhap Google neu can
+2. Dan URL Google Sheets
+3. Chon `Ten kenh`, `Pham vi STT`, thu muc output
+4. Bam `Xem truoc` hoac `Bat dau`
 
-```json
-{
-  "video_name": "dance_final",
-  "video_path": "D:/projects/dance_final.mp4",
-  "mode": "chain",
-  "video_prompt": "stylized action sequence, keep character identity",
-  "markers": [
-    {
-      "name": "M004",
-      "timestamp_ms": 1250,
-      "input_frame": "D:/projects/frames/M004.jpg",
-      "seed_prompt": "character falls",
-      "steps": [
-        { "title": "Step 1", "modifier_prompt": "fall to hiphop move" },
-        { "title": "Step 2", "modifier_prompt": "hiphop to spin" }
-      ]
-    }
-  ]
-}
-```
+### Story Pipeline
 
-### Bước 2: import và chạy
+1. Import manifest trong tab Story Pipeline
+2. Chon video trong queue
+3. Run video
+4. Review tung step voi `Accept / Regenerate / Refine / Skip`
 
-Trong tab **Story Pipeline**:
+### TTS Studio
 
-1. Import manifest.
-2. Chọn video trong queue.
-3. Run video.
-4. Review theo từng step (`Accept / Regenerate / Refine / Skip`).
+1. Mo session ElevenLabs
+2. Dan URL Google Sheets
+3. Chon `My Voice`
+4. Dat `Ten kenh`, `Pham vi STT`
+5. Preview hoac bat dau batch
 
-### Bước 3: dùng refine đúng cách
+## API noi bo
 
-- `Regenerate`: thử lại cùng mục tiêu.
-- `Refine`: dùng output chuẩn hóa của attempt trước làm input mới.
+### Core
 
-## Debug selector Gemini (Windows-friendly)
+- `GET /api/bootstrap`
+- `GET /api/events`
+- `GET /api/settings`
+- `POST /api/settings`
 
-Khi DOM Gemini thay đổi hoặc selector fail, bật:
+### Story Pipeline
 
-- `gemini_selector_debug = true`
-- `gemini_selector_debug_dir = D:\\gemini-debug` (hoặc để trống để dùng mặc định)
-
-Artifacts sẽ gồm:
-
-- ảnh screenshot stage fail,
-- snapshot HTML,
-- JSON heuristic (candidate/composer/preview/snippet).
-
-Mặc định nếu không set dir riêng: `<output_root>/_gemini_debug/`.
-
-## API chính
-
-### Story
 - `GET /api/story/bootstrap`
 - `GET /api/story/videos`
 - `GET /api/story/videos/{videoId}`
@@ -177,57 +151,38 @@ Mặc định nếu không set dir riêng: `<output_root>/_gemini_debug/`.
 - `POST /api/story/videos/{videoId}/run`
 - `POST /api/story/videos/{videoId}/pause`
 - `POST /api/story/actions`
-- `GET /api/story/session/status?refresh=1`
-- `POST /api/story/session/open-login`
-- `GET /api/story/events` (SSE)
+- `GET /api/story/events`
 
-### Downloader/TTS
-- `GET /api/bootstrap`
-- `GET /api/events` (SSE)
+### TTS
+
 - `GET /api/tts/bootstrap`
+- `GET /api/tts/session/status`
+- `GET /api/tts/voices`
+- `GET /api/tts/batches`
+- `GET /api/tts/batches/{batchId}`
 
-## Test
+## Thu muc runtime
 
-```bash
-# story pipeline tests
-python -m pytest tests/test_story_pipeline.py
+Mot so thu muc se duoc tao va cap nhat trong qua trinh chay:
 
-# tts related tests
-python -m pytest tests/test_tts_sheet.py tests/test_tts_manager.py
-```
+- `story_pipeline/`
+- `tts_batches/`
+- `tts_profiles/`
 
-## Troubleshooting nhanh
+Khong nen dua du lieu runtime lon vao commit neu khong that su can thiet.
 
-- Không thấy tab Story: build lại frontend `npm --prefix web run build`, sau đó hard refresh.
-- SSE không cập nhật: kiểm tra endpoint `/api/story/events` có trả event `connected`.
-- Lỗi login/session Gemini: dùng nút `Open Login`, login lại, rồi `refresh session status`.
-- Lỗi tải nhầm ảnh: đảm bảo flow dùng `preview + normalized` thay vì tin nút download của Gemini.
+## Troubleshooting
 
-## Tài liệu kỹ thuật
+- Neu giao dien khong cap nhat: chay lai `npm --prefix web run build`
+- Neu Story Pipeline khong nhan session: mo lai login va refresh session
+- Neu TTS khong thay `My Voice`: kiem tra phien ElevenLabs va refresh session
+- Neu app desktop khong len cua so: kiem tra `PyQt6` va `PyQt6-WebEngine`
+- Neu tai video loi: kiem tra `ffmpeg`, `ffprobe` va dung luong o dia
 
-- Story pipeline spec: [`docs/story-pipeline-spec.md`](docs/story-pipeline-spec.md)
+## Tai lieu lien quan
 
-## Disclaimer
+- [Story pipeline spec](docs/story-pipeline-spec.md)
 
-Công cụ phục vụ tự động hóa workflow nội bộ/cá nhân. Người dùng tự chịu trách nhiệm về bản quyền nội dung và điều khoản sử dụng của từng nền tảng.
+## Luu y
 
-## TTS updates (2026-04-25)
-
-- Auto-scan danh sach `My Voice` khi tab TTS mo va phien ElevenLabs san sang.
-- Auto-refresh `My Voice` theo chu ky va khi nguoi dung quay lai tab/cua so app.
-- Chi cho phep tao batch bang voice thuoc `My Voice` cua phien hien tai.
-- Co co che lam moi danh sach qua `GET /api/tts/voices?refresh=1`.
-- Uu tien fetch full list qua ElevenLabs API/session; du lieu intercept chi dung fallback.
-- Browser/profile cho TTS duoc chon theo profile co cookie ElevenLabs phu hop nhat.
-- Runtime TTS profile now copies Chromium `Network/Cookies` to keep ElevenLabs login in Playwright session.
-- Session status check now reads both `Network/Cookies` and legacy `Cookies`.
-
-## Video download resilience updates (2026-04-25)
-
-- Added post-download video integrity verification using `ffmpeg` decode check.
-- If a file is corrupted, downloader now auto-attempts:
-  1. MP4 remux (`-c copy`)
-  2. Fallback re-encode (`libx264 + aac`)
-- Re-encoded repair output is upscaled to 1080p with:
-  `scale=-2:1080:flags=lanczos`
-- Existing output files are also verified before skip; invalid files are re-downloaded.
+Cong cu nay danh cho workflow ca nhan/noi bo. Nguoi dung tu chiu trach nhiem voi noi dung, quyen su dung, va dieu khoan cua cac nen tang duoc thao tac.

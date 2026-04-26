@@ -33,6 +33,10 @@ def utc_now() -> str:
     return datetime.utcnow().isoformat(timespec="seconds") + "Z"
 
 
+def story_debug_root(output_root: str | Path) -> Path:
+    return Path(output_root).expanduser() / "_debug" / "gemini_selector"
+
+
 class StoryPipelineError(RuntimeError):
     pass
 
@@ -45,8 +49,6 @@ class StorySettings:
     gemini_headless: bool = False
     gemini_base_url: str = GEMINI_DEFAULT_URL
     gemini_response_timeout_ms: int = 120_000
-    gemini_selector_debug: bool = False
-    gemini_selector_debug_dir: str = ""
     gemini_model: str = "gemini-1.5-flash"
 
 
@@ -293,14 +295,6 @@ class StoryPipelineManager:
                 gemini_response_timeout_ms = int(timeout_raw)
             except (TypeError, ValueError):
                 raise StoryPipelineError("gemini_response_timeout_ms khong hop le")
-            gemini_selector_debug = _bool_value(
-                payload.get("gemini_selector_debug", self._settings.gemini_selector_debug),
-                default=self._settings.gemini_selector_debug,
-            )
-            gemini_selector_debug_dir = str(
-                payload.get("gemini_selector_debug_dir", self._settings.gemini_selector_debug_dir)
-            ).strip()
-
             gemini_model = str(payload.get("gemini_model", self._settings.gemini_model)).strip() or self._settings.gemini_model
 
             previous_max_parallel = self._settings.max_parallel_videos
@@ -311,8 +305,6 @@ class StoryPipelineManager:
                 gemini_headless=gemini_headless,
                 gemini_base_url=gemini_base_url,
                 gemini_response_timeout_ms=max(20_000, min(300_000, gemini_response_timeout_ms)),
-                gemini_selector_debug=gemini_selector_debug,
-                gemini_selector_debug_dir=gemini_selector_debug_dir,
                 gemini_model=gemini_model,
             )
             self._refresh_adapter_locked()
@@ -1020,13 +1012,8 @@ class StoryPipelineManager:
                             ),
                         ),
                     ),
-                    gemini_selector_debug=_bool_value(
-                        settings.get("gemini_selector_debug", self._settings.gemini_selector_debug),
-                        default=self._settings.gemini_selector_debug,
-                    ),
-                    gemini_selector_debug_dir=str(
-                        settings.get("gemini_selector_debug_dir", self._settings.gemini_selector_debug_dir)
-                    ).strip(),
+                    gemini_model=str(settings.get("gemini_model", self._settings.gemini_model)).strip()
+                    or self._settings.gemini_model,
                 )
                 # Always force gemini_web as requested by user
                 self._settings.generation_backend = "gemini_web"
@@ -1209,20 +1196,13 @@ class StoryPipelineManager:
         if self._settings.generation_backend == "gemini_web":
             runtime_root = Path(self._settings.output_root) / "_gemini_runtime"
             runtime_root.mkdir(parents=True, exist_ok=True)
-            debug_root_raw = self._settings.gemini_selector_debug_dir.strip()
-            if debug_root_raw:
-                debug_root = Path(debug_root_raw).expanduser()
-                if not debug_root.is_absolute():
-                    debug_root = Path(self._settings.output_root) / debug_root
-            else:
-                debug_root = Path(self._settings.output_root) / "_gemini_debug"
             self._adapter = GeminiWebAdapter(
                 runtime_root=runtime_root,
                 headless=self._settings.gemini_headless,
                 base_url=self._settings.gemini_base_url,
                 response_timeout_ms=self._settings.gemini_response_timeout_ms,
-                debug_selector=self._settings.gemini_selector_debug,
-                debug_root=debug_root,
+                debug_selector=True,
+                debug_root=story_debug_root(self._settings.output_root),
             )
             return
 

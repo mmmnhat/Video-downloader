@@ -29,6 +29,10 @@ import { Switch } from "@/components/ui/switch";
 import { SessionStatusAlert } from "@/components/ui/session-status-alert";
 import { TooltipFieldLabel } from "@/components/ui/tooltip-field-label";
 import { VoicePicker } from "@/components/ui/voice-picker";
+import {
+  resolveSequenceRangeInput,
+  type SequenceRangeMode,
+} from "@/lib/sequence-range";
 import { cn } from "@/lib/utils";
 import {
   chooseFolder,
@@ -53,6 +57,11 @@ import {
   type TtsVoice,
 } from "@/lib/api";
 import { useLocalStorage } from "@/hooks/use-local-storage";
+import {
+  TAB_CARD_GAP_CLASS,
+  TAB_STICKY_TOP_CLASS,
+  TAB_VIEWPORT_CARD_HEIGHT_CLASS,
+} from "@/lib/layout";
 
 
 const ACTIVE_BATCH_STATUSES = new Set(["queued", "running", "cancelling"]);
@@ -107,17 +116,21 @@ function isExportableItem(item: TtsItem) {
 }
 
 function isMyVoice(voice: TtsVoice) {
+  if (voice.isMyVoice === true) {
+    return true;
+  }
   if (voice.isOwner === true) {
     return true;
   }
-  if (voice.isOwner === false) {
-    return false;
+  const sharingStatus = (voice.sharingStatus ?? "").trim().toLowerCase();
+  if (sharingStatus === "copied" || sharingStatus === "saved" || sharingStatus === "library") {
+    return true;
   }
   const category = (voice.category ?? "").trim().toLowerCase();
   if (!category) {
     return true;
   }
-  return category !== "premade" && category !== "professional";
+  return category !== "premade";
 }
 
 export default function TtsManager() {
@@ -133,6 +146,10 @@ export default function TtsManager() {
   const [workerCount, setWorkerCount] = useLocalStorage("tts.workerCount", 1);
   const [headless, setHeadless] = useLocalStorage("tts.headless", false);
   const [channelPrefix, setChannelPrefix] = useLocalStorage("tts.channelPrefix", "");
+  const [sequenceRangeMode, setSequenceRangeMode] =
+    useLocalStorage<SequenceRangeMode>("tts.sequenceRangeMode", "all");
+  const [sequenceStart, setSequenceStart] = useLocalStorage("tts.sequenceStart", "");
+  const [sequenceEnd, setSequenceEnd] = useLocalStorage("tts.sequenceEnd", "");
   const [preview, setPreview] = useState<TtsPreview | null>(null);
   const [voices, setVoices] = useState<TtsVoice[]>([]);
   const [batchSummaries, setBatchSummaries] = useState<TtsBatchSummary[]>([]);
@@ -172,10 +189,10 @@ export default function TtsManager() {
   const selectedBatchActive = selectedBatch ? ACTIVE_BATCH_STATUSES.has(selectedBatch.status) : false;
   const voiceFieldLoading = sessionChecking || voicesLoading;
   const voiceFieldPlaceholder = voiceFieldLoading
-    ? "Dang tai danh sach My Voice..."
+    ? "Đang tải danh sách My Voice..."
     : myVoices.length > 0
-      ? "Chon giong tu My Voice..."
-      : "Khong co My Voice trong phien hien tai.";
+      ? "Chọn giọng từ My Voice..."
+      : "Không có My Voice trong phiên hiện tại.";
 
   useEffect(() => {
     void bootstrap();
@@ -425,10 +442,26 @@ export default function TtsManager() {
       return;
     }
 
+    let sequenceRange;
+    try {
+      sequenceRange = resolveSequenceRangeInput(
+        sequenceRangeMode,
+        sequenceStart,
+        sequenceEnd,
+      );
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error));
+      return;
+    }
+
     setPreviewLoading(true);
     setErrorMessage("");
     try {
-      const nextPreview = await previewTtsSheet(trimmedSheetUrl, textColumn || undefined);
+      const nextPreview = await previewTtsSheet(
+        trimmedSheetUrl,
+        textColumn || undefined,
+        sequenceRange,
+      );
       startTransition(() => {
         setPreview(nextPreview);
         setTextColumn(nextPreview.textColumn);
@@ -455,6 +488,18 @@ export default function TtsManager() {
       return;
     }
 
+    let sequenceRange;
+    try {
+      sequenceRange = resolveSequenceRangeInput(
+        sequenceRangeMode,
+        sequenceStart,
+        sequenceEnd,
+      );
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error));
+      return;
+    }
+
     setStartLoading(true);
     setErrorMessage("");
     try {
@@ -471,6 +516,8 @@ export default function TtsManager() {
         workerCount,
         headless,
         channelPrefix: channelPrefix.trim() || undefined,
+        sequenceStart: sequenceRange.sequenceStart,
+        sequenceEnd: sequenceRange.sequenceEnd,
       });
       startTransition(() => {
         setSelectedBatch(detail);
@@ -601,7 +648,7 @@ export default function TtsManager() {
   }
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[minmax(22rem,28rem)_minmax(0,1fr)]">
+    <div className={cn("grid lg:grid-cols-[minmax(22rem,28rem)_minmax(0,1fr)]", TAB_CARD_GAP_CLASS)}>
       {errorMessage ? (
         <Alert className="lg:col-span-2" variant="destructive">
           <AlertTitle>Lỗi luồng TTS</AlertTitle>
@@ -609,8 +656,8 @@ export default function TtsManager() {
         </Alert>
       ) : null}
 
-      <Card className="border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)] lg:sticky lg:top-6 lg:h-[calc(100dvh-3rem)] lg:overflow-hidden">
-        <CardContent className="flex flex-col gap-6 pt-6 lg:h-full lg:overflow-auto">
+      <Card className={`border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)] lg:sticky ${TAB_STICKY_TOP_CLASS} ${TAB_VIEWPORT_CARD_HEIGHT_CLASS} lg:overflow-hidden`}>
+        <CardContent className="flex min-h-0 flex-1 flex-col gap-6 lg:overflow-auto">
           <SessionStatusAlert
             authenticated={Boolean(sessionStatus?.authenticated)}
             notReadyTitle={"Phiên ElevenLabs chưa sẵn sàng"}
@@ -832,18 +879,90 @@ export default function TtsManager() {
             <Field>
               <TooltipFieldLabel
                 htmlFor="tts-channel-prefix"
-                tooltip="Tien to ten kenh de ghep thanh channel.stt (vi du: theoof.1.1). Neu de trong, file se chi dung stt."
+                tooltip="Tiền tố tên kênh để ghép thành channel.stt (ví dụ: theoof.1.1). Nếu để trống, file sẽ chỉ dùng stt."
               >
-                Tên kênh (Prefix)
+                Tên kênh
               </TooltipFieldLabel>
               <Input
                 id="tts-channel-prefix"
                 value={channelPrefix}
                 onChange={(event) => setChannelPrefix(event.target.value)}
-                placeholder="Vi du: theoof"
+                placeholder="Ví dụ: theoof"
               />
             </Field>
 
+            <FieldGroup className="md:grid md:grid-cols-[minmax(0,12rem)_minmax(0,1fr)_minmax(0,1fr)]">
+              <Field>
+                <TooltipFieldLabel
+                  htmlFor="tts-range-mode"
+                  tooltip="Chọn gen toàn bộ hoặc chỉ preview/gen theo khoảng STT."
+                >
+                  Phạm vi STT
+                </TooltipFieldLabel>
+                <Select
+                  value={sequenceRangeMode}
+                  onValueChange={(value) => {
+                    setSequenceRangeMode(value as SequenceRangeMode);
+                    setPreview(null);
+                    setErrorMessage("");
+                  }}
+                >
+                  <SelectTrigger id="tts-range-mode">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Gen hết</SelectItem>
+                    <SelectItem value="range">Theo khoảng STT</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+
+              <Field>
+                <TooltipFieldLabel
+                  htmlFor="tts-range-start"
+                  tooltip="Nhập STT bắt đầu. Có thể để trống nếu chỉ muốn đến STT kết thúc."
+                >
+                  Từ STT
+                </TooltipFieldLabel>
+                <Input
+                  id="tts-range-start"
+                  type="number"
+                  min={1}
+                  inputMode="numeric"
+                  value={sequenceStart}
+                  onChange={(event) => {
+                    setSequenceStart(event.target.value);
+                    setPreview(null);
+                    setErrorMessage("");
+                  }}
+                  disabled={sequenceRangeMode !== "range"}
+                  placeholder="Ví dụ: 10"
+                />
+              </Field>
+
+              <Field>
+                <TooltipFieldLabel
+                  htmlFor="tts-range-end"
+                  tooltip="Nhập STT kết thúc. Có thể để trống nếu chỉ muốn từ STT bắt đầu trở đi."
+                >
+                  Đến STT
+                </TooltipFieldLabel>
+                <Input
+                  id="tts-range-end"
+                  type="number"
+                  min={1}
+                  inputMode="numeric"
+                  value={sequenceEnd}
+                  onChange={(event) => {
+                    setSequenceEnd(event.target.value);
+                    setPreview(null);
+                    setErrorMessage("");
+                  }}
+                  disabled={sequenceRangeMode !== "range"}
+                  placeholder="Ví dụ: 30"
+                />
+              </Field>
+            </FieldGroup>
             <Field>
               <div className="flex items-center justify-between gap-4 rounded-xl border border-border/70 px-4 py-3">
                 <div className="space-y-1">
@@ -880,8 +999,8 @@ export default function TtsManager() {
         </CardContent>
       </Card>
 
-      <Card className="border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)] lg:h-[calc(100dvh-3rem)] lg:overflow-hidden">
-        <CardContent className="flex flex-col gap-5 pt-6 lg:h-full lg:min-h-0">
+      <Card className={`border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)] ${TAB_VIEWPORT_CARD_HEIGHT_CLASS} lg:overflow-hidden`}>
+        <CardContent className="flex min-h-0 flex-1 flex-col gap-5">
           <div className="flex flex-wrap items-center gap-2">
             {selectedBatch ? (
               <>
@@ -1095,4 +1214,3 @@ function TtsItemCard({
     </Card>
   );
 }
-

@@ -12,13 +12,17 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from downloader_app.browser_session import browser_session
 
 
 GEMINI_DEFAULT_URL = "https://gemini.google.com/app"
 GEMINI_LOGIN_URL = "https://gemini.google.com/app"
+GEMINI_GEMS_VIEW_URL = "https://gemini.google.com/gems/view"
 GEMINI_AUTH_DOMAINS = ("gemini.google.com", "google.com", "accounts.google.com")
+GEMINI_GEM_URL_MARKERS = ("/gem/", "/gems/", "/app/gems/")
+GEMINI_GEM_URL_IGNORED_SUFFIXES = ("/view", "/list", "/manage", "/discover")
 
 PROFILE_ROOT_ITEMS = ("Local State",)
 PROFILE_ITEMS = (
@@ -88,6 +92,103 @@ class _PreviewCandidate:
     y: int
 
 
+def _resolve_macos_app_bundle(
+    default_path: Path,
+    *,
+    bundle_ids: tuple[str, ...] = (),
+    app_names: tuple[str, ...] = (),
+) -> Path:
+    if sys.platform != "darwin":
+        return default_path
+
+    direct_candidates = [
+        default_path,
+        Path("/Applications") / default_path.name,
+        Path.home() / "Applications" / default_path.name,
+    ]
+    for candidate in direct_candidates:
+        if candidate.exists():
+            return candidate
+
+    queries: list[str] = []
+    for bundle_id in bundle_ids:
+        queries.append(f"kMDItemCFBundleIdentifier == '{bundle_id}'")
+    for app_name in (default_path.name, *app_names):
+        queries.append(f'kMDItemFSName == "{app_name}"c')
+
+    for query in queries:
+        try:
+            completed = subprocess.run(
+                ["mdfind", query],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=5,
+            )
+        except Exception:
+            continue
+
+        for raw_line in completed.stdout.splitlines():
+            candidate = Path(raw_line.strip())
+            if candidate.suffix.lower() == ".app" and candidate.exists():
+                return candidate
+
+    return default_path
+
+
+def _normalize_gem_url(raw_url: str) -> str | None:
+    url = str(raw_url or "").strip()
+    if not url:
+        return None
+
+    parsed = urlparse(url)
+    if not parsed.scheme and not parsed.netloc:
+        if not url.startswith("/"):
+            url = f"/{url}"
+        parsed = urlparse(f"https://gemini.google.com{url}")
+
+    if (parsed.netloc or "gemini.google.com").lower() != "gemini.google.com":
+        return None
+
+    path = parsed.path.rstrip("/") or "/"
+    lower_path = path.lower()
+    if not any(marker in lower_path for marker in GEMINI_GEM_URL_MARKERS):
+        return None
+    if lower_path in {"/gems", "/app/gems"}:
+        return None
+    if any(lower_path.endswith(suffix) for suffix in GEMINI_GEM_URL_IGNORED_SUFFIXES):
+        return None
+
+    query_pairs = parse_qsl(parsed.query, keep_blank_values=True)
+    normalized_query = urlencode(sorted(query_pairs))
+    return urlunparse(("https", "gemini.google.com", path, "", normalized_query, ""))
+
+
+def _fallback_gem_name(url: str) -> str:
+    gem_id = url.rstrip("/").split("/")[-1].split("?")[0]
+    short_id = gem_id[:10] if gem_id else "shared"
+    return f"Gem {short_id}"
+
+
+def _normalize_gem_entries(raw_entries: list[dict] | None) -> list[dict]:
+    deduped: dict[str, dict] = {}
+    for entry in raw_entries or []:
+        normalized_url = _normalize_gem_url(str(entry.get("url", "")))
+        if not normalized_url:
+            continue
+
+        name = " ".join(str(entry.get("name", "")).split()).strip()
+        if not name:
+            name = _fallback_gem_name(normalized_url)
+
+        candidate = {"name": name, "url": normalized_url}
+        existing = deduped.get(normalized_url)
+        if existing is None or len(candidate["name"]) > len(existing["name"]):
+            deduped[normalized_url] = candidate
+
+    return sorted(deduped.values(), key=lambda item: item["name"].lower())
+
+
 def _build_candidates() -> list[GeminiBrowserCandidate]:
     candidates: list[GeminiBrowserCandidate] = []
     if sys.platform == "win32":
@@ -134,28 +235,46 @@ def _build_candidates() -> list[GeminiBrowserCandidate]:
                 )
             )
     else:
-        candidates.extend(
-            [
+        mac_browser_specs = [
+            {
+                "name": "CocCoc",
+                "default_app_path": Path("/Applications/CocCoc.app"),
+                "executable_name": "CocCoc",
+                "user_data_dir": Path.home() / "Library/Application Support/CocCoc/Browser",
+                "bundle_ids": ("com.coccoc.Coccoc",),
+                "app_names": ("Cốc Cốc.app",),
+            },
+            {
+                "name": "Chrome",
+                "default_app_path": Path("/Applications/Google Chrome.app"),
+                "executable_name": "Google Chrome",
+                "user_data_dir": Path.home() / "Library/Application Support/Google/Chrome",
+                "bundle_ids": ("com.google.Chrome",),
+                "app_names": (),
+            },
+            {
+                "name": "Edge",
+                "default_app_path": Path("/Applications/Microsoft Edge.app"),
+                "executable_name": "Microsoft Edge",
+                "user_data_dir": Path.home() / "Library/Application Support/Microsoft Edge",
+                "bundle_ids": ("com.microsoft.edgemac",),
+                "app_names": (),
+            },
+        ]
+        for spec in mac_browser_specs:
+            app_path = _resolve_macos_app_bundle(
+                spec["default_app_path"],
+                bundle_ids=spec["bundle_ids"],
+                app_names=spec["app_names"],
+            )
+            candidates.append(
                 GeminiBrowserCandidate(
-                    name="CocCoc",
-                    app_path=Path("/Applications/CocCoc.app"),
-                    executable_path=Path("/Applications/CocCoc.app/Contents/MacOS/CocCoc"),
-                    user_data_dir=Path.home() / "Library/Application Support/CocCoc/Browser",
-                ),
-                GeminiBrowserCandidate(
-                    name="Chrome",
-                    app_path=Path("/Applications/Google Chrome.app"),
-                    executable_path=Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
-                    user_data_dir=Path.home() / "Library/Application Support/Google/Chrome",
-                ),
-                GeminiBrowserCandidate(
-                    name="Edge",
-                    app_path=Path("/Applications/Microsoft Edge.app"),
-                    executable_path=Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
-                    user_data_dir=Path.home() / "Library/Application Support/Microsoft Edge",
-                ),
-            ]
-        )
+                    name=spec["name"],
+                    app_path=app_path,
+                    executable_path=app_path / "Contents" / "MacOS" / spec["executable_name"],
+                    user_data_dir=spec["user_data_dir"],
+                )
+            )
 
     return candidates
 
@@ -168,6 +287,15 @@ def _available_browser_candidates() -> list[GeminiBrowserCandidate]:
         candidate
         for candidate in GEMINI_BROWSER_CANDIDATES
         if candidate.app_path.exists() and candidate.executable_path.exists() and candidate.user_data_dir.exists()
+    ]
+
+
+def _profile_only_browser_candidates() -> list[GeminiBrowserCandidate]:
+    return [
+        candidate
+        for candidate in GEMINI_BROWSER_CANDIDATES
+        if candidate.user_data_dir.exists()
+        and (not candidate.app_path.exists() or not candidate.executable_path.exists())
     ]
 
 
@@ -244,6 +372,14 @@ def detect_gemini_browser_profile(domains: tuple[str, ...] = GEMINI_AUTH_DOMAINS
             executable_path=candidate.executable_path,
             user_data_dir=candidate.user_data_dir,
             profile_dir=profile_dir,
+        )
+
+    partial_candidates = _profile_only_browser_candidates()
+    if partial_candidates:
+        browser_names = "/".join(candidate.name for candidate in partial_candidates)
+        raise GeminiWebError(
+            "Da tim thay du lieu profile Gemini nhung khong tim duoc ung dung "
+            f"{browser_names} tren may nay. Hay cai lai browser tuong ung hoac mo app tu thu muc Applications."
         )
 
     raise GeminiWebError("Khong tim thay CocCoc/Chrome/Edge co profile Gemini tren may nay.")
@@ -1029,38 +1165,41 @@ class GeminiWebAdapter:
             )
             page = context.pages[0] if context.pages else context.new_page()
             page.set_default_timeout(30_000)
-            
-            # The exact URL provided by user
-            page.goto("https://gemini.google.com/gems/view", wait_until="networkidle", timeout=25_000)
-            
-            # Wait for content to appear
+
+            page.goto(GEMINI_GEMS_VIEW_URL, wait_until="networkidle", timeout=25_000)
+
             try:
-                page.wait_for_selector('a[href*="/app/gems/"], a[href*="/gems/"]', timeout=8_000)
+                page.wait_for_selector('a[href*="/gem/"], a[href*="/gems/"], a[href*="/app/gems/"]', timeout=8_000)
             except Exception:
                 pass
 
-            gems = page.evaluate("""() => {
+            raw_gems = page.evaluate("""() => {
                 const results = [];
-                // Find all links that point to a Gem app
-                const links = Array.from(document.querySelectorAll('a[href*="/gems/"]'));
+                const links = Array.from(document.querySelectorAll('a[href]'));
                 for (const link of links) {
                     const href = link.href;
-                    if (href.includes('/view') || href.includes('/list') || href.includes('/manage')) continue;
-                    
-                    // The Gem name is usually in a prominent text element inside the card/link
-                    let name = (link.innerText || link.textContent || '').trim().split('\\n')[0];
-                    
+                    if (!href) continue;
+
+                    const heading = link.querySelector('[role="heading"], h1, h2, h3, h4, strong, b');
+                    let name = (heading?.textContent || link.innerText || link.textContent || '')
+                        .trim()
+                        .split('\\n')
+                        .map((part) => part.trim())
+                        .find(Boolean) || '';
+
                     if (!name || name.length < 2) {
                         name = (link.getAttribute('title') || link.getAttribute('aria-label') || '').trim();
                     }
-                    
-                    if (href && name && name.length >= 2 && !results.some(g => g.url === href)) {
-                        results.push({ name, url: href });
-                    }
+
+                    results.push({ name, url: href });
                 }
                 return results;
             }""")
-            return gems
+
+            if _normalize_gem_url(self._base_url):
+                raw_gems.append({"name": "Gem dang chon", "url": self._base_url})
+
+            return _normalize_gem_entries(raw_gems)
         except Exception as e:
             print(f"[DEBUG] Failed to list gems: {e}")
             return []
@@ -1345,4 +1484,3 @@ class GeminiWebAdapter:
         shutil.copy2(preview_path, normalized_path)
         if normalized_path.stat().st_size == 0:
             raise GeminiWebError("Normalize image that bai: file rong.")
-

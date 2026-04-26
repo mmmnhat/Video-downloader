@@ -17,6 +17,7 @@ from downloader_app.browser_session import browser_session
 from downloader_app.google_auth import GoogleAuthError, google_oauth
 from downloader_app.jobs import manager
 from downloader_app.runtime import bundled_path
+from downloader_app.sheets import SheetParseError, normalize_sequence_range
 from downloader_app.story_pipeline import StoryPipelineError, story_pipeline
 from downloader_app.tts_manager import tts_manager
 from downloader_app.updater import updater, UpdateError
@@ -317,7 +318,19 @@ class AppHandler(BaseHTTPRequestHandler):
                 return
 
             try:
-                self._send_json(manager.preview_sheet(sheet_url))
+                sequence_start, sequence_end = normalize_sequence_range(
+                    payload.get("sequence_start"),
+                    payload.get("sequence_end"),
+                )
+                self._send_json(
+                    manager.preview_sheet(
+                        sheet_url,
+                        sequence_start=sequence_start,
+                        sequence_end=sequence_end,
+                    )
+                )
+            except SheetParseError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
@@ -335,12 +348,20 @@ class AppHandler(BaseHTTPRequestHandler):
                 return
 
             try:
+                sequence_start, sequence_end = normalize_sequence_range(
+                    payload.get("sequence_start"),
+                    payload.get("sequence_end"),
+                )
                 self._send_json(
                     tts_manager.preview_sheet(
                         sheet_url,
                         text_column=str(payload.get("text_column", "")).strip() or None,
+                        sequence_start=sequence_start,
+                        sequence_end=sequence_end,
                     )
                 )
+            except SheetParseError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
@@ -429,6 +450,10 @@ class AppHandler(BaseHTTPRequestHandler):
             try:
                 requested_channel_prefix = str(payload.get("channelPrefix", "")).strip()
                 default_channel_prefix = str(manager.get_settings().get("channel_prefix", "")).strip()
+                sequence_start, sequence_end = normalize_sequence_range(
+                    payload.get("sequence_start"),
+                    payload.get("sequence_end"),
+                )
                 batch = tts_manager.create_batch(
                     sheet_url=sheet_url,
                     voice_query=str(payload.get("voice_query", "")).strip(),
@@ -443,7 +468,12 @@ class AppHandler(BaseHTTPRequestHandler):
                     channel_prefix=requested_channel_prefix or default_channel_prefix or None,
                     tag_text=str(payload.get("tag_text", "")).strip(),
                     text_column=str(payload.get("text_column", "")).strip() or None,
+                    sequence_start=sequence_start,
+                    sequence_end=sequence_end,
                 )
+            except SheetParseError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                return
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
                 return
@@ -554,7 +584,19 @@ class AppHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            batch = manager.create_batch(sheet_url, settings_payload=payload.get("settings"))
+            sequence_start, sequence_end = normalize_sequence_range(
+                payload.get("sequence_start"),
+                payload.get("sequence_end"),
+            )
+            batch = manager.create_batch(
+                sheet_url,
+                settings_payload=payload.get("settings"),
+                sequence_start=sequence_start,
+                sequence_end=sequence_end,
+            )
+        except SheetParseError as exc:
+            self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
         except Exception as exc:
             self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return

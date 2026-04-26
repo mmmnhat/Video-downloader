@@ -99,9 +99,7 @@ Các key settings quan trọng:
 - `gemini_headless`: `true/false`
 - `gemini_base_url`
 - `gemini_response_timeout_ms`
-- `gemini_selector_debug`: bật chế độ dump debug selector khi lỗi
-- `gemini_selector_debug_dir`: thư mục lưu artifacts (Windows path hỗ trợ, ví dụ `D:\\gemini-debug`)
-  - nếu dùng path tương đối, app sẽ resolve theo `output_root`
+- selector debug artifacts luôn được lưu trong `output_root/_debug/gemini_selector/`
 
 ### 7.3.1 Gemini session
 - `GET /api/story/session/status?refresh=1`
@@ -178,16 +176,13 @@ Nhóm type chính:
 - UI 3 cột chưa dựng (backend/API đã sẵn).
 
 ## 11. Selector Debug Mode
-Khi `gemini_selector_debug=true`, adapter sẽ tự động dump artifacts cho từng run khi fail:
+Adapter sẽ tự động dump selector debug artifacts cho từng run:
 - `*.jpg`: screenshot toàn trang tại stage lỗi
 - `*.html`: source HTML snapshot
 - `*.json`: heuristic report gồm prompt target, attachment candidates, preview candidates, DOM snippet
 
 Mặc định artifacts lưu ở:
-- `<output_root>/_gemini_debug/`
-
-Nếu cần path riêng (đặc biệt trên Windows), set:
-- `gemini_selector_debug_dir`
+- `<output_root>/_debug/gemini_selector/`
 
 ## 12. Next Implementation Order
 1. Add frame extraction service (FFmpeg theo marker timestamp)

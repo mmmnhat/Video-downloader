@@ -21,7 +21,13 @@ from urllib.parse import urlparse
 from downloader_app.browser_session import BrowserSessionError, browser_session
 from downloader_app.platforms import detect_platform
 from downloader_app.runtime import app_path, is_frozen, resolve_binary
-from downloader_app.sheets import ClipRange, SheetScanResult, SheetUrlEntry, scan_sheet
+from downloader_app.sheets import (
+    ClipRange,
+    SheetScanResult,
+    SheetUrlEntry,
+    filter_entries_by_sequence_range,
+    scan_sheet,
+)
 
 SUBPROCESS_KWARGS = {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)} if os.name == "nt" else {}
 
@@ -246,13 +252,35 @@ class DownloadManager:
                     return []
                 self._event_condition.wait(timeout=remaining)
 
-    def create_batch(self, sheet_url: str, settings_payload: dict | None = None) -> DownloadBatch:
+    def create_batch(
+        self,
+        sheet_url: str,
+        settings_payload: dict | None = None,
+        *,
+        sequence_start: int | None = None,
+        sequence_end: int | None = None,
+    ) -> DownloadBatch:
         with self._lock:
             if settings_payload is not None:
                 self._settings = self._normalize_settings(settings_payload, current=self._settings)
             settings = DownloadSettings(**asdict(self._settings))
 
         scan_result = scan_sheet(sheet_url)
+        filtered_entries = filter_entries_by_sequence_range(
+            scan_result.entries,
+            sequence_start=sequence_start,
+            sequence_end=sequence_end,
+        )
+        if not filtered_entries:
+            raise ValueError("Khong tim thay dong nao trong pham vi STT da chon.")
+        scan_result = SheetScanResult(
+            sheet_id=scan_result.sheet_id,
+            gid=scan_result.gid,
+            sheet_title=scan_result.sheet_title,
+            cells=scan_result.cells,
+            entries=filtered_entries,
+            access_mode=scan_result.access_mode,
+        )
         batch = self._build_batch(sheet_url, scan_result, settings)
 
         with self._lock:
@@ -337,14 +365,25 @@ class DownloadManager:
             self._start_batch_worker(batch_id)
         return self.get_batch(batch_id) or {}
 
-    def preview_sheet(self, sheet_url: str) -> dict:
+    def preview_sheet(
+        self,
+        sheet_url: str,
+        *,
+        sequence_start: int | None = None,
+        sequence_end: int | None = None,
+    ) -> dict:
         scan_result = scan_sheet(sheet_url)
+        filtered_entries = filter_entries_by_sequence_range(
+            scan_result.entries,
+            sequence_start=sequence_start,
+            sequence_end=sequence_end,
+        )
         rows: list[dict] = []
         platform_counts: dict[str, int] = {}
         supported_count = 0
         clip_count = 0
 
-        for entry in scan_result.entries:
+        for entry in filtered_entries:
             match = detect_platform(entry.url)
             platform_counts[match.name] = platform_counts.get(match.name, 0) + 1
             if match.supported:
@@ -376,7 +415,10 @@ class DownloadManager:
         unsupported_count = len(rows) - supported_count
         warnings: list[str] = []
         if not rows:
-            warnings.append("Sheet khong tim thay URL video nao de tai.")
+            if sequence_start is not None or sequence_end is not None:
+                warnings.append("Khong tim thay dong nao trong pham vi STT da chon.")
+            else:
+                warnings.append("Sheet khong tim thay URL video nao de tai.")
         if unsupported_count > 0:
             warnings.append(
                 f"Co {unsupported_count} link chua map vao platform ho tro."
