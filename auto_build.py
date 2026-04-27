@@ -127,7 +127,7 @@ def main():
     
     print_step("SUCCESS! BUILD COMPLETE!")
     print(f"Output folder: {dist_dir / 'VideoDownloader'}")
-    print("\nBạn có thể vào thư mục dist/VideoDownloader và chạy VideoDownloader.exe.")
+    print("\n[SUCCESS] You can now go to dist/VideoDownloader and run VideoDownloader.exe.")
 
 if __name__ == "__main__":
     main()

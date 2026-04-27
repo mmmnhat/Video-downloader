@@ -1,26 +1,42 @@
 @import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Syne:wght@400;600;700;800&display=swap');
+
 
 :root {
   color-scheme: dark;
-  --radius: 1rem;
-  --background: oklch(0.19 0.015 255);
-  --foreground: oklch(0.94 0.01 95);
-  --card: oklch(0.24 0.018 255);
-  --card-foreground: oklch(0.94 0.01 95);
-  --popover: oklch(0.22 0.02 255);
-  --popover-foreground: oklch(0.94 0.01 95);
-  --primary: oklch(0.73 0.12 220);
-  --primary-foreground: oklch(0.18 0.015 255);
-  --secondary: oklch(0.3 0.02 250);
-  --secondary-foreground: oklch(0.9 0.01 95);
-  --muted: oklch(0.27 0.015 255);
-  --muted-foreground: oklch(0.72 0.015 240);
-  --accent: oklch(0.33 0.035 205);
-  --accent-foreground: oklch(0.94 0.01 95);
-  --destructive: oklch(0.68 0.19 24);
-  --border: oklch(0.34 0.015 255);
-  --input: oklch(0.31 0.015 255);
-  --ring: oklch(0.72 0.12 220);
+  --radius: 0.75rem;
+  
+  /* ImageCraft Palette */
+  --bg: #0d0d0f;
+  --surface: #141416;
+  --panel: #1a1a1e;
+  --border: #2a2a30;
+  --border-light: #35353d;
+  --accent: #5b6ef5;
+  --accent2: #c084fc;
+  --accent3: #34d399;
+  --accent4: #fb923c;
+  --text: #e8e8ee;
+  --text-2: #9090a0;
+  --text-3: #55555f;
+  --canvas: #111113;
+
+  /* Shadcn Overrides for compatibility */
+  --background: var(--bg);
+  --foreground: var(--text);
+  --card: var(--surface);
+  --card-foreground: var(--text);
+  --popover: var(--panel);
+  --popover-foreground: var(--text);
+  --primary: var(--accent);
+  --primary-foreground: #ffffff;
+  --secondary: var(--panel);
+  --secondary-foreground: var(--text);
+  --muted: var(--panel);
+  --muted-foreground: var(--text-2);
+  --destructive: #ef4444;
+  --input: var(--surface);
+  --ring: var(--accent);
 }
 
 @theme inline {
@@ -65,12 +81,8 @@
     margin: 0;
     min-height: 100dvh;
     @apply bg-background text-foreground antialiased;
-    font-family:
-      "Avenir Next", "SF Pro Text", "Segoe UI", sans-serif;
-    background-image:
-      radial-gradient(circle at top left, rgba(59, 130, 246, 0.18), transparent 28%),
-      radial-gradient(circle at bottom right, rgba(20, 184, 166, 0.12), transparent 24%),
-      linear-gradient(180deg, rgba(19, 23, 34, 0.96), rgba(12, 16, 24, 1));
+    font-family: 'Syne', sans-serif;
+    background: var(--bg);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeLegibility;

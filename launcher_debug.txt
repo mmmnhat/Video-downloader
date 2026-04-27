@@ -1,0 +1,8 @@
+[LAUNCHER] sys.argv: ['main.py']
+[LAUNCHER] sys.argv: ['main.py']
+[LAUNCHER] sys.argv: ['main.py']
+[LAUNCHER] sys.argv: ['main.py']
+[LAUNCHER] sys.argv: ['main.py']
+[LAUNCHER] sys.argv: ['main.py']
+[LAUNCHER] sys.argv: ['main.py']
+[LAUNCHER] sys.argv: ['main.py']

@@ -383,6 +383,86 @@ export type StoryControlResult = {
   count: number;
 };
 
+export type ThumbnailButtonField = {
+  key: string;
+  label: string;
+  type: "text" | "textarea" | "select" | "multi-select" | "color" | "number" | "slider" | "toggle";
+  value: string | number | boolean | string[] | null;
+  tooltip: string;
+  options?: string[];
+  min?: number | null;
+  max?: number | null;
+  required?: boolean;
+  visibleIf?: string | Record<string, any> | null;
+};
+
+export type ThumbnailButton = {
+  id: string;
+  name: string;
+  icon: string;
+  category: string;
+  promptTemplate: string;
+  requiresMask: boolean;
+  createNewChat: boolean;
+  allowRegenerate: boolean;
+  summary: string;
+  fields: ThumbnailButtonField[];
+};
+
+export type ThumbnailProfile = {
+  id: string;
+  name: string;
+  icon: string;
+  buttonIds: string[];
+  description: string;
+};
+
+export type ThumbnailVersion = {
+  id: string;
+  label: string;
+  note: string;
+  prompt: string;
+  buttonName: string;
+  fields: Record<string, string | number>;
+  maskMode: "none" | "selected" | "red" | string;
+  createdAt: string;
+  status: "current" | "branch" | "history" | string;
+  sourceImagePath: string;
+  outputImagePath: string;
+  threadUrl?: string | null;
+  parentVersionId?: string | null;
+};
+
+export type ThumbnailProjectSummary = {
+  id: string;
+  name: string;
+  folder: string;
+  sourceImagePath: string;
+  createdAt: string;
+  updatedAt: string;
+  selectedVersionId: string;
+  versionCount: number;
+};
+
+export type ThumbnailProjectDetail = ThumbnailProjectSummary & {
+  versions: ThumbnailVersion[];
+  currentVersion: ThumbnailVersion;
+};
+
+export type ThumbnailBootstrapPayload = {
+  buttons: ThumbnailButton[];
+  projects: ThumbnailProjectSummary[];
+  activeProjectId: string | null;
+  activeProject: ThumbnailProjectDetail | null;
+  profiles: ThumbnailProfile[];
+  sessionStatus: {
+    backend: string;
+    dependencies_ready: boolean;
+    authenticated: boolean;
+    baseUrl: string;
+  };
+};
+
 export class ApiError extends Error {
   constructor(message: string) {
     super(message);
@@ -566,6 +646,12 @@ export async function chooseFolder() {
 
 export async function chooseBrowser() {
   return requestJson<{ path: string }>("/api/system/choose-browser", {
+    method: "POST",
+  });
+}
+
+export async function chooseImage() {
+  return requestJson<{ path: string }>("/api/system/choose-image", {
     method: "POST",
   });
 }
@@ -876,4 +962,134 @@ export async function clearStoryVideos() {
   return requestJson<{ ok: boolean }>("/api/story/videos/clear", {
     method: "POST",
   });
+}
+
+export async function getThumbnailBootstrap() {
+  return requestJson<ThumbnailBootstrapPayload>("/api/thumbnail/bootstrap");
+}
+
+export async function getThumbnailProject(projectId: string) {
+  return requestJson<ThumbnailProjectDetail>(`/api/thumbnail/projects/${projectId}`);
+}
+
+export async function createThumbnailProject(payload: {
+  name: string;
+  folder: string;
+  sourceImagePath?: string;
+  base64Image?: string;
+}) {
+  return requestJson<ThumbnailProjectDetail>("/api/thumbnail/projects", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      name: payload.name,
+      folder: payload.folder,
+      source_image_path: payload.sourceImagePath,
+      base64_image: payload.base64Image,
+    }),
+  });
+}
+
+export async function createThumbnailButton(payload: {
+  id?: string;
+  name: string;
+  icon: string;
+  category: string;
+  promptTemplate: string;
+  requiresMask: boolean;
+  createNewChat: boolean;
+  allowRegenerate: boolean;
+  summary?: string;
+  fields: ThumbnailButtonField[];
+}) {
+  return requestJson<ThumbnailButton>("/api/thumbnail/buttons", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function selectThumbnailProject(projectId: string) {
+  return requestJson<ThumbnailProjectDetail>("/api/thumbnail/select-project", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ project_id: projectId }),
+  });
+}
+
+export async function selectThumbnailVersion(projectId: string, versionId: string) {
+  return requestJson<ThumbnailProjectDetail>("/api/thumbnail/select-version", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ project_id: projectId, version_id: versionId }),
+  });
+}
+
+export async function runThumbnailGeneration(payload: {
+  projectId: string;
+  buttonId: string;
+  fieldValues?: Record<string, string | number | string[] | boolean>;
+  selectedMode?: string;
+  regenerateMode?: string;
+  maskMode?: string;
+  isRegenerate?: boolean;
+  maskBase64?: string;
+}): Promise<ThumbnailProjectDetail> {
+  return requestJson<ThumbnailProjectDetail>("/api/thumbnail/run", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      project_id: payload.projectId,
+      button_id: payload.buttonId,
+      field_values: payload.fieldValues,
+      selected_mode: payload.selectedMode,
+      regenerate_mode: payload.regenerateMode,
+      mask_mode: payload.maskMode,
+      is_regenerate: payload.isRegenerate ?? false,
+      mask_base64: payload.maskBase64,
+    }),
+  });
+}
+
+export async function runThumbnailProfile(payload: {
+  projectId: string;
+  profileId: string;
+  maskBase64?: string;
+}): Promise<ThumbnailProjectDetail> {
+  return requestJson<ThumbnailProjectDetail>("/api/thumbnail/profile/run", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      project_id: payload.projectId,
+      profile_id: payload.profileId,
+      mask_base64: payload.maskBase64,
+    }),
+  });
+}
+
+export async function exportThumbnailImage(payload: {
+  projectId: string;
+  versionId: string;
+  destinationDir: string;
+  fileName: string;
+  format: string;
+  size: string;
+}) {
+  return requestJson<{ ok: boolean; path: string }>("/api/thumbnail/export", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      project_id: payload.projectId,
+      version_id: payload.versionId,
+      destination_dir: payload.destinationDir,
+      file_name: payload.fileName,
+      format: payload.format,
+      size: payload.size,
+    }),
+  });
+}
+
+export function getThumbnailAssetUrl(path: string) {
+  if (!path) return "";
+  return `/api/thumbnail/file?path=${encodeURIComponent(path)}`;
 }

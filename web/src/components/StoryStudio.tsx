@@ -117,6 +117,11 @@ export type StoryVideoDetail = StoryVideoSummary & {
   markers: StoryMarker[];
 };
 
+type StoryPanelTab = "gemini" | "prompt";
+type StoryMainTab = "videos" | "collection" | "history";
+type StoryQueueFilter = "all" | "running" | "review" | "queued";
+type StoryStepAction = "regenerate";
+
 const POLL_INTERVAL = 3000;
 const GEMINI_DEFAULT_URL = "https://gemini.google.com/app";
 
@@ -152,10 +157,16 @@ function selectionKey(action: string, markerId: string, stepId: string) {
   return `${action}:${markerId}:${stepId}`;
 }
 
-function getErrorMessage(error: any) {
+function getErrorMessage(error: unknown) {
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;
   return "Đã xảy ra lỗi không xác định.";
+}
+
+function findStep(markers: StoryMarker[], markerId: string, stepId: string) {
+  return markers
+    .find((marker) => marker.id === markerId)
+    ?.steps.find((step) => step.id === stepId);
 }
 
 const VideoThumb = React.memo(({ path, alt, className, onClick }: { path: string; alt?: string; className?: string; onClick?: () => void }) => {
@@ -194,9 +205,9 @@ export function StoryStudio() {
   const [videoPromptDraft, setVideoPromptDraft] = useState("");
   const [savingVideoPrompt, setSavingVideoPrompt] = useState(false);
 
-  const [leftPanelTab, setLeftPanelTab] = useState<"gemini" | "prompt">("gemini");
-  const [mainPanelTab, setMainPanelTab] = useState<"videos" | "collection" | "history">("videos");
-  const [queueFilter, setQueueFilter] = useState<"all" | "running" | "review" | "queued">("all");
+  const [leftPanelTab, setLeftPanelTab] = useState<StoryPanelTab>("gemini");
+  const [mainPanelTab, setMainPanelTab] = useState<StoryMainTab>("videos");
+  const [queueFilter, setQueueFilter] = useState<StoryQueueFilter>("all");
 
   const [selectedMarkerId, setSelectedMarkerId] = useState<string | null>(null);
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
@@ -216,7 +227,7 @@ export function StoryStudio() {
       startTransition(() => {
         setVideoSummaries(summaries);
       });
-    } catch (e) {
+    } catch {
       if (!silent) toast.error("Không thể tải danh sách video.");
     }
   }, [startTransition]);
@@ -241,7 +252,7 @@ export function StoryStudio() {
           }
         }
       });
-    } catch (e) {
+    } catch {
       if (!options.silent) toast.error("Không thể tải chi tiết video.");
     } finally {
       if (!options.silent) setDetailLoading(false);
@@ -261,7 +272,7 @@ export function StoryStudio() {
         // Fetch gems
         const gems = await listStoryGems();
         setAvailableGems(gems);
-      } catch (e) {
+      } catch {
         toast.error("Lỗi khởi tạo Tạo ảnh.");
       } finally {
         setBootLoading(false);
@@ -284,8 +295,8 @@ export function StoryStudio() {
     try {
       await openStoryLogin();
       toast.info("Đang mở trình duyệt để đăng nhập...");
-    } catch (e) {
-      toast.error(getErrorMessage(e));
+    } catch (error) {
+      toast.error(getErrorMessage(error));
     }
   }, []);
 
@@ -295,7 +306,7 @@ export function StoryStudio() {
       const status = await getStorySessionStatus(true);
       setSessionStatus(status);
       toast.success("Đã cập nhật trạng thái Gemini.");
-    } catch (e) {
+    } catch {
       toast.error("Không thể cập nhật session.");
     } finally {
       setSessionRefreshing(false);
@@ -308,8 +319,8 @@ export function StoryStudio() {
       const next = await updateStorySettings({ ...settingsDraft, ...partial });
       setSettingsDraft(next);
       toast.success("Đã lưu cài đặt.");
-    } catch (e) {
-      toast.error(getErrorMessage(e));
+    } catch (error) {
+      toast.error(getErrorMessage(error));
     }
   }, [settingsDraft]);
 
@@ -327,10 +338,10 @@ export function StoryStudio() {
     if (!settingsDraft?.output_root) return;
     try {
       await openFolder(settingsDraft.output_root);
-    } catch (error) {
+    } catch {
       toast.error("Không thể mở thư mục.");
     }
-  }, [settingsDraft?.output_root]);
+  }, [settingsDraft]);
 
   const handleImportSourceFolder = useCallback(async (path: string) => {
     if (!path.trim()) return;
@@ -446,7 +457,7 @@ export function StoryStudio() {
         prompt
       });
       setSelectedVideo(detail);
-      const newStep = detail.markers.find((m: any) => m.id === selectedMarkerId)?.steps.find((s: any) => s.id === selectedStepId);
+      const newStep = findStep(detail.markers, selectedMarkerId, selectedStepId);
       if (newStep && newStep.attempts && newStep.attempts.length > 0) {
         setSelectedAttemptId(newStep.attempts.at(-1)!.id);
       }
@@ -480,13 +491,13 @@ export function StoryStudio() {
     }
   }, [selectedAttemptId, selectedMarkerId, selectedStepId, selectedVideoId]);
 
-  const runStepAction = useCallback(async (action: any, markerId: string, stepId: string) => {
+  const runStepAction = useCallback(async (action: StoryStepAction, markerId: string, stepId: string) => {
     if (!selectedVideoId) return;
     setActionBusyKey(selectionKey(action, markerId, stepId));
     try {
       const detail = await applyStoryAction({ action, video_id: selectedVideoId, marker_id: markerId, step_id: stepId });
       setSelectedVideo(detail);
-      const newStep = detail.markers.find((m: any) => m.id === markerId)?.steps.find((s: any) => s.id === stepId);
+      const newStep = findStep(detail.markers, markerId, stepId);
       if (newStep && newStep.attempts && newStep.attempts.length > 0) {
         setSelectedAttemptId(newStep.attempts.at(-1)!.id);
       }
@@ -543,7 +554,7 @@ export function StoryStudio() {
     } finally {
       setExportingCollection(false);
     }
-  }, [selectedExportKeys, settingsDraft?.output_root]);
+  }, [selectedExportKeys, settingsDraft]);
 
   const filteredVideoSummaries = useMemo(() => {
     if (queueFilter === "all") return videoSummaries;
@@ -595,7 +606,7 @@ export function StoryStudio() {
       <aside className="relative flex flex-col min-w-0">
         <Card className={cn("relative flex flex-col border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)] lg:sticky", TAB_STICKY_TOP_CLASS, TAB_VIEWPORT_CARD_HEIGHT_CLASS, "lg:overflow-hidden")}>
           <div className="flex items-center justify-between px-4 pt-0 pb-2 shrink-0">
-            <Tabs value={leftPanelTab} onValueChange={v => setLeftPanelTab(v as any)} className="flex items-center">
+            <Tabs value={leftPanelTab} onValueChange={(value) => setLeftPanelTab(value as StoryPanelTab)} className="flex items-center">
               <TabsList className="h-8 bg-muted/20 p-0.5 border border-border/40">
                 <TabsTrigger value="gemini" className="h-7 px-3 text-[11px] font-medium uppercase tracking-wider">Gemini</TabsTrigger>
                 <TabsTrigger value="prompt" className="h-7 px-3 text-[11px] font-medium uppercase tracking-wider">Prompt</TabsTrigger>
@@ -726,7 +737,7 @@ export function StoryStudio() {
       {/* -------------------- MAIN PANEL -------------------- */}
       <Card className={cn("flex flex-col border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)]", TAB_VIEWPORT_CARD_HEIGHT_CLASS, "lg:overflow-hidden")}>
         <div className="flex items-center justify-end px-4 pt-0 pb-2 flex-none">
-          <Tabs value={mainPanelTab} onValueChange={v => setMainPanelTab(v as any)}>
+          <Tabs value={mainPanelTab} onValueChange={(value) => setMainPanelTab(value as StoryMainTab)}>
             <TabsList className="h-8 bg-muted/20 p-0.5 border border-border/40">
               <TabsTrigger value="videos" className="h-7 px-3 text-[11px] font-medium uppercase tracking-wider">Tiến trình</TabsTrigger>
               <TabsTrigger value="collection" className="h-7 px-3 text-[11px] font-medium uppercase tracking-wider">Bộ sưu tập</TabsTrigger>
@@ -741,7 +752,7 @@ export function StoryStudio() {
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <Badge variant="secondary">{videoSummaries.length} video</Badge>
-              <Select value={queueFilter} onValueChange={v => setQueueFilter(v as any)}>
+              <Select value={queueFilter} onValueChange={(value) => setQueueFilter(value as StoryQueueFilter)}>
                 <SelectTrigger className="h-8 text-xs px-2 w-[110px] rounded-lg bg-muted/20 border-border/70">
                   <SelectValue />
                 </SelectTrigger>
@@ -846,13 +857,13 @@ export function StoryStudio() {
                   <CardContent className="flex-1 p-0 flex overflow-hidden">
                     <ScrollArea className="w-[220px] border-r bg-muted/5">
                       <div className="p-3 space-y-3">
-                        {selectedVideo.markers.map((m: any) => (
+                        {selectedVideo.markers.map((m) => (
                           <div key={m.id} className="space-y-1">
                             <button onClick={() => setExpandedMarkerIds(curr => curr.includes(m.id) ? curr.filter(id => id !== m.id) : [...curr, m.id])} className={cn("w-full flex items-center justify-between p-1.5 rounded hover:bg-muted text-[11px] font-bold uppercase text-muted-foreground", selectedMarkerId === m.id && "text-foreground")}>
                               <span className="truncate">Marker {m.index}</span>
                               {expandedMarkerIds.includes(m.id) ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
                             </button>
-                            {expandedMarkerIds.includes(m.id) && m.steps.map((s: any) => (
+                            {expandedMarkerIds.includes(m.id) && m.steps.map((s) => (
                               <button key={s.id} onClick={() => { setSelectedMarkerId(m.id); setSelectedStepId(s.id); setSelectedAttemptId(s.attempts.at(-1)?.id || null); }} className={cn("w-full text-left pl-6 pr-2 py-1 text-[11px] rounded hover:text-primary", selectedStepId === s.id ? "text-primary font-bold" : "text-muted-foreground")}>
                                 Bước {s.index} ({storyStatusLabel(s.status)})
                               </button>

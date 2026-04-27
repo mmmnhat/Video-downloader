@@ -24,8 +24,8 @@ from downloader_app.runtime import app_path, cache_path
 from downloader_app.xmp_scanner import xmp_scanner
 
 
-STORY_STATE_FILE = app_path("story_pipeline_state.json")
-STORY_EXPORT_ROOT = app_path("story_exports")
+STORY_STATE_FILE = cache_path("story_pipeline", "state.json")
+STORY_EXPORT_ROOT = cache_path("story_pipeline", "exports")
 STORY_CACHE_ROOT = cache_path("story_pipeline")
 MAX_EVENT_BACKLOG = 500
 SESSION_STATUS_TTL_SECONDS = 45.0

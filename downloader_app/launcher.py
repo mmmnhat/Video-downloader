@@ -30,6 +30,9 @@ def _prefer_project_python(argv: list[str]) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    import sys
+    with open("launcher_debug.txt", "a", encoding="utf-8") as f:
+        f.write(f"[LAUNCHER] sys.argv: {sys.argv}\n")
     full_argv = list(sys.argv if argv is None else [sys.argv[0], *argv])
     _prefer_project_python(full_argv)
     args = full_argv[1:]
@@ -40,12 +43,28 @@ def main(argv: list[str] | None = None) -> int:
         yt_dlp.main(args[1:])
         return 0
 
+    if args and args[0] == "-c" and len(args) >= 2:
+        # Handle python -c "script"
+        script = args[1]
+        # Modify sys.argv so the script sees the rest of the arguments
+        sys.argv = ["-c"] + args[2:]
+        exec(script, {"__name__": "__main__"})
+        return 0
+
+    if args and args[0] == "-m" and len(args) >= 2:
+        module_name = args[1]
+        sys.argv = args[1:]
+        import runpy
+        runpy.run_module(module_name, run_name="__main__", alter_sys=True)
+        return 0
+
     # QtWebEngine spawns helper processes with --type=...
     # If we detect this, let QApplication handle it silently without creating a window.
     if any(a.startswith("--type=") for a in args):
         try:
             from PyQt6.QtWidgets import QApplication
             app = QApplication(full_argv)
+            app.setQuitOnLastWindowClosed(False)
             return app.exec()
         except ImportError:
             return 0

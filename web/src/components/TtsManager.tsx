@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RefreshCw, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -184,93 +184,38 @@ export default function TtsManager() {
   );
   const selectedBatchActive = selectedBatch ? ACTIVE_BATCH_STATUSES.has(selectedBatch.status) : false;
 
-  useEffect(() => {
-    void bootstrap();
-  }, []);
-
-  useEffect(() => {
-    if (!selectedBatchId || showingPreview) {
-      return;
+  const loadBatch = useCallback(async (batchId: string, options?: { silent?: boolean }) => {
+    const silent = options?.silent ?? false;
+    if (!silent) {
+      setDetailLoading(true);
     }
-    void loadBatch(selectedBatchId, { silent: false });
-  }, [selectedBatchId, showingPreview]);
-
-  useEffect(() => {
-    if (!hasActiveBatch && !(selectedBatch && ACTIVE_BATCH_STATUSES.has(selectedBatch.status))) {
-      return;
-    }
-
-    const intervalId = window.setInterval(() => {
-      void refreshSummaries(true);
-      if (selectedBatchId && !showingPreview) {
-        void loadBatch(selectedBatchId, { silent: true });
+    try {
+      const detail = await getTtsBatch(batchId);
+      const autoSelectedItemIds = detail.items
+        .filter((item) => isExportableItem(item) && !manuallyDeselectedItemIds.includes(item.id))
+        .map((item) => item.id);
+      startTransition(() => {
+        setSelectedBatch(detail);
+        setPreview(null);
+        setSelectedItemIds((current) => {
+          const validCurrent = current.filter((itemId) =>
+            detail.items.some((item) => item.id === itemId),
+          );
+          return Array.from(new Set([...validCurrent, ...autoSelectedItemIds]));
+        });
+      });
+    } catch (error) {
+      if (!silent) {
+        toast.error(getErrorMessage(error));
       }
-    }, 2500);
-
-    return () => window.clearInterval(intervalId);
-  }, [hasActiveBatch, selectedBatch, selectedBatchId, showingPreview]);
-
-  useEffect(() => {
-    if (!sessionStatus?.authenticated || !sessionStatus.dependencies_ready) {
-      setVoices([]);
-      setVoicesLoading(false);
-      return;
-    }
-    void loadVoices({ silent: true, refresh: false });
-  }, [sessionStatus?.authenticated, sessionStatus?.dependencies_ready]);
-
-  useEffect(() => {
-    if (!sessionStatus?.authenticated || !sessionStatus.dependencies_ready) {
-      return;
-    }
-
-    const intervalId = window.setInterval(() => {
-      void loadVoices({ silent: true, refresh: false });
-    }, 45_000);
-
-    return () => window.clearInterval(intervalId);
-  }, [sessionStatus?.authenticated, sessionStatus?.dependencies_ready]);
-
-  useEffect(() => {
-    if (!sessionStatus?.authenticated || !sessionStatus.dependencies_ready) {
-      return;
-    }
-
-    const handleFocus = () => {
-      void loadVoices({ silent: true, refresh: false });
-    };
-    const handleVisibilityChange = () => {
-      if (!document.hidden) {
-        void loadVoices({ silent: true, refresh: false });
+    } finally {
+      if (!silent) {
+        setDetailLoading(false);
       }
-    };
-
-    window.addEventListener("focus", handleFocus);
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () => {
-      window.removeEventListener("focus", handleFocus);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
-  }, [sessionStatus?.authenticated, sessionStatus?.dependencies_ready]);
-
-  useEffect(() => {
-    if (!sessionStatus?.dependencies_ready) {
-      return;
     }
-    // Only poll session status if we are NOT authenticated yet.
-    // Stop polling once authenticated.
-    if (sessionStatus.authenticated) {
-      return;
-    }
+  }, [manuallyDeselectedItemIds]);
 
-    const intervalId = window.setInterval(() => {
-      void refreshSessionStatus({ silent: true, loadVoices: false });
-    }, 4000);
-
-    return () => window.clearInterval(intervalId);
-  }, [sessionStatus?.authenticated, sessionStatus?.dependencies_ready]);
-
-  async function bootstrap() {
+  const bootstrap = useCallback(async () => {
     setBootLoading(true);
     setErrorMessage("");
     try {
@@ -294,9 +239,9 @@ export default function TtsManager() {
     } finally {
       setBootLoading(false);
     }
-  }
+  }, [loadBatch]);
 
-  async function refreshSummaries(silent = false) {
+  const refreshSummaries = useCallback(async (silent = false) => {
     try {
       const summaries = await listTtsBatches();
       startTransition(() => setBatchSummaries(summaries));
@@ -305,9 +250,9 @@ export default function TtsManager() {
         toast.error(getErrorMessage(error));
       }
     }
-  }
+  }, []);
 
-  async function loadVoices(options?: { silent?: boolean; refresh?: boolean }) {
+  const loadVoices = useCallback(async (options?: { silent?: boolean; refresh?: boolean }) => {
     const silent = options?.silent ?? false;
     const refresh = options?.refresh ?? false;
     if (voicesLoadInFlightRef.current) {
@@ -344,9 +289,9 @@ export default function TtsManager() {
       voicesLoadInFlightRef.current = false;
       setVoicesLoading(false);
     }
-  }
+  }, [setVoiceQuery, voiceQuery]);
 
-  async function refreshSessionStatus(options?: { silent?: boolean; loadVoices?: boolean }) {
+  const refreshSessionStatus = useCallback(async (options?: { silent?: boolean; loadVoices?: boolean }) => {
     const silent = options?.silent ?? false;
     const shouldLoadVoices = options?.loadVoices ?? false;
     if (sessionRefreshInFlightRef.current) {
@@ -375,38 +320,106 @@ export default function TtsManager() {
         setSessionRefreshing(false);
       }
     }
-  }
+  }, [loadVoices]);
 
-  async function loadBatch(batchId: string, options?: { silent?: boolean }) {
-    const silent = options?.silent ?? false;
-    if (!silent) {
-      setDetailLoading(true);
+  useEffect(() => {
+    const timerId = window.setTimeout(() => {
+      void bootstrap();
+    }, 0);
+    return () => window.clearTimeout(timerId);
+  }, [bootstrap]);
+
+  useEffect(() => {
+    if (!selectedBatchId || showingPreview) {
+      return;
     }
-    try {
-      const detail = await getTtsBatch(batchId);
-      const autoSelectedItemIds = detail.items
-        .filter((item) => isExportableItem(item) && !manuallyDeselectedItemIds.includes(item.id))
-        .map((item) => item.id);
-      startTransition(() => {
-        setSelectedBatch(detail);
-        setPreview(null);
-        setSelectedItemIds((current) => {
-          const validCurrent = current.filter((itemId) =>
-            detail.items.some((item) => item.id === itemId),
-          );
-          return Array.from(new Set([...validCurrent, ...autoSelectedItemIds]));
+    const timerId = window.setTimeout(() => {
+      void loadBatch(selectedBatchId, { silent: false });
+    }, 0);
+    return () => window.clearTimeout(timerId);
+  }, [loadBatch, selectedBatchId, showingPreview]);
+
+  useEffect(() => {
+    if (!hasActiveBatch && !(selectedBatch && ACTIVE_BATCH_STATUSES.has(selectedBatch.status))) {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      void refreshSummaries(true);
+      if (selectedBatchId && !showingPreview) {
+        void loadBatch(selectedBatchId, { silent: true });
+      }
+    }, 2500);
+
+    return () => window.clearInterval(intervalId);
+  }, [hasActiveBatch, loadBatch, refreshSummaries, selectedBatch, selectedBatchId, showingPreview]);
+
+  useEffect(() => {
+    if (!sessionStatus?.authenticated || !sessionStatus.dependencies_ready) {
+      const resetTimerId = window.setTimeout(() => {
+        startTransition(() => {
+          setVoices([]);
+          setVoicesLoading(false);
         });
-      });
-    } catch (error) {
-      if (!silent) {
-        toast.error(getErrorMessage(error));
-      }
-    } finally {
-      if (!silent) {
-        setDetailLoading(false);
-      }
+      }, 0);
+      return () => window.clearTimeout(resetTimerId);
     }
-  }
+
+    const loadTimerId = window.setTimeout(() => {
+      void loadVoices({ silent: true, refresh: false });
+    }, 0);
+
+    return () => window.clearTimeout(loadTimerId);
+  }, [loadVoices, sessionStatus?.authenticated, sessionStatus?.dependencies_ready]);
+
+  useEffect(() => {
+    if (!sessionStatus?.authenticated || !sessionStatus.dependencies_ready) {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      void loadVoices({ silent: true, refresh: false });
+    }, 45_000);
+
+    return () => window.clearInterval(intervalId);
+  }, [loadVoices, sessionStatus?.authenticated, sessionStatus?.dependencies_ready]);
+
+  useEffect(() => {
+    if (!sessionStatus?.authenticated || !sessionStatus.dependencies_ready) {
+      return;
+    }
+
+    const handleFocus = () => {
+      void loadVoices({ silent: true, refresh: false });
+    };
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        void loadVoices({ silent: true, refresh: false });
+      }
+    };
+
+    window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [loadVoices, sessionStatus?.authenticated, sessionStatus?.dependencies_ready]);
+
+  useEffect(() => {
+    if (!sessionStatus?.dependencies_ready) {
+      return;
+    }
+    if (sessionStatus.authenticated) {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      void refreshSessionStatus({ silent: true, loadVoices: false });
+    }, 4000);
+
+    return () => window.clearInterval(intervalId);
+  }, [refreshSessionStatus, sessionStatus?.authenticated, sessionStatus?.dependencies_ready]);
 
   async function handleRefreshSession() {
     await refreshSessionStatus({ silent: false, loadVoices: true });

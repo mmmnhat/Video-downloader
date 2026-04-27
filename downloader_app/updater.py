@@ -81,6 +81,15 @@ class UpdateManager:
                     "downloadUrl": "",
                     "isPlaceholder": False,
                 }
+            if e.code == 403:
+                return {
+                    "updateAvailable": False,
+                    "currentVersion": APP_VERSION,
+                    "latestVersion": APP_VERSION,
+                    "releaseNotes": "Cannot check for updates: GitHub API rate limit exceeded. Please try again later.",
+                    "downloadUrl": "",
+                    "isPlaceholder": False,
+                }
             raise UpdateError(f"GitHub API returned error {e.code}: {e.reason}")
         except Exception as e:
             raise UpdateError(f"Failed to check for updates: {e}")

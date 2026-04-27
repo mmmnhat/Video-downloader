@@ -22,6 +22,11 @@ from downloader_app.tts_manager import (
     TTS_VOICE_CACHE_FILE,
     tts_manager,
 )
+from downloader_app.thumbnail_pipeline import (
+    THUMBNAIL_CACHE_ROOT,
+    thumbnail_debug_root,
+    thumbnail_runtime_root,
+)
 
 
 @dataclass(frozen=True)
@@ -143,6 +148,22 @@ class CacheManager:
                 path=TTS_VOICE_CACHE_FILE,
                 open_path=TTS_CACHE_ROOT,
             ),
+            CacheGroupDefinition(
+                id="thumbnail-runtime",
+                feature="thumbnail",
+                title="Thumbnail Gemini Runtime",
+                description="Profile và runtime tạm cho Gemini web của Thumbnail Studio.",
+                path=thumbnail_runtime_root(),
+                open_path=THUMBNAIL_CACHE_ROOT,
+            ),
+            CacheGroupDefinition(
+                id="thumbnail-debug",
+                feature="thumbnail",
+                title="Thumbnail Debug",
+                description="Dữ liệu debug và selector dump của Thumbnail Studio.",
+                path=thumbnail_debug_root(),
+                open_path=THUMBNAIL_CACHE_ROOT,
+            ),
         ]
 
     def _story_active(self) -> bool:
@@ -161,11 +182,16 @@ class CacheManager:
         }
         return bool(statuses & ACTIVE_BATCH_STATUSES)
 
+    def _thumbnail_active(self) -> bool:
+        return False
+
     def _group_active(self, group_id: str) -> bool:
         if group_id.startswith("story-"):
             return self._story_active()
         if group_id.startswith("tts-"):
             return self._tts_active()
+        if group_id.startswith("thumbnail-"):
+            return self._thumbnail_active()
         return False
 
     def _serialize_group(self, definition: CacheGroupDefinition) -> dict:

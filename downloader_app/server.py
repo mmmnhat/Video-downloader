@@ -27,6 +27,7 @@ from downloader_app.jobs import manager
 from downloader_app.runtime import bundled_path
 from downloader_app.sheets import SheetParseError, normalize_sequence_range
 from downloader_app.story_pipeline import StoryPipelineError, story_pipeline
+from downloader_app.thumbnail_pipeline import ThumbnailPipelineError, thumbnail_pipeline
 from downloader_app.tts_manager import tts_manager
 from downloader_app.updater import updater, UpdateError
 
@@ -70,6 +71,10 @@ class AppHandler(BaseHTTPRequestHandler):
             self._send_json(story_pipeline.get_bootstrap())
             return
 
+        if path == "/api/thumbnail/bootstrap":
+            self._send_json(thumbnail_pipeline.get_bootstrap())
+            return
+
         if path == "/api/cache/bootstrap":
             self._send_json(cache_manager.get_bootstrap())
             return
@@ -84,6 +89,14 @@ class AppHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/story/file":
+            raw_path = self._single_query_value(query, "path")
+            if not raw_path:
+                self._send_json({"error": "path is required."}, status=HTTPStatus.BAD_REQUEST)
+                return
+            self._serve_story_file(raw_path)
+            return
+
+        if path == "/api/thumbnail/file":
             raw_path = self._single_query_value(query, "path")
             if not raw_path:
                 self._send_json({"error": "path is required."}, status=HTTPStatus.BAD_REQUEST)
@@ -166,6 +179,15 @@ class AppHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "Story video not found."}, status=HTTPStatus.NOT_FOUND)
                 return
             self._send_json(video)
+            return
+
+        if path.startswith("/api/thumbnail/projects/"):
+            project_id = path.split("/")[-1]
+            project = thumbnail_pipeline.get_project_detail(project_id)
+            if project is None:
+                self._send_json({"error": "Thumbnail project not found."}, status=HTTPStatus.NOT_FOUND)
+                return
+            self._send_json(project)
             return
 
         if path == "/api/google/auth-status":
@@ -301,6 +323,91 @@ class AppHandler(BaseHTTPRequestHandler):
                 payload = self._read_json_body()
                 self._send_json(story_pipeline.update_settings(payload))
             except (json.JSONDecodeError, StoryPipelineError) as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/thumbnail/projects":
+            try:
+                payload = self._read_json_body()
+                source_image_path = str(payload.get("source_image_path", "")).strip()
+                base64_image = payload.get("base64_image")
+
+                if base64_image:
+                    import base64
+                    import tempfile
+                    import uuid
+                    header, encoded = base64_image.split(",", 1) if "," in base64_image else ("", base64_image)
+                    file_ext = ".png"
+                    if "image/jpeg" in header:
+                        file_ext = ".jpg"
+                    elif "image/webp" in header:
+                        file_ext = ".webp"
+                    temp_path = Path(tempfile.gettempdir()) / f"clipboard_{uuid.uuid4().hex[:8]}{file_ext}"
+                    temp_path.write_bytes(base64.b64decode(encoded))
+                    source_image_path = str(temp_path)
+
+                self._send_json(
+                    thumbnail_pipeline.create_project(
+                        name=str(payload.get("name", "")).strip(),
+                        folder=str(payload.get("folder", "")).strip(),
+                        source_image_path=source_image_path,
+                    ),
+                    status=HTTPStatus.CREATED,
+                )
+            except (json.JSONDecodeError, ThumbnailPipelineError) as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/thumbnail/buttons":
+            try:
+                payload = self._read_json_body()
+                self._send_json(thumbnail_pipeline.create_button(payload), status=HTTPStatus.CREATED)
+            except (json.JSONDecodeError, ThumbnailPipelineError) as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/thumbnail/select-project":
+            try:
+                payload = self._read_json_body()
+                self._send_json(thumbnail_pipeline.select_project(str(payload.get("project_id", "")).strip()))
+            except (json.JSONDecodeError, ThumbnailPipelineError) as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/thumbnail/select-version":
+            try:
+                payload = self._read_json_body()
+                self._send_json(
+                    thumbnail_pipeline.select_version(
+                        str(payload.get("project_id", "")).strip(),
+                        str(payload.get("version_id", "")).strip(),
+                    )
+                )
+            except (json.JSONDecodeError, ThumbnailPipelineError) as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/thumbnail/run":
+            try:
+                payload = self._read_json_body()
+                self._send_json(thumbnail_pipeline.run_generation(payload))
+            except (json.JSONDecodeError, ThumbnailPipelineError) as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/thumbnail/profile/run":
+            try:
+                payload = self._read_json_body()
+                self._send_json(thumbnail_pipeline.run_profile(payload))
+            except (json.JSONDecodeError, ThumbnailPipelineError) as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/thumbnail/export":
+            try:
+                payload = self._read_json_body()
+                self._send_json(thumbnail_pipeline.export_image(payload))
+            except (json.JSONDecodeError, ThumbnailPipelineError) as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
 
@@ -527,6 +634,15 @@ class AppHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
                 return
             self._send_json({"path": folder_path})
+            return
+
+        if path == "/api/system/choose-image":
+            try:
+                image_path = self._choose_image()
+            except RuntimeError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                return
+            self._send_json({"path": image_path})
             return
 
         if path == "/api/system/choose-browser":
@@ -1180,6 +1296,48 @@ class AppHandler(BaseHTTPRequestHandler):
         if not browser_path:
             raise RuntimeError("Khong nhan duoc duong dan browser.")
         return browser_path
+
+    def _choose_image(self) -> str:
+        from downloader_app.runtime import get_ui_bridge
+
+        bridge = get_ui_bridge()
+        if bridge and hasattr(bridge, "choose_file"):
+            try:
+                image_path = bridge.choose_file()
+                if not image_path:
+                    raise RuntimeError("Khong chon duoc anh.")
+                return image_path
+            except Exception as exc:
+                print(f"Bridge choose_image error: {exc}")
+
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+        except Exception as exc:
+            raise RuntimeError("Khong mo duoc image picker.") from exc
+
+        root = tk.Tk()
+        root.withdraw()
+        root.update_idletasks()
+        try:
+            root.attributes("-topmost", True)
+        except Exception:
+            pass
+
+        try:
+            image_path = filedialog.askopenfilename(
+                title="Chon anh goc",
+                filetypes=[
+                    ("Image files", "*.png *.jpg *.jpeg *.webp *.bmp"),
+                    ("All files", "*.*"),
+                ],
+            )
+        finally:
+            root.destroy()
+
+        if not image_path:
+            raise RuntimeError("Khong nhan duoc duong dan anh.")
+        return image_path
 
 
 # Expected errors when a client disconnects mid-stream (Windows/Linux/Mac).

@@ -48,3 +48,4 @@ test_shared_browser.py
 browser_config.json
 
 *.zip
+VideoDownloader_v*/

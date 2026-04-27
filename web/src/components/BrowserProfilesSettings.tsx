@@ -1,5 +1,5 @@
 import { Plus, RefreshCw, Trash2 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -106,92 +106,7 @@ export default function BrowserProfilesSettings() {
   const timersRef = useRef<Partial<Record<FeatureKey, number>>>({});
   const saveTimerRef = useRef<number | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      setLoading(true);
-      try {
-        const config = await getBrowserConfig();
-        if (cancelled) {
-          return;
-        }
-        setSavedConfig(cloneConfig(config));
-        setDraftConfig(cloneConfig(config));
-      } catch (error) {
-        toast.error(getErrorMessage(error));
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-      if (saveTimerRef.current) {
-        window.clearTimeout(saveTimerRef.current);
-      }
-      for (const timer of Object.values(timersRef.current)) {
-        if (timer) {
-          window.clearTimeout(timer);
-        }
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    if (loading) {
-      return;
-    }
-    for (const feature of FEATURE_META.map((item) => item.key)) {
-      const config = draftConfig[feature];
-      const probe = probes[feature];
-      const requestKey = `${config.browser_path}\n${config.profile_name}`;
-      if (probe.loading || probe.requestKey === requestKey) {
-        continue;
-      }
-      scheduleProbe(feature, config);
-    }
-  }, [draftConfig, loading, probes]);
-
-  useEffect(() => {
-    if (loading) {
-      return;
-    }
-
-    const draftSignature = JSON.stringify(draftConfig);
-    const savedSignature = JSON.stringify(savedConfig);
-    if (draftSignature === savedSignature) {
-      return;
-    }
-
-    if (saveTimerRef.current) {
-      window.clearTimeout(saveTimerRef.current);
-    }
-
-    saveTimerRef.current = window.setTimeout(() => {
-      const payload = cloneConfig(draftConfig);
-      void updateBrowserConfig(payload)
-        .then((saved) => {
-          setSavedConfig(cloneConfig(saved));
-          setDraftConfig((current) =>
-            JSON.stringify(current) === JSON.stringify(payload)
-              ? cloneConfig(saved)
-              : current,
-          );
-        })
-        .catch((error) => {
-          toast.error(getErrorMessage(error));
-        });
-    }, 500);
-
-    return () => {
-      if (saveTimerRef.current) {
-        window.clearTimeout(saveTimerRef.current);
-      }
-    };
-  }, [draftConfig, loading, savedConfig]);
-
-  async function runProbe(feature: FeatureKey, config: FeatureBrowserConfig) {
+  const runProbe = useCallback(async (feature: FeatureKey, config: FeatureBrowserConfig) => {
     const requestKey = `${config.browser_path}\n${config.profile_name}`;
     setProbes((current) => ({
       ...current,
@@ -231,9 +146,9 @@ export default function BrowserProfilesSettings() {
         },
       }));
     }
-  }
+  }, []);
 
-  function scheduleProbe(feature: FeatureKey, config: FeatureBrowserConfig) {
+  const scheduleProbe = useCallback((feature: FeatureKey, config: FeatureBrowserConfig) => {
     const existing = timersRef.current[feature];
     if (existing) {
       window.clearTimeout(existing);
@@ -241,7 +156,93 @@ export default function BrowserProfilesSettings() {
     timersRef.current[feature] = window.setTimeout(() => {
       void runProbe(feature, config);
     }, 250);
-  }
+  }, [runProbe]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const timers = timersRef.current;
+    void (async () => {
+      setLoading(true);
+      try {
+        const config = await getBrowserConfig();
+        if (cancelled) {
+          return;
+        }
+        setSavedConfig(cloneConfig(config));
+        setDraftConfig(cloneConfig(config));
+      } catch (error) {
+        toast.error(getErrorMessage(error));
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (saveTimerRef.current) {
+        window.clearTimeout(saveTimerRef.current);
+      }
+      for (const timer of Object.values(timers)) {
+        if (timer) {
+          window.clearTimeout(timer);
+        }
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (loading) {
+      return;
+    }
+    for (const feature of FEATURE_META.map((item) => item.key)) {
+      const config = draftConfig[feature];
+      const probe = probes[feature];
+      const requestKey = `${config.browser_path}\n${config.profile_name}`;
+      if (probe.loading || probe.requestKey === requestKey) {
+        continue;
+      }
+      scheduleProbe(feature, config);
+    }
+  }, [draftConfig, loading, probes, scheduleProbe]);
+
+  useEffect(() => {
+    if (loading) {
+      return;
+    }
+
+    const draftSignature = JSON.stringify(draftConfig);
+    const savedSignature = JSON.stringify(savedConfig);
+    if (draftSignature === savedSignature) {
+      return;
+    }
+
+    if (saveTimerRef.current) {
+      window.clearTimeout(saveTimerRef.current);
+    }
+
+    saveTimerRef.current = window.setTimeout(() => {
+      const payload = cloneConfig(draftConfig);
+      void updateBrowserConfig(payload)
+        .then((saved) => {
+          setSavedConfig(cloneConfig(saved));
+          setDraftConfig((current) =>
+            JSON.stringify(current) === JSON.stringify(payload)
+              ? cloneConfig(saved)
+              : current,
+          );
+        })
+        .catch((error) => {
+          toast.error(getErrorMessage(error));
+        });
+    }, 500);
+
+    return () => {
+      if (saveTimerRef.current) {
+        window.clearTimeout(saveTimerRef.current);
+      }
+    };
+  }, [draftConfig, loading, savedConfig]);
 
   function handleProfileChange(feature: FeatureKey, profileName: string) {
     setDraftConfig((current) => {

@@ -1,48 +1,55 @@
-# Video Downloader & StoryStudio AI v1.2.4
+# ImageCraft Studio — Video Downloader & StoryStudio AI v1.3.0
 
-Ứng dụng hỗ trợ tải video đa nền tảng và sáng tạo nội dung AI (StoryStudio) tích hợp Gemini.
+Ứng dụng hỗ trợ tải video đa nền tảng, làm việc với TTS và xây dựng workflow tạo ảnh AI bằng Gemini với giao diện **ImageCraft** cao cấp.
 
-## 🚀 Có gì mới trong bản v1.2.4?
+## ✨ Điểm mới trong v1.3.0 "ImageCraft"
 
-### 🔄 Nâng cấp Trình cập nhật hệ thống (Auto-Updater)
-- **Thông báo chủ động**: App sẽ tự động kiểm tra bản cập nhật mới ngay khi khởi động và gửi thông báo nếu có bản vá mới.
-- **Thanh tiến trình trực quan**: Bổ sung thanh % tiến độ khi đang tải bản cập nhật, giúp bạn biết chính xác tình trạng xử lý.
-- **Thông tin chi tiết**: Hiển thị các dòng trạng thái thời gian thực (Đang tải, Giải nén, Khởi động lại...) thay vì chỉ hiển thị biểu tượng chờ.
-- **Xử lý nền**: Quá trình cập nhật giờ đây không còn làm treo giao diện người dùng.
+### 🎨 Siêu phẩm Giao diện (Aesthetics)
+- **Thiết kế ImageCraft**: Giao diện hoàn toàn mới theo phong cách Dark Pro, sử dụng font chữ **Syne** và **JetBrains Mono** mang lại cảm giác premium.
+- **Canvas Hi-End**: Trình xem ảnh với lưới (grid) chuyên nghiệp, hiệu ứng đổ bóng và lớp phủ (overlay) Gemini đang xử lý ảnh chân thực.
+- **Micro-animations**: Các hiệu ứng hover, chuyển tab và thanh tiến trình được thiết kế mượt mà, sống động.
+- **Titlebar Mac-style**: Thanh tiêu đề với hệ thống dot màu và tab chuyển đổi tối giản.
 
-### 🎨 StoryStudio - Nâng cấp Bộ sưu tập & Gallery (v1.2.3)
-- **Tab Bộ sưu tập hoàn toàn mới**: Chuyển đổi từ danh sách Video sang **Gallery ảnh**.
-- **Quy tắc đặt tên Export mới**: `[TênVideo].m[Cảnh]s[Bước]v[BiếnThể]`.
-- **Hỗ trợ Xuất hàng loạt**: Chọn nhiều ảnh và xuất cùng lúc.
+### 🛠 Thumbnail Studio (v1.3.0)
+- **Action Builder (Field động)**: Tự tạo nút chức năng mới với các tham số tùy biến (Slider, Select, Input). Tự động sinh Prompt dựa trên template.
+- **Workflow Profiles**: Giao diện chuỗi bước thực thi (Pipeline) cho phép hình dung các bước chỉnh sửa ảnh liên tiếp (Expand -> Boost -> Text).
+- **History Strip**: Thanh lịch sử phiên bản hiển thị thumbnail trực quan, hỗ trợ nhận diện các nhánh (branch) sinh ảnh A/B/C.
+- **Export Studio**: Xuất ảnh chất lượng cao với tùy chọn định dạng (PNG/JPG), độ phân giải (HD/FHD) và thư mục lưu trữ linh hoạt.
 
-### ⚡ Tự động hóa & Hiệu năng
-- **Chế độ Tự động chạy (Auto-run)**: 
-  - Khi bấm **Tinh chỉnh (Refine)** hoặc **Tạo lại (Regenerate)**, trình duyệt sẽ tự động mở và xử lý ngay lập tức.
-  - Khi bấm **Duyệt (Accept)**, hệ thống sẽ tự động chuyển sang bước tiếp theo nếu có.
-- **Refine thông minh**: Chức năng Tinh chỉnh giờ đây sẽ luôn mở một phiên chat mới và tự động Upload ảnh từ bước trước đó lên Gemini để làm input.
+### 🧹 Tối ưu hóa hệ thống
+- **Storage Cleanup**: Dọn dẹp các file rác, file backup cũ. Toàn bộ dữ liệu Story Pipeline đã được chuyển vào thư mục `cache/story_pipeline` để giữ cho thư mục gốc luôn sạch sẽ.
+- **Unified API**: Đồng bộ hóa toàn bộ state giữa Frontend và Backend thông qua hệ thống API chuẩn.
 
-### 🛠️ Sửa lỗi & Ổn định
-- **Sửa lỗi hiển thị**: Khắc phục triệt để lỗi font chữ/mã hóa trong Popup cập nhật hệ thống.
-- **Ổn định UI**: Sửa lỗi crash sidebar khi thao tác với các bước mới chưa có kết quả.
-- **Tương thích Windows**: Cải thiện tính năng "Mở thư mục" (Open Output Folder) trên Windows.
+## 🚀 Trạng thái hiện tại
 
----
+### Đã hoàn thiện
+- Dán ảnh trực tiếp từ Clipboard để bắt đầu, loại bỏ flow tạo project rườm rà.
+- Thư viện Quick Actions phân loại thông minh (Face, BG, General).
+- Hệ thống tham số động (Dynamic Parameters) cho từng Action.
+- Lưu trữ lịch sử phiên bản (Version History) không giới hạn.
+- Export ảnh cuối cùng kèm theo mở thư mục tự động.
 
-## 🛠 Hướng dẫn cài đặt & Sử dụng
+### Kế hoạch v1.3.x
+- **Real-time SSE**: Cập nhật tiến độ Gemini xử lý từng giây về giao diện.
+- **Mask Painting**: Công cụ vẽ Brush/Eraser trực tiếp trên Canvas để khoanh vùng chỉnh sửa.
+- **Profile Runner**: Kích hoạt chạy tự động toàn bộ chuỗi Action trong Profile chỉ với 1 click.
 
-1. **Chạy từ Source (Dev)**:
+## 🛠 Hướng dẫn chạy
+
+1. **Chạy ứng dụng chính**:
    ```bash
    python main.py
    ```
-2. **Xây dựng bản App (.exe)**:
+2. **Phát triển Frontend (Dev mode)**:
    ```bash
-   python build.py
+   cd web
+   npm install
+   npm run dev
+   ```
+3. **Đóng gói sản phẩm**:
+   ```bash
+   python auto_build.py
    ```
 
-## 📝 Yêu cầu hệ thống
-- Python 3.10+
-- Google Chrome / Microsoft Edge (để chạy Automation)
-- Tài khoản Gemini (đã đăng nhập trên trình duyệt)
-
 ---
-*Phát triển bởi mmmnhat - 2026*
+Phát triển bởi **mmmnhat** · 2026 · **ImageCraft Premium Edition**

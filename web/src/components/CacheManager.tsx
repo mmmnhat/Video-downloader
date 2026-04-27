@@ -41,6 +41,9 @@ function featureLabel(feature: string) {
   if (feature === "tts") {
     return "Lồng tiếng (TTS)";
   }
+  if (feature === "thumbnail") {
+    return "Thumbnail Studio";
+  }
   return feature;
 }
 
@@ -80,6 +83,7 @@ export default function CacheManager() {
     return {
       story: groups.filter((group) => group.feature === "story"),
       tts: groups.filter((group) => group.feature === "tts"),
+      thumbnail: groups.filter((group) => group.feature === "thumbnail"),
     };
   }, [payload?.groups]);
 
@@ -197,8 +201,9 @@ export default function CacheManager() {
         </Card>
       </div>
 
-      {(["story", "tts"] as const).map((feature) => {
+      {(["story", "tts", "thumbnail"] as const).map((feature) => {
         const groups = featureGroups[feature];
+        if (!groups || groups.length === 0) return null;
         return (
           <div key={feature} className="space-y-3">
             <div className="flex items-center gap-2">

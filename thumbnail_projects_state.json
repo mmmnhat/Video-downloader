@@ -1,0 +1,154 @@
+{
+  "activeProjectId": "thumb-c8f915fdfd",
+  "buttons": [
+    {
+      "id": "change-color",
+      "name": "Đổi màu vật thể",
+      "icon": "🎨",
+      "category": "Màu sắc",
+      "prompt_template": "Change only the selected {object} to {color}.\nKeep face, pose, background, lighting, and all unmasked areas unchanged.",
+      "requires_mask": true,
+      "create_new_chat": true,
+      "allow_regenerate": true,
+      "summary": "Đổi đúng màu vùng đã chọn mà không làm lệch phần còn lại.",
+      "fields": [
+        {
+          "key": "object",
+          "label": "Vật thể",
+          "type": "text",
+          "value": "áo",
+          "tooltip": "Mô tả ngắn vật thể cần đổi màu, ví dụ áo, tóc, mũ hoặc ghế.",
+          "options": [],
+          "min": null,
+          "max": null,
+          "required": true,
+          "visible_if": null
+        },
+        {
+          "key": "color",
+          "label": "Màu mới",
+          "type": "text",
+          "value": "đỏ",
+          "tooltip": "Nhập màu đích muốn áp dụng cho vật thể đã chọn.",
+          "options": [],
+          "min": null,
+          "max": null,
+          "required": true,
+          "visible_if": null
+        }
+      ]
+    },
+    {
+      "id": "remove-object",
+      "name": "Xóa vật thể",
+      "icon": "🧽",
+      "category": "Dọn ảnh",
+      "prompt_template": "Remove the object in the red masked area.\nReconstruct the hidden area naturally.\nKeep all unmasked areas unchanged.",
+      "requires_mask": true,
+      "create_new_chat": true,
+      "allow_regenerate": true,
+      "summary": "Xóa logo, chữ hoặc chi tiết thừa theo vùng mask đỏ.",
+      "fields": []
+    },
+    {
+      "id": "extend-wide",
+      "name": "Extend 16:9",
+      "icon": "🖼️",
+      "category": "Khung hình",
+      "prompt_template": "Extend this image to a clean 16:9 thumbnail composition.\nPreserve the subject scale, identity, and lighting.\nFill new space naturally for YouTube thumbnail framing.",
+      "requires_mask": false,
+      "create_new_chat": true,
+      "allow_regenerate": true,
+      "summary": "Mở rộng khung hình sang 16:9 để chuẩn bị xuất thumbnail.",
+      "fields": []
+    },
+    {
+      "id": "shock-face",
+      "name": "Làm mặt sốc hơn",
+      "icon": "😱",
+      "category": "Biểu cảm",
+      "prompt_template": "Make the character expression more {expression}, intensity {intensity}/10.\nKeep identity, pose, outfit and background unchanged.",
+      "requires_mask": false,
+      "create_new_chat": true,
+      "allow_regenerate": true,
+      "summary": "Đẩy biểu cảm khuôn mặt mạnh hơn nhưng giữ nhận diện nhân vật.",
+      "fields": [
+        {
+          "key": "expression",
+          "label": "Biểu cảm",
+          "type": "select",
+          "value": "shocked",
+          "tooltip": "Chọn kiểu biểu cảm muốn đẩy mạnh trên gương mặt.",
+          "options": [
+            "shocked",
+            "scared",
+            "crying",
+            "angry"
+          ],
+          "min": null,
+          "max": null,
+          "required": true,
+          "visible_if": null
+        },
+        {
+          "key": "intensity",
+          "label": "Cường độ",
+          "type": "slider",
+          "value": 8,
+          "tooltip": "Điều chỉnh độ mạnh của biểu cảm từ nhẹ đến rất gắt.",
+          "options": [],
+          "min": 1.0,
+          "max": 10.0,
+          "required": true,
+          "visible_if": null
+        }
+      ]
+    }
+  ],
+  "projects": [
+    {
+      "id": "thumb-c8f915fdfd",
+      "name": "Dự án mới",
+      "folder": "C:\\Users\\ad\\Downloads\\Video download\\cache\\thumbnail_pipeline\\projects\\D_n_m_i",
+      "source_image_path": "C:\\Users\\ad\\Downloads\\Video download\\cache\\thumbnail_pipeline\\projects\\D_n_m_i\\versions\\original\\original.png",
+      "created_at": "2026-04-27T20:42:25Z",
+      "updated_at": "2026-04-27T20:56:14Z",
+      "selected_version_id": "v1",
+      "versions": [
+        {
+          "id": "original",
+          "label": "Version 0 - Original",
+          "note": "Ảnh gốc vừa tạo project",
+          "prompt": "Ảnh gốc chưa chỉnh sửa.",
+          "button_name": "Original",
+          "fields": {},
+          "mask_mode": "none",
+          "created_at": "28/04/2026 03:42",
+          "status": "history",
+          "source_image_path": "C:\\Users\\ad\\Downloads\\Video download\\cache\\thumbnail_pipeline\\projects\\D_n_m_i\\versions\\original\\original.png",
+          "output_image_path": "C:\\Users\\ad\\Downloads\\Video download\\cache\\thumbnail_pipeline\\projects\\D_n_m_i\\versions\\original\\original.png",
+          "thread_url": null,
+          "parent_version_id": null
+        },
+        {
+          "id": "v1",
+          "label": "Version 1 - Đổi màu vật thể",
+          "note": "Tạo chat Gemini mới từ Version 0 - Original",
+          "prompt": "Change only the selected áo to đỏ.\nKeep face, pose, background, lighting, and all unmasked areas unchanged.",
+          "button_name": "Đổi màu vật thể",
+          "fields": {
+            "object": "áo",
+            "color": "đỏ"
+          },
+          "mask_mode": "selected",
+          "created_at": "28/04/2026 03:51",
+          "status": "current",
+          "source_image_path": "C:\\Users\\ad\\Downloads\\Video download\\cache\\thumbnail_pipeline\\projects\\D_n_m_i\\versions\\original\\original.png",
+          "output_image_path": "C:\\Users\\ad\\Downloads\\Video download\\cache\\thumbnail_pipeline\\projects\\D_n_m_i\\versions\\v1\\normalized.png",
+          "thread_url": "https://gemini.google.com/app",
+          "parent_version_id": "original"
+        }
+      ]
+    }
+  ]
+}

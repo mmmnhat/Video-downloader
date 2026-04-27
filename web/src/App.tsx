@@ -17,6 +17,7 @@ import {
   AudioLines,
   Archive,
   Clapperboard,
+  ImagePlus,
   Settings2,
   Loader2,
   RefreshCw,
@@ -152,11 +153,12 @@ const QUALITY_OPTIONS = [
 ];
 const TtsStudio = lazy(() => import("./components/TtsStudio"));
 const StoryStudio = lazy(() => import("./components/StoryStudio"));
+const ThumbnailStudio = lazy(() => import("./components/ThumbnailStudio"));
 const CacheManager = lazy(() => import("./components/CacheManager"));
 
 type TableMode = "preview" | "queue" | "empty";
 type BadgeVariant = "default" | "secondary" | "destructive" | "outline";
-type AppView = "downloader" | "tts" | "story" | "settings";
+type AppView = "downloader" | "thumbnail" | "tts" | "story" | "settings";
 type SettingsView = "cookies" | "browser-settings" | "cache";
 type StoredView = AppView | SettingsView;
 
@@ -986,6 +988,15 @@ function App() {
                 <DownloadCloud className="h-4 w-4" />
              </Button>
              <Button 
+                variant={currentView === "thumbnail" ? "secondary" : "ghost"} 
+                className="w-full justify-center" 
+                onClick={() => setStoredView("thumbnail")}
+                title="Tạo thumbnail"
+                aria-label="Tạo thumbnail"
+             >
+                <ImagePlus className="h-4 w-4" />
+             </Button>
+             <Button 
                 variant={currentView === "story" ? "secondary" : "ghost"} 
                 className="w-full justify-center" 
                 onClick={() => setStoredView("story")}
@@ -1655,6 +1666,26 @@ function App() {
               </CardContent>
             </Card>
           ) : null}
+          </main>
+
+          <main
+            className={
+              currentView === "thumbnail"
+                ? `min-w-0 w-full ${TAB_PAGE_PADDING_CLASS}`
+                : "hidden"
+            }
+          >
+              <Suspense
+                fallback={
+                  <Card className="border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)]">
+                    <CardContent className="py-12 text-center text-sm text-muted-foreground">
+                      Đang tải Studio tạo thumbnail...
+                    </CardContent>
+                  </Card>
+                }
+              >
+                <ThumbnailStudio />
+              </Suspense>
           </main>
 
           <main
