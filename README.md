@@ -199,6 +199,14 @@ Khong nen dua du lieu runtime lon vao commit neu khong that su can thiet.
 
 - [Story pipeline spec](docs/story-pipeline-spec.md)
 
+## Changelog
+
+### v1.2 (2026-04-27)
+- **Windows Session Stability**: Khắc phục lỗi khóa file Cookie khi trình duyệt đang mở bằng cơ chế fallback thông minh.
+- **Bypass Gemini Security**: Thêm chế độ ẩn danh (Stealth mode) và các tham số khởi động sạch để tránh bị Google chặn khi quét Gem/Gen ảnh.
+- **Improved Browser Support**: Tối ưu hóa việc đồng bộ session cho Microsoft Edge và Cốc Cốc trên Windows.
+- **Fix "about:blank" Hang**: Tự động bỏ qua các màn hình chào mừng và thông báo của trình duyệt khi chạy automation.
+
 ## Luu y
 
 Cong cu nay danh cho workflow ca nhan/noi bo. Nguoi dung tu chiu trach nhiem voi noi dung, quyen su dung, va dieu khoan cua cac nen tang duoc thao tac.

@@ -87,7 +87,7 @@ def main():
     # 4. Install Python requirements for app and build tools
     print_step("Installing Python requirements and PyInstaller")
     run_cmd([str(pip_exe), "install", "-r", str(repo_root / "requirements.txt")])
-    run_cmd([str(pip_exe), "install", "pyinstaller"])
+    run_cmd([str(pip_exe), "install", "pyinstaller", "Pillow"])
 
     # 5. Build Web frontend
     web_dir = repo_root / "web"

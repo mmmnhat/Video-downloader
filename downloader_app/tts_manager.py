@@ -65,6 +65,20 @@ ELEVENLABS_VOICE_API_URLS = (
     "https://api.eu.elevenlabs.io/v1/voices?show_legacy=false",
 )
 
+# Profile copy configuration
+PROFILE_SKIP_DIRS = {
+    "cache", "code cache", "gpucache", "media cache", "shadercache",
+    "service worker/cachestorage", "service worker/scriptcache",
+    "safe browsing", "grshadercache", "webstorage/quota_manager",
+    "indexeddb", # Usually too large, but some sites need it. For ElevenLabs, Cookies/LocalStorage are usually enough.
+                 # However, "copy profile" mode usually includes IndexedDB if we want to be safe.
+                 # Let's keep it skipped for now unless requested, or use a filtered copy.
+}
+PROFILE_SKIP_FILES = {
+    "lock", "singleton-lock", "lockfile", "cookies-journal", "history-journal",
+    "last session", "last tabs", "current session", "current tabs",
+}
+
 
 def _resolve_macos_app_bundle(
     default_path: Path,
@@ -519,12 +533,27 @@ def _cookie_count_for_domain(cookie_path: Path, domain: str) -> int:
     try:
         with tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False) as handle:
             temp_copy = Path(handle.name)
-        shutil.copy2(cookie_path, temp_copy)
-        with sqlite3.connect(temp_copy) as connection:
+        
+        # Use our robust copy logic
+        try:
+            _robust_copy_file(cookie_path, temp_copy)
+        except Exception as exc:
+            if "Permission denied" in str(exc) or "[Errno 13]" in str(exc) or "[Errno 32]" in str(exc):
+                print(f"[TTS] KHÔNG THỂ lấy cookie vì trình duyệt đang mở. Vui lòng ĐÓNG CocCoc/Chrome rồi thử lại.", flush=True)
+            raise
+
+        if not temp_copy.exists() or temp_copy.stat().st_size == 0:
+            return 0
+
+        connection = sqlite3.connect(temp_copy)
+        try:
             row = connection.execute(
                 "SELECT COUNT(*) FROM cookies WHERE host_key = ? OR host_key LIKE ?",
                 (domain, f"%.{domain}"),
             ).fetchone()
+            return int(row[0]) if row else 0
+        finally:
+            connection.close()
     except Exception:
         return 0
     finally:
@@ -533,8 +562,6 @@ def _cookie_count_for_domain(cookie_path: Path, domain: str) -> int:
                 temp_copy.unlink(missing_ok=True)
             except Exception:
                 pass
-
-    return int(row[0]) if row else 0
 
 
 def _choose_profile_dir(user_data_dir: Path, domain: str = TTS_AUTH_DOMAIN) -> Path | None:
@@ -646,12 +673,119 @@ def detect_tts_login_browser() -> TtsBrowserCandidate:
     )
 
 
+def _robust_copy_file(source: Path, destination: Path) -> None:
+    """Copies a file, retrying and using fallback streams, win32api, sqlite backup or cmd copy if locked on Windows."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    
+    # 0. Skip known lock files
+    if source.name.lower() in {"lock", "singleton-lock", "cookies-journal", "web data-journal"}:
+        return
+
+    # 1. Try standard copyfile first
+    try:
+        shutil.copyfile(source, destination)
+        return
+    except (PermissionError, OSError):
+        pass
+
+    # 2. For SQLite files, try sqlite3 backup API with nolock=1
+    if source.name.lower() in {"cookies", "web data", "history", "login data"} or source.suffix.lower() == ".sqlite":
+        try:
+            src_path = str(source.absolute())
+            if sys.platform == "win32":
+                src_path = src_path.replace("\\", "/")
+                if not src_path.startswith("/"):
+                    src_path = "/" + src_path
+            
+            src_uri = f"file://{src_path}?mode=ro&nolock=1&immutable=1"
+            src_conn = sqlite3.connect(src_uri, uri=True)
+            try:
+                dst_conn = sqlite3.connect(destination)
+                try:
+                    src_conn.backup(dst_conn)
+                finally:
+                    dst_conn.close()
+            finally:
+                src_conn.close()
+            return
+        except Exception:
+            pass
+
+    # 3. For Windows, try win32file with aggressive sharing flags
+    if sys.platform == "win32":
+        try:
+            import win32file
+            import win32con
+            handle = win32file.CreateFile(
+                str(source),
+                win32con.GENERIC_READ,
+                win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE | win32con.FILE_SHARE_DELETE,
+                None,
+                win32con.OPEN_EXISTING,
+                win32con.FILE_ATTRIBUTE_NORMAL,
+                None
+            )
+            try:
+                with open(destination, "wb") as fdst:
+                    while True:
+                        res, data = win32file.ReadFile(handle, 1024 * 1024)
+                        if not data: break
+                        fdst.write(data)
+                return
+            finally:
+                handle.Close()
+        except Exception:
+            pass
+
+    # 4. Try Windows shell copy
+    if sys.platform == "win32":
+        try:
+            res = subprocess.run(["cmd", "/c", "copy", "/y", str(source), str(destination)], 
+                                 capture_output=True, timeout=5, check=False)
+            if res.returncode == 0 and destination.exists():
+                return
+        except Exception:
+            pass
+
+    # 5. Last resort: stream copy with retries
+    for attempt in range(3):
+        try:
+            with open(source, "rb") as fsrc:
+                with open(destination, "wb") as fdst:
+                    shutil.copyfileobj(fsrc, fdst)
+            return
+        except (PermissionError, OSError) as exc:
+            if attempt < 2:
+                time.sleep(0.5)
+                continue
+            if source.name.lower() in {"cookies", "web data", "history"} or source.suffix.lower() == ".sqlite":
+                if "Permission denied" in str(exc) or "[Errno 13]" in str(exc) or "[Errno 32]" in str(exc):
+                    print(f"[TTS] Warning: Can't read {source.name} (browser open). Trying to continue anyway.", flush=True)
+            raise
+        except Exception:
+            if attempt < 2:
+                time.sleep(0.5)
+                continue
+            raise
+
+
 def _copy_profile_item(source: Path, destination: Path) -> None:
     if source.is_dir():
-        shutil.copytree(source, destination, dirs_exist_ok=True)
+        if not destination.exists():
+            destination.mkdir(parents=True, exist_ok=True)
+        for child in source.iterdir():
+            _copy_profile_item(child, destination / child.name)
         return
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, destination)
+    
+    try:
+        _robust_copy_file(source, destination)
+    except FileNotFoundError:
+        pass
+    except Exception:
+        # Ignore errors for non-essential files
+        if source.name.lower() in {"cookies-journal", "lock", "singleton-lock", "lockfile"} or source.suffix.lower() in {".tmp", ".temp"}:
+            return
+        raise
 
 
 def build_tts_runtime_profile(browser_profile: TtsBrowserProfile, runtime_id: str) -> Path:
@@ -660,19 +794,57 @@ def build_tts_runtime_profile(browser_profile: TtsBrowserProfile, runtime_id: st
         shutil.rmtree(runtime_root, ignore_errors=True)
     runtime_root.mkdir(parents=True, exist_ok=True)
 
-    for item in TTS_PROFILE_ROOT_ITEMS:
-        source = browser_profile.user_data_dir / item
-        if source.exists():
-            _copy_profile_item(source, runtime_root / item)
+    # 1. Copy Local State (Root level)
+    local_state = browser_profile.user_data_dir / "Local State"
+    if local_state.exists():
+        _copy_profile_item(local_state, runtime_root / "Local State")
 
+    # 2. Copy Profile directory (Recursive with exclusions)
     runtime_profile_dir = runtime_root / browser_profile.profile_name
-    runtime_profile_dir.mkdir(parents=True, exist_ok=True)
-    for item in TTS_PROFILE_ITEMS:
-        source = browser_profile.profile_dir / item
-        if source.exists():
-            _copy_profile_item(source, runtime_profile_dir / item)
+    _copy_directory_recursive_filtered(
+        browser_profile.profile_dir,
+        runtime_profile_dir,
+        skip_dirs=PROFILE_SKIP_DIRS,
+        skip_files=PROFILE_SKIP_FILES,
+    )
 
     return runtime_root
+
+
+def _copy_directory_recursive_filtered(
+    source: Path,
+    destination: Path,
+    *,
+    skip_dirs: set[str],
+    skip_files: set[str],
+    current_rel_path: str = "",
+) -> None:
+    if not source.exists():
+        return
+    
+    if not destination.exists():
+        destination.mkdir(parents=True, exist_ok=True)
+
+    for item in source.iterdir():
+        rel_name = (f"{current_rel_path}/{item.name}" if current_rel_path else item.name).lower()
+        
+        if item.is_dir():
+            if item.name.lower() in skip_dirs or rel_name in skip_dirs:
+                continue
+            _copy_directory_recursive_filtered(
+                item,
+                destination / item.name,
+                skip_dirs=skip_dirs,
+                skip_files=skip_files,
+                current_rel_path=rel_name,
+            )
+        else:
+            if item.name.lower() in skip_files or rel_name in skip_files:
+                continue
+            try:
+                _copy_profile_item(item, destination / item.name)
+            except Exception:
+                pass
 
 
 class ElevenLabsAutomation:
@@ -706,6 +878,39 @@ class ElevenLabsAutomation:
 
         self._playwright_error = PlaywrightError
         self._playwright_timeout = PlaywrightTimeoutError
+
+        # Fix Playwright Asyncio conflict:
+        # Playwright Sync API cannot run if an event loop is already active in the thread.
+        try:
+            import asyncio
+            try:
+                # Use a more robust check for a running loop
+                try:
+                    loop = asyncio.get_running_loop()
+                    if loop.is_running():
+                        # If we're here, there IS a running loop in this thread.
+                        # We MUST use a different thread or use the Async API.
+                        # Since we're in a Sync context, we try to set a new loop.
+                        asyncio.set_event_loop(asyncio.new_event_loop())
+                except RuntimeError:
+                    # No running loop, but check if there's an initialized one
+                    try:
+                        loop = asyncio.get_event_loop()
+                        if loop.is_running():
+                            asyncio.set_event_loop(asyncio.new_event_loop())
+                        else:
+                            # Not running, but exists. Some versions of Playwright still complain.
+                            asyncio.set_event_loop(None)
+                    except Exception:
+                        pass
+            except Exception:
+                try:
+                    asyncio.set_event_loop(asyncio.new_event_loop())
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
         self._playwright = sync_playwright().start()
         self._browser_profile = detect_tts_browser_profile()
         runtime_id = f"{self._downloads_dir.name}-{uuid.uuid4().hex[:8]}"
@@ -881,34 +1086,62 @@ class ElevenLabsAutomation:
         if voice_query.lower() in current_label:
             return
 
-        self._open_voice_picker(trigger)
-        voices = self._fetch_available_voices(open_picker=False)
+        voices: list[dict] | None = None
+        if _looks_like_elevenlabs_voice_id(voice_query):
+            voices = self._fetch_available_voices(open_picker=False)
         resolved_query = self._resolve_voice_query(voice_query, voices=voices)
         if resolved_query.lower() in current_label:
             return
 
-        search_input = self._find_voice_search_input()
+        self._open_voice_picker(trigger)
 
         selection_queries: list[str] = []
-        for candidate in [resolved_query, voice_query]:
+        query_candidates = [resolved_query]
+        if voice_query != resolved_query and not _looks_like_elevenlabs_voice_id(voice_query):
+            query_candidates.append(voice_query)
+        for candidate in query_candidates:
             for variant in _voice_query_variants(candidate):
                 if variant not in selection_queries:
                     selection_queries.append(variant)
 
         last_error: ElevenLabsError | None = None
         for selection_query in selection_queries:
-            if search_input is not None:
-                try:
-                    search_input.fill(selection_query)
-                    self._page.wait_for_timeout(500)
-                except Exception:
-                    pass
             try:
-                self._select_visible_option(selection_query)
+                self._select_voice_picker_option(selection_query)
+                return
             except ElevenLabsError as exc:
                 last_error = exc
                 continue
-            return
+
+        search_input = self._find_voice_search_input()
+        for selection_query in selection_queries:
+            if search_input is not None:
+                try:
+                    search_input.scroll_into_view_if_needed()
+                    search_input.click()
+                    search_input.fill("")
+                    self._page.keyboard.press("Control+A")
+                    self._page.keyboard.press("Backspace")
+                    self._page.wait_for_timeout(200)
+                    search_input.press_sequentially(selection_query, delay=40)
+                    self._page.wait_for_timeout(700)
+                except Exception as exc:
+                    print(f"[TTS] Warning: Failed to interact with search input for `{selection_query}`: {exc}", flush=True)
+                    try:
+                        self._page.keyboard.type(selection_query, delay=30)
+                    except Exception:
+                        pass
+            try:
+                self._select_voice_picker_option(selection_query)
+                return
+            except ElevenLabsError as exc:
+                last_error = exc
+            try:
+                self._select_visible_option(selection_query)
+                return
+            except ElevenLabsError as exc:
+                last_error = exc
+                continue
 
         if last_error is not None:
             raise last_error
@@ -1030,6 +1263,34 @@ class ElevenLabsAutomation:
 
     def _select_visible_option(self, query: str) -> None:
         assert self._page is not None
+        normalized_query = query.strip()
+        if not normalized_query:
+            raise ElevenLabsError("Query voice trong.")
+
+        if _looks_like_elevenlabs_voice_id(normalized_query):
+            escaped_query = normalized_query.replace("\\", "\\\\").replace('"', '\\"')
+            id_selectors = [
+                f'[data-agent-id="{escaped_query}"]',
+                f'[data-voice-id="{escaped_query}"]',
+                f'[cmdk-item][data-value="{escaped_query}"]',
+                f'[data-slot="command-item"][data-value="{escaped_query}"]',
+                f'[role="option"][data-value="{escaped_query}"]',
+                f'[data-id="{escaped_query}"]',
+            ]
+            for selector in id_selectors:
+                try:
+                    locator = self._page.locator(selector)
+                    count = locator.count()
+                    for i in range(count):
+                        option = locator.nth(i)
+                        if option.is_visible():
+                            self._click_with_retries(option, description=f"option `{normalized_query}`")
+                            self._page.wait_for_timeout(350)
+                            self._wait_for_idle_ui()
+                            return
+                except Exception:
+                    continue
+
         patterns = _query_match_patterns(query)
         candidates = [
             self._page.get_by_role("option"),
@@ -1043,54 +1304,122 @@ class ElevenLabsAutomation:
             self._page.get_by_role("button"),
             self._page.locator("button, [role='option'], [role='menuitem'], [role='listitem'], [cmdk-item], [data-slot='command-item'], [data-slot='item'], li"),
         ]
+        # Wait for results to settle
+        self._page.wait_for_timeout(500)
+        
         for pattern in patterns:
             for locator in candidates:
                 try:
+                    # Look for items that MATCH the query text
+                    # We use a broad selector first, then filter
                     filtered = locator.filter(has_text=pattern)
-                    if filtered.count() == 0:
-                        continue
-                    option = filtered.first
-                    if option.is_visible():
-                        self._click_with_retries(option, description=f"option `{query}`")
-                        self._page.wait_for_timeout(300)
-                        self._wait_for_idle_ui()
-                        return
+                    count = filtered.count()
+                    for i in range(count):
+                        option = filtered.nth(i)
+                        if option.is_visible():
+                            # Double check text match in JS to be safe (Playwright has_text can be fuzzy)
+                            text = (option.inner_text() or "").lower()
+                            if any(p.search(text) for p in patterns):
+                                self._click_with_retries(option, description=f"option `{query}`")
+                                self._page.wait_for_timeout(500)
+                                self._wait_for_idle_ui()
+                                return
                 except Exception:
                     continue
 
         # JavaScript fallback: scan all visible elements containing the query text
-        query_lower = query.lower()
+        query_lower = normalized_query.lower()
         tokens = [t for t in re.findall(r"[A-Za-z0-9]+", query_lower) if t]
-        for token_subset in ([query_lower] + [tokens[0]] if tokens else [query_lower]):
+        # Try full query, then just the first token (e.g. "Adam" for "Adam American")
+        for token_subset in ([query_lower] + ([tokens[0]] if tokens else [])):
             try:
-                clicked = self._page.evaluate(
-                    """(searchText) => {
-                        const walkable = ['button', 'li', 'div', 'span', '[role]', 'a'];
-                        const all = document.querySelectorAll(
-                            'button, li, [role="option"], [role="menuitem"], [role="listitem"], [cmdk-item], [data-slot]'
-                        );
-                        for (const el of all) {
-                            const text = (el.innerText || el.textContent || '').toLowerCase();
-                            if (text.includes(searchText)) {
-                                const rect = el.getBoundingClientRect();
-                                if (rect.width > 0 && rect.height > 0) {
-                                    el.click();
-                                    return true;
+                # We try a few times in JS to wait for results
+                for _ in range(3):
+                    clicked = self._page.evaluate(
+                        """(searchText) => {
+                            const all = document.querySelectorAll(
+                                'button, li, [role="option"], [role="menuitem"], [role="listitem"], [cmdk-item], [data-slot], [data-testid], .voice-item, .voice-name'
+                            );
+                            for (const el of all) {
+                                const text = (el.innerText || el.textContent || '').toLowerCase().trim();
+                                const dataAgentId = (el.getAttribute('data-agent-id') || '').toLowerCase().trim();
+                                const dataVoiceId = (el.getAttribute('data-voice-id') || '').toLowerCase().trim();
+                                const dataValue = (el.getAttribute('data-value') || '').toLowerCase().trim();
+                                const dataId = (el.getAttribute('data-id') || '').toLowerCase().trim();
+                                // Loose match for fallback
+                                if (
+                                    text.includes(searchText) ||
+                                    dataAgentId === searchText ||
+                                    dataVoiceId === searchText ||
+                                    dataValue === searchText ||
+                                    dataId === searchText ||
+                                    (searchText.length > 2 && text.length > 2 && searchText.includes(text))
+                                ) {
+                                    const rect = el.getBoundingClientRect();
+                                    if (rect.width > 0 && rect.height > 0) {
+                                        el.click();
+                                        return true;
+                                    }
                                 }
                             }
-                        }
-                        return false;
-                    }""",
-                    token_subset,
-                )
-                if clicked:
-                    self._page.wait_for_timeout(300)
-                    self._wait_for_idle_ui()
-                    return
+                            return false;
+                        }""",
+                        token_subset,
+                    )
+                    if clicked:
+                        self._page.wait_for_timeout(500)
+                        self._wait_for_idle_ui()
+                        return
+                    self._page.wait_for_timeout(500)
             except Exception:
                 continue
 
-        raise ElevenLabsError(f"Khong tim thay option `{query}` trong ElevenLabs picker.")
+        raise ElevenLabsError(f"Khong tim thay option `{normalized_query}` trong ElevenLabs picker.")
+
+    def _select_voice_picker_option(self, query: str) -> None:
+        assert self._page is not None
+        normalized_query = query.strip()
+        if not normalized_query:
+            raise ElevenLabsError("Query voice trong.")
+        query_variants = [variant.lower() for variant in _voice_query_variants(normalized_query)]
+        query_tokens = [token.lower() for token in re.findall(r"[A-Za-z0-9]+", normalized_query) if token]
+        for _ in range(3):
+            try:
+                clicked = self._page.evaluate(
+                    """({ queryVariants, queryTokens }) => {
+                        const isVisible = (el) => {
+                            if (!el) return false;
+                            const rect = el.getBoundingClientRect();
+                            const style = window.getComputedStyle(el);
+                            return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+                        };
+                        const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+                        const items = Array.from(document.querySelectorAll('li, [role="option"], [role="listitem"], [role="menuitem"], [cmdk-item], [data-slot="command-item"], [data-slot="item"]'))
+                            .filter((el) => isVisible(el));
+                        for (const item of items) {
+                            const text = normalize(item.innerText || item.textContent || '');
+                            if (!text) continue;
+                            const variantMatch = queryVariants.some((variant) => variant && text.includes(variant));
+                            const tokenMatch = queryTokens.length > 0 && queryTokens.every((token) => text.includes(token));
+                            if (!variantMatch && !tokenMatch) continue;
+                            const overlay = item.querySelector('button[data-type="list-item-trigger-overlay"]');
+                            const target = overlay && isVisible(overlay) ? overlay : item;
+                            target.click();
+                            return true;
+                        }
+                        return false;
+                    }""",
+                    {"queryVariants": query_variants, "queryTokens": query_tokens},
+                )
+                if clicked:
+                    self._page.wait_for_timeout(500)
+                    self._wait_for_idle_ui()
+                    return
+            except Exception:
+                pass
+            self._page.wait_for_timeout(300)
+
+        raise ElevenLabsError(f"Khong tim thay option `{normalized_query}` trong ElevenLabs picker.")
 
     def _locate_model_trigger(self):
         assert self._page is not None
@@ -1283,65 +1612,158 @@ class ElevenLabsAutomation:
 
     def _locate_voice_trigger(self):
         assert self._page is not None
-        # Prefer the new UI style: button with data-agent-id containing a voice name
-        # (ElevenLabs updated UI - voice button now shows selected voice name)
-        try:
-            # Strategy 1: Find a button containing a span with class truncate
-            # which holds the voice name e.g. "Liam - Energetic..."
-            agent_buttons = self._page.locator('button:has(span.truncate)')
-            count = agent_buttons.count()
-            for i in range(count):
-                btn = agent_buttons.nth(i)
-                try:
-                    if btn.is_visible():
-                        return btn
-                except Exception:
-                    continue
-        except Exception:
-            pass
-
-        # Fallback: original selectors
         candidates = [
             self._page.locator('[data-testid="tts-voice-selector"]'),
-            self._page.locator('button[aria-label*="Select voice"]'),
+            self._page.locator('button[data-agent-id]'),
+            self._page.locator('[role="combobox"][aria-label*="voice" i]'),
+            self._page.locator('button[aria-haspopup="dialog"][aria-label*="voice" i]'),
+            self._page.locator('button[aria-haspopup="listbox"][aria-label*="voice" i]'),
+            self._page.locator('button[aria-label*="Select voice" i]'),
+            self._page.get_by_role("combobox", name=re.compile(r"voice", re.I)),
             self._page.get_by_role("button", name=re.compile(r"select voice", re.I)),
+            self._page.locator('button[data-agent-id]:has(span.truncate)'),
         ]
         for locator in candidates:
-            if locator.count() == 0:
-                continue
-            candidate = locator.first
-            if candidate.is_visible():
-                return candidate
+            try:
+                count = locator.count()
+            except Exception:
+                count = 0
+            for index in range(count):
+                try:
+                    candidate = locator.nth(index)
+                    if candidate.is_visible():
+                        return candidate
+                except Exception:
+                    continue
         return None
 
+    def _is_voice_picker_open(self) -> bool:
+        assert self._page is not None
+        try:
+            return bool(
+                self._page.evaluate(
+                    """() => {
+                        const isVisible = (el) => {
+                            if (!el) return false;
+                            const rect = el.getBoundingClientRect();
+                            const style = window.getComputedStyle(el);
+                            return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+                        };
+                        const roots = Array.from(document.querySelectorAll(
+                            '[role="dialog"], [role="listbox"], [cmdk-root], [data-radix-popper-content-wrapper], [data-slot="popover-content"]'
+                        )).filter((root) => isVisible(root));
+                        for (const root of roots) {
+                            if (root.querySelector('[cmdk-item], [role="option"], [role="listitem"], [role="menuitem"], li')) {
+                                return true;
+                            }
+                            if (root.querySelector('input[type="search"], [cmdk-input], [role="searchbox"], input[data-testid="tts-voice-search"]')) {
+                                return true;
+                            }
+                        }
+                        return false;
+                    }"""
+                )
+            )
+        except Exception:
+            return False
 
     def _open_voice_picker(self, trigger=None) -> None:
         assert self._page is not None
         self._wait_for_idle_ui()
-        voice_trigger = trigger or self._locate_voice_trigger()
-        if voice_trigger is None:
-            raise ElevenLabsError("Khong tim thay nut chon voice tren ElevenLabs.")
-        self._click_with_retries(voice_trigger, description="voice selector")
-        # Wait for picker to appear and animate
-        self._page.wait_for_timeout(1500)
-        search_input = self._find_voice_search_input()
-        if search_input:
-            search_input.wait_for(state="visible", timeout=3000)
+        if self._is_voice_picker_open():
+            return
+
+        trigger_candidates = []
+        if trigger is not None:
+            trigger_candidates.append(trigger)
+        located_trigger = self._locate_voice_trigger()
+        if located_trigger is not None:
+            trigger_candidates.append(located_trigger)
+
+        fallback_locators = [
+            self._page.locator('[data-testid="tts-voice-selector"]'),
+            self._page.locator('button[data-agent-id]'),
+            self._page.locator('button[aria-label*="Select voice" i]'),
+            self._page.get_by_role("button", name=re.compile(r"select voice|voice", re.I)),
+            self._page.get_by_role("combobox", name=re.compile(r"voice", re.I)),
+        ]
+        trigger_candidates.extend(fallback_locators)
+
+        for candidate in trigger_candidates:
+            nodes = []
+            try:
+                count = candidate.count()
+            except Exception:
+                count = 0
+            if count > 0:
+                nodes = [candidate.nth(i) for i in range(count)]
+            else:
+                nodes = [candidate]
+
+            for node in nodes:
+                try:
+                    if not node.is_visible():
+                        continue
+                    self._click_with_retries(node, description="voice selector")
+                    self._page.wait_for_timeout(700)
+                    if self._is_voice_picker_open():
+                        search_input = self._find_voice_search_input()
+                        if search_input is not None:
+                            try:
+                                search_input.wait_for(state="visible", timeout=2_000)
+                                search_input.click()
+                            except Exception:
+                                pass
+                        return
+                except Exception:
+                    continue
+
+                try:
+                    self._page.keyboard.press("Escape")
+                    self._page.wait_for_timeout(250)
+                except Exception:
+                    pass
+
+        raise ElevenLabsError("Khong tim thay nut chon voice tren ElevenLabs.")
 
     def _find_voice_search_input(self):
         assert self._page is not None
         search_candidates = [
-            'input[type="search"]',
-            'input[placeholder*="Search"]',
-            'input[placeholder*="search"]',
-            'input[placeholder*="voice"]',
-            'input[placeholder*="Voice"]',
-            '[role="searchbox"]',
+            'input[data-testid="tts-voice-search"]',
             '[cmdk-input]',
+            'input[placeholder*="Search" i]',
+            'input[placeholder*="search" i]',
+            'input[placeholder*="voice" i]',
+            'input[type="search"]',
+            '[role="searchbox"]',
             '[data-slot="command-input"] input',
-            '[data-slot="input"]',
-            'input[type="text"]',
+            '[data-slot="input"] input',
         ]
+        root_candidates = [
+            self._page.locator('[role="dialog"]'),
+            self._page.locator('[role="listbox"]'),
+            self._page.locator('[cmdk-root]'),
+            self._page.locator('[data-radix-popper-content-wrapper]'),
+            self._page.locator('[data-slot="popover-content"]'),
+        ]
+
+        for root_locator in root_candidates:
+            try:
+                root_count = root_locator.count()
+            except Exception:
+                root_count = 0
+            for root_index in range(root_count):
+                try:
+                    root = root_locator.nth(root_index)
+                    if not root.is_visible():
+                        continue
+                    for selector in search_candidates:
+                        locator = root.locator(selector).first
+                        if locator.count() and locator.is_visible():
+                            return locator
+                except Exception:
+                    continue
+
         for selector in search_candidates:
             try:
                 locator = self._page.locator(selector).first
@@ -1360,7 +1782,14 @@ class ElevenLabsAutomation:
         if not voices:
             return voice_query
 
-        exact_id_match = next((voice for voice in voices if str(voice.get("voice_id", "")).strip() == voice_query), None)
+        exact_id_match = next(
+            (
+                voice
+                for voice in voices
+                if str(voice.get("voice_id") or voice.get("voiceId") or "").strip() == voice_query
+            ),
+            None,
+        )
         if exact_id_match:
             return str(exact_id_match.get("name") or voice_query).strip() or voice_query
 
@@ -2389,7 +2818,7 @@ class TtsManager:
                 with self._lock:
                     batch = self._require_batch(batch_id)
                     model_family = batch.model_family
-                    voice_query = batch.voice_name or batch.voice_query
+                    voice_query = batch.voice_id or batch.voice_name or batch.voice_query
                 for setup_attempt in range(1, 4):
                     try:
                         automation.ensure_authenticated()

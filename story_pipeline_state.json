@@ -4,37 +4,91 @@
     "max_parallel_videos": 1,
     "generation_backend": "gemini_web",
     "gemini_headless": false,
-    "gemini_base_url": "https://gemini.google.com/gem/b25da0bbb225",
+    "gemini_base_url": "https://gemini.google.com/gem/1SdgoNSZ2aoe1aNvBuazO--p6pb-NAH3c?usp=sharing",
     "gemini_response_timeout_ms": 120000,
     "gemini_model": "gemini-2.5-flash"
   },
   "global_prompt": "GIỮ ĐÚNG POSE VÀ BỐ CỤC ẢNH GỐC",
-  "active_video_id": "video-4afd8bcb3e",
+  "active_video_id": "video-d713db1fe6",
   "videos": [
     {
-      "id": "video-348bfd1fd6",
-      "name": "eff.kb1.29.mp4",
-      "source_video_path": "/Volumes/External/1234/eff.kb1.29.mp4",
+      "id": "video-d713db1fe6",
+      "name": "KB3_1.mp4",
+      "source_video_path": "C:\\Users\\ad\\Downloads\\2\\KB3_1.mp4",
       "mode": "chain",
       "video_prompt": "",
-      "status": "queued",
-      "created_at": "2026-04-27T04:31:10Z",
-      "last_updated_at": "2026-04-27T04:31:10Z",
+      "status": "running",
+      "created_at": "2026-04-27T11:40:50Z",
+      "last_updated_at": "2026-04-27T11:40:52Z",
       "error": null,
       "markers": [
         {
-          "id": "marker-0d593c740c",
+          "id": "marker-178173e939",
           "index": 1,
           "label": "Marker 1",
           "timestamp_ms": 0,
-          "input_frame_path": "/Volumes/External/1234/_frames/eff.kb1.29/marker_001_0.00.jpg",
+          "input_frame_path": "C:\\Users\\ad\\Downloads\\2\\_frames\\KB3_1\\marker_001_0.00.jpg",
+          "seed_prompt": "Marker 1",
+          "status": "running",
+          "parent_marker_id": null,
+          "variant_index": 0,
+          "steps": [
+            {
+              "id": "step-036af4be3b",
+              "index": 1,
+              "title": "Marker 1",
+              "modifier_prompt": "",
+              "status": "running",
+              "selected_attempt_id": null,
+              "pending_mode": "auto",
+              "pending_input_path": null,
+              "pending_thread_url": null,
+              "pending_prompt_override": null,
+              "attempts": [
+                {
+                  "id": "att-12b85dbd02",
+                  "index": 1,
+                  "mode": "auto",
+                  "status": "running",
+                  "prompt": "GIỮ ĐÚNG POSE VÀ BỐ CỤC ẢNH GỐC",
+                  "input_image_path": "C:\\Users\\ad\\Downloads\\2\\_frames\\KB3_1\\marker_001_0.00.jpg",
+                  "thread_url": null,
+                  "preview_path": null,
+                  "normalized_path": null,
+                  "error": null,
+                  "started_at": "2026-04-27T11:40:52Z",
+                  "completed_at": null
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "video-e82a13fb8c",
+      "name": "KB3_13.mp4",
+      "source_video_path": "C:\\Users\\ad\\Downloads\\2\\KB3_13.mp4",
+      "mode": "chain",
+      "video_prompt": "",
+      "status": "queued",
+      "created_at": "2026-04-27T11:40:50Z",
+      "last_updated_at": "2026-04-27T11:40:50Z",
+      "error": null,
+      "markers": [
+        {
+          "id": "marker-1d82c9529d",
+          "index": 1,
+          "label": "Marker 1",
+          "timestamp_ms": 0,
+          "input_frame_path": "C:\\Users\\ad\\Downloads\\2\\_frames\\KB3_13\\marker_001_0.00.jpg",
           "seed_prompt": "Marker 1",
           "status": "queued",
           "parent_marker_id": null,
           "variant_index": 0,
           "steps": [
             {
-              "id": "step-3dd55efb14",
+              "id": "step-75c55d80ff",
               "index": 1,
               "title": "Marker 1",
               "modifier_prompt": "",
@@ -51,29 +105,29 @@
       ]
     },
     {
-      "id": "video-082857b552",
-      "name": "eff.kb1.27.1.mp4",
-      "source_video_path": "/Volumes/External/1234/eff.kb1.27.1.mp4",
+      "id": "video-95bd991495",
+      "name": "KB3_15.mp4",
+      "source_video_path": "C:\\Users\\ad\\Downloads\\2\\KB3_15.mp4",
       "mode": "chain",
       "video_prompt": "",
       "status": "queued",
-      "created_at": "2026-04-27T04:31:10Z",
-      "last_updated_at": "2026-04-27T04:31:10Z",
+      "created_at": "2026-04-27T11:40:50Z",
+      "last_updated_at": "2026-04-27T11:40:50Z",
       "error": null,
       "markers": [
         {
-          "id": "marker-743b47d0d6",
+          "id": "marker-c2189bfc90",
           "index": 1,
           "label": "Marker 1",
           "timestamp_ms": 0,
-          "input_frame_path": "/Volumes/External/1234/_frames/eff.kb1.27.1/marker_001_0.00.jpg",
+          "input_frame_path": "C:\\Users\\ad\\Downloads\\2\\_frames\\KB3_15\\marker_001_0.00.jpg",
           "seed_prompt": "Marker 1",
           "status": "queued",
           "parent_marker_id": null,
           "variant_index": 0,
           "steps": [
             {
-              "id": "step-ab19b00619",
+              "id": "step-4645d5c5e6",
               "index": 1,
               "title": "Marker 1",
               "modifier_prompt": "",
@@ -90,29 +144,68 @@
       ]
     },
     {
-      "id": "video-19e3e05666",
-      "name": "eff.kb1.17.mp4",
-      "source_video_path": "/Volumes/External/1234/eff.kb1.17.mp4",
+      "id": "video-e2ad9fd8d4",
+      "name": "KB3_18.mp4",
+      "source_video_path": "C:\\Users\\ad\\Downloads\\2\\KB3_18.mp4",
       "mode": "chain",
       "video_prompt": "",
       "status": "queued",
-      "created_at": "2026-04-27T04:31:10Z",
-      "last_updated_at": "2026-04-27T04:31:10Z",
+      "created_at": "2026-04-27T11:40:50Z",
+      "last_updated_at": "2026-04-27T11:40:50Z",
       "error": null,
       "markers": [
         {
-          "id": "marker-be952c6517",
+          "id": "marker-fd70e51939",
           "index": 1,
           "label": "Marker 1",
           "timestamp_ms": 0,
-          "input_frame_path": "/Volumes/External/1234/_frames/eff.kb1.17/marker_001_0.00.jpg",
+          "input_frame_path": "C:\\Users\\ad\\Downloads\\2\\_frames\\KB3_18\\marker_001_0.00.jpg",
           "seed_prompt": "Marker 1",
           "status": "queued",
           "parent_marker_id": null,
           "variant_index": 0,
           "steps": [
             {
-              "id": "step-3b12fe93e5",
+              "id": "step-56a613c186",
+              "index": 1,
+              "title": "Marker 1",
+              "modifier_prompt": "",
+              "status": "queued",
+              "selected_attempt_id": null,
+              "pending_mode": "auto",
+              "pending_input_path": null,
+              "pending_thread_url": null,
+              "pending_prompt_override": null,
+              "attempts": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "video-f5ef11cb27",
+      "name": "KB3_20.mp4",
+      "source_video_path": "C:\\Users\\ad\\Downloads\\2\\KB3_20.mp4",
+      "mode": "chain",
+      "video_prompt": "",
+      "status": "queued",
+      "created_at": "2026-04-27T11:40:50Z",
+      "last_updated_at": "2026-04-27T11:40:50Z",
+      "error": null,
+      "markers": [
+        {
+          "id": "marker-cfeab84db8",
+          "index": 1,
+          "label": "Marker 1",
+          "timestamp_ms": 0,
+          "input_frame_path": "C:\\Users\\ad\\Downloads\\2\\_frames\\KB3_20\\marker_001_0.00.jpg",
+          "seed_prompt": "Marker 1",
+          "status": "queued",
+          "parent_marker_id": null,
+          "variant_index": 0,
+          "steps": [
+            {
+              "id": "step-9eed425698",
               "index": 1,
               "title": "Marker 1",
               "modifier_prompt": "",
@@ -127,239 +220,18 @@
           ]
         },
         {
-          "id": "marker-089ce0cb15",
+          "id": "marker-a7b545404c",
           "index": 2,
           "label": "Marker 2",
           "timestamp_ms": 0,
-          "input_frame_path": "/Volumes/External/1234/_frames/eff.kb1.17/marker_002_0.00.jpg",
+          "input_frame_path": "C:\\Users\\ad\\Downloads\\2\\_frames\\KB3_20\\marker_002_0.00.jpg",
           "seed_prompt": "Marker 2",
           "status": "queued",
           "parent_marker_id": null,
           "variant_index": 0,
           "steps": [
             {
-              "id": "step-f968076bd6",
-              "index": 1,
-              "title": "Marker 2",
-              "modifier_prompt": "",
-              "status": "queued",
-              "selected_attempt_id": null,
-              "pending_mode": "auto",
-              "pending_input_path": null,
-              "pending_thread_url": null,
-              "pending_prompt_override": null,
-              "attempts": []
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "id": "video-e3ea7595a4",
-      "name": "eff.kb1.20.1.mp4",
-      "source_video_path": "/Volumes/External/1234/eff.kb1.20.1.mp4",
-      "mode": "chain",
-      "video_prompt": "",
-      "status": "queued",
-      "created_at": "2026-04-27T04:31:10Z",
-      "last_updated_at": "2026-04-27T04:31:10Z",
-      "error": null,
-      "markers": [
-        {
-          "id": "marker-00ca990295",
-          "index": 1,
-          "label": "Marker 1",
-          "timestamp_ms": 0,
-          "input_frame_path": "/Volumes/External/1234/_frames/eff.kb1.20.1/marker_001_0.00.jpg",
-          "seed_prompt": "Marker 1",
-          "status": "queued",
-          "parent_marker_id": null,
-          "variant_index": 0,
-          "steps": [
-            {
-              "id": "step-afeee2ca47",
-              "index": 1,
-              "title": "Marker 1",
-              "modifier_prompt": "",
-              "status": "queued",
-              "selected_attempt_id": null,
-              "pending_mode": "auto",
-              "pending_input_path": null,
-              "pending_thread_url": null,
-              "pending_prompt_override": null,
-              "attempts": []
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "id": "video-3ac1b5ad14",
-      "name": "eff.kb1.17.1.mp4",
-      "source_video_path": "/Volumes/External/1234/eff.kb1.17.1.mp4",
-      "mode": "chain",
-      "video_prompt": "",
-      "status": "queued",
-      "created_at": "2026-04-27T04:31:10Z",
-      "last_updated_at": "2026-04-27T04:31:10Z",
-      "error": null,
-      "markers": [
-        {
-          "id": "marker-4673adafbb",
-          "index": 1,
-          "label": "Marker 1",
-          "timestamp_ms": 0,
-          "input_frame_path": "/Volumes/External/1234/_frames/eff.kb1.17.1/marker_001_0.00.jpg",
-          "seed_prompt": "Marker 1",
-          "status": "queued",
-          "parent_marker_id": null,
-          "variant_index": 0,
-          "steps": [
-            {
-              "id": "step-f6f789867b",
-              "index": 1,
-              "title": "Marker 1",
-              "modifier_prompt": "",
-              "status": "queued",
-              "selected_attempt_id": null,
-              "pending_mode": "auto",
-              "pending_input_path": null,
-              "pending_thread_url": null,
-              "pending_prompt_override": null,
-              "attempts": []
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "id": "video-17ab71577a",
-      "name": "eff.kb1.26.mp4",
-      "source_video_path": "/Volumes/External/1234/eff.kb1.26.mp4",
-      "mode": "chain",
-      "video_prompt": "",
-      "status": "queued",
-      "created_at": "2026-04-27T04:31:10Z",
-      "last_updated_at": "2026-04-27T04:31:10Z",
-      "error": null,
-      "markers": [
-        {
-          "id": "marker-99080b56db",
-          "index": 1,
-          "label": "Marker 1",
-          "timestamp_ms": 0,
-          "input_frame_path": "/Volumes/External/1234/_frames/eff.kb1.26/marker_001_0.00.jpg",
-          "seed_prompt": "Marker 1",
-          "status": "queued",
-          "parent_marker_id": null,
-          "variant_index": 0,
-          "steps": [
-            {
-              "id": "step-17c5a5e74b",
-              "index": 1,
-              "title": "Marker 1",
-              "modifier_prompt": "",
-              "status": "queued",
-              "selected_attempt_id": null,
-              "pending_mode": "auto",
-              "pending_input_path": null,
-              "pending_thread_url": null,
-              "pending_prompt_override": null,
-              "attempts": []
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "id": "video-0a6d371a24",
-      "name": "eff.kb1.30.mp4",
-      "source_video_path": "/Volumes/External/1234/eff.kb1.30.mp4",
-      "mode": "chain",
-      "video_prompt": "",
-      "status": "queued",
-      "created_at": "2026-04-27T04:31:10Z",
-      "last_updated_at": "2026-04-27T04:31:10Z",
-      "error": null,
-      "markers": [
-        {
-          "id": "marker-0bfcc81e38",
-          "index": 1,
-          "label": "Marker 1",
-          "timestamp_ms": 0,
-          "input_frame_path": "/Volumes/External/1234/_frames/eff.kb1.30/marker_001_0.00.jpg",
-          "seed_prompt": "Marker 1",
-          "status": "queued",
-          "parent_marker_id": null,
-          "variant_index": 0,
-          "steps": [
-            {
-              "id": "step-0efad8045f",
-              "index": 1,
-              "title": "Marker 1",
-              "modifier_prompt": "",
-              "status": "queued",
-              "selected_attempt_id": null,
-              "pending_mode": "auto",
-              "pending_input_path": null,
-              "pending_thread_url": null,
-              "pending_prompt_override": null,
-              "attempts": []
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "id": "video-f5587b8f88",
-      "name": "eff.kb1.24.mp4",
-      "source_video_path": "/Volumes/External/1234/eff.kb1.24.mp4",
-      "mode": "chain",
-      "video_prompt": "",
-      "status": "queued",
-      "created_at": "2026-04-27T04:31:10Z",
-      "last_updated_at": "2026-04-27T04:31:10Z",
-      "error": null,
-      "markers": [
-        {
-          "id": "marker-03d52947ab",
-          "index": 1,
-          "label": "Marker 1",
-          "timestamp_ms": 0,
-          "input_frame_path": "/Volumes/External/1234/_frames/eff.kb1.24/marker_001_0.00.jpg",
-          "seed_prompt": "Marker 1",
-          "status": "queued",
-          "parent_marker_id": null,
-          "variant_index": 0,
-          "steps": [
-            {
-              "id": "step-a4ef353c84",
-              "index": 1,
-              "title": "Marker 1",
-              "modifier_prompt": "",
-              "status": "queued",
-              "selected_attempt_id": null,
-              "pending_mode": "auto",
-              "pending_input_path": null,
-              "pending_thread_url": null,
-              "pending_prompt_override": null,
-              "attempts": []
-            }
-          ]
-        },
-        {
-          "id": "marker-b06bf7cc1a",
-          "index": 2,
-          "label": "Marker 2",
-          "timestamp_ms": 0,
-          "input_frame_path": "/Volumes/External/1234/_frames/eff.kb1.24/marker_002_0.00.jpg",
-          "seed_prompt": "Marker 2",
-          "status": "queued",
-          "parent_marker_id": null,
-          "variant_index": 0,
-          "steps": [
-            {
-              "id": "step-92b8695af6",
+              "id": "step-21dc83eae0",
               "index": 1,
               "title": "Marker 2",
               "modifier_prompt": "",
@@ -374,18 +246,18 @@
           ]
         },
         {
-          "id": "marker-c8356d9360",
+          "id": "marker-ec3cbf51eb",
           "index": 3,
           "label": "Marker 3",
           "timestamp_ms": 0,
-          "input_frame_path": "/Volumes/External/1234/_frames/eff.kb1.24/marker_003_0.00.jpg",
+          "input_frame_path": "C:\\Users\\ad\\Downloads\\2\\_frames\\KB3_20\\marker_003_0.00.jpg",
           "seed_prompt": "Marker 3",
           "status": "queued",
           "parent_marker_id": null,
           "variant_index": 0,
           "steps": [
             {
-              "id": "step-23b53d70e8",
+              "id": "step-767f58fed4",
               "index": 1,
               "title": "Marker 3",
               "modifier_prompt": "",
@@ -402,29 +274,68 @@
       ]
     },
     {
-      "id": "video-4afd8bcb3e",
-      "name": "eff.kb1.23.mp4",
-      "source_video_path": "/Volumes/External/1234/eff.kb1.23.mp4",
+      "id": "video-5c764106dc",
+      "name": "KB3_21.mp4",
+      "source_video_path": "C:\\Users\\ad\\Downloads\\2\\KB3_21.mp4",
       "mode": "chain",
       "video_prompt": "",
       "status": "queued",
-      "created_at": "2026-04-27T04:31:10Z",
-      "last_updated_at": "2026-04-27T04:31:10Z",
+      "created_at": "2026-04-27T11:40:50Z",
+      "last_updated_at": "2026-04-27T11:40:50Z",
       "error": null,
       "markers": [
         {
-          "id": "marker-07358cb1ed",
+          "id": "marker-8c9ca7c38f",
           "index": 1,
           "label": "Marker 1",
           "timestamp_ms": 0,
-          "input_frame_path": "/Volumes/External/1234/_frames/eff.kb1.23/marker_001_0.00.jpg",
+          "input_frame_path": "C:\\Users\\ad\\Downloads\\2\\_frames\\KB3_21\\marker_001_0.00.jpg",
           "seed_prompt": "Marker 1",
           "status": "queued",
           "parent_marker_id": null,
           "variant_index": 0,
           "steps": [
             {
-              "id": "step-85403bcf1f",
+              "id": "step-dca4279e13",
+              "index": 1,
+              "title": "Marker 1",
+              "modifier_prompt": "",
+              "status": "queued",
+              "selected_attempt_id": null,
+              "pending_mode": "auto",
+              "pending_input_path": null,
+              "pending_thread_url": null,
+              "pending_prompt_override": null,
+              "attempts": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "video-b64cbd6e23",
+      "name": "KB3_24.mp4",
+      "source_video_path": "C:\\Users\\ad\\Downloads\\2\\KB3_24.mp4",
+      "mode": "chain",
+      "video_prompt": "",
+      "status": "queued",
+      "created_at": "2026-04-27T11:40:50Z",
+      "last_updated_at": "2026-04-27T11:40:50Z",
+      "error": null,
+      "markers": [
+        {
+          "id": "marker-379ace9c38",
+          "index": 1,
+          "label": "Marker 1",
+          "timestamp_ms": 0,
+          "input_frame_path": "C:\\Users\\ad\\Downloads\\2\\_frames\\KB3_24\\marker_001_0.00.jpg",
+          "seed_prompt": "Marker 1",
+          "status": "queued",
+          "parent_marker_id": null,
+          "variant_index": 0,
+          "steps": [
+            {
+              "id": "step-8cbb5f466d",
               "index": 1,
               "title": "Marker 1",
               "modifier_prompt": "",
@@ -439,18 +350,18 @@
           ]
         },
         {
-          "id": "marker-b969324689",
+          "id": "marker-6a8050948f",
           "index": 2,
           "label": "Marker 2",
           "timestamp_ms": 0,
-          "input_frame_path": "/Volumes/External/1234/_frames/eff.kb1.23/marker_002_0.00.jpg",
+          "input_frame_path": "C:\\Users\\ad\\Downloads\\2\\_frames\\KB3_24\\marker_002_0.00.jpg",
           "seed_prompt": "Marker 2",
           "status": "queued",
           "parent_marker_id": null,
           "variant_index": 0,
           "steps": [
             {
-              "id": "step-4ad64e6d48",
+              "id": "step-64f7a17093",
               "index": 1,
               "title": "Marker 2",
               "modifier_prompt": "",

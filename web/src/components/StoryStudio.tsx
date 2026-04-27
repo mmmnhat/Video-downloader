@@ -8,6 +8,7 @@ import {
   RotateCcw,
   Plus,
   X,
+  ClipboardPaste,
   FolderOpen,
   FileVideo,
   Image as ImageIcon,
@@ -99,13 +100,16 @@ function hasGemOption(gems: GemOption[], url: string) {
 }
 
 function sanitizeGeminiSettings(settings: StorySettings, gems: GemOption[]) {
-  if (!settings.gemini_base_url || hasGemOption(gems, settings.gemini_base_url)) {
+  if (!settings.gemini_base_url?.trim()) {
+    return {
+      ...settings,
+      gemini_base_url: GEMINI_DEFAULT_URL,
+    };
+  }
+  if (hasGemOption(gems, settings.gemini_base_url)) {
     return settings;
   }
-  return {
-    ...settings,
-    gemini_base_url: GEMINI_DEFAULT_URL,
-  };
+  return settings;
 }
 
 function storyStatusLabel(status: string) {
@@ -876,6 +880,32 @@ export default function StoryStudio() {
     }
   }, []);
 
+  const handlePasteGemUrl = useCallback(async () => {
+    try {
+      if (!navigator.clipboard?.readText) {
+        toast.error("Trình duyệt hiện tại không hỗ trợ đọc clipboard.");
+        return;
+      }
+      const raw = (await navigator.clipboard.readText()).trim();
+      if (!raw) {
+        toast.error("Clipboard đang trống.");
+        return;
+      }
+      if (!raw.includes("gemini.google.com")) {
+        toast.error("URL clipboard không phải Gemini.");
+        return;
+      }
+      startTransition(() => {
+        setSettingsDraft((current) =>
+          current ? { ...current, gemini_base_url: raw } : current
+        );
+      });
+      toast.success("Đã dán URL Gem.");
+    } catch (error) {
+      toast.error(getErrorMessage(error));
+    }
+  }, []);
+
   const currentGemUrl = settingsDraft?.gemini_base_url?.trim() ?? "";
   const showStoredGemOption =
     currentGemUrl.length > 0 && !hasGemOption(availableGems, currentGemUrl);
@@ -1276,8 +1306,8 @@ export default function StoryStudio() {
                   >
                     Gem
                   </TooltipFieldLabel>
-                  <div className="flex gap-2">
-                    <Select
+	                  <div className="flex gap-2">
+	                    <Select
                       value={currentGemUrl || GEMINI_DEFAULT_URL}
                       onValueChange={(value) =>
                         setSettingsDraft((current) =>
@@ -1316,10 +1346,32 @@ export default function StoryStudio() {
                       ) : (
                         <RefreshCw className="size-4" />
                       )}
-                    </Button>
-                  </div>
-                </div>
-              </div>
+	                    </Button>
+	                  </div>
+	                  <div className="flex gap-2">
+	                    <Input
+	                      value={currentGemUrl}
+	                      onChange={(event) =>
+	                        setSettingsDraft((current) =>
+	                          current
+	                            ? { ...current, gemini_base_url: event.target.value.trim() || GEMINI_DEFAULT_URL }
+	                            : current
+	                        )
+	                      }
+	                      placeholder="Dán URL Gem thủ công (https://gemini.google.com/gems/...)"
+	                    />
+	                    <Button
+	                      type="button"
+	                      variant="outline"
+	                      size="icon"
+	                      onClick={() => void handlePasteGemUrl()}
+	                      title="Dán URL Gem từ clipboard"
+	                    >
+	                      <ClipboardPaste className="size-4" />
+	                    </Button>
+	                  </div>
+	                </div>
+	              </div>
             </>
           ) : null}
         </TabsContent>

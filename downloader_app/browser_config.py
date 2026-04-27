@@ -344,7 +344,67 @@ def _cookie_count_from_db(cookie_path: Path, domains: tuple[str, ...]) -> int:
     try:
         with tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False) as handle:
             temp_copy = Path(handle.name)
-        shutil.copy2(cookie_path, temp_copy)
+        
+        # Robust copy for locked files on Windows
+        try:
+            shutil.copyfile(cookie_path, temp_copy)
+        except Exception:
+            # Fallback 1: win32file (most robust)
+            if sys.platform == "win32":
+                try:
+                    import win32file
+                    import win32con
+                    handle = win32file.CreateFile(
+                        str(cookie_path),
+                        win32con.GENERIC_READ,
+                        win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE | win32con.FILE_SHARE_DELETE,
+                        None,
+                        win32con.OPEN_EXISTING,
+                        win32con.FILE_ATTRIBUTE_NORMAL,
+                        None
+                    )
+                    try:
+                        with open(temp_copy, "wb") as fdst:
+                            while True:
+                                res, data = win32file.ReadFile(handle, 1024 * 1024)
+                                if not data: break
+                                fdst.write(data)
+                    finally:
+                        handle.Close()
+                except Exception:
+                    pass
+
+            if not temp_copy.exists() or temp_copy.stat().st_size == 0:
+                try:
+                    src_p = str(cookie_path.absolute())
+                    if sys.platform == "win32":
+                        src_p = src_p.replace("\\", "/")
+                        if not src_p.startswith("/"):
+                            src_p = "/" + src_p
+                    
+                    # nolock=1 and immutable=1 are key for reading locked SQLite files
+                    src_uri = f"file://{src_p}?mode=ro&nolock=1&immutable=1"
+                    
+                    src_conn = sqlite3.connect(src_uri, uri=True)
+                    try:
+                        dst_conn = sqlite3.connect(temp_copy)
+                        try:
+                            src_conn.backup(dst_conn)
+                        finally:
+                            dst_conn.close()
+                    finally:
+                        src_conn.close()
+                except Exception:
+                    # Fallback 3: cmd copy
+                    if sys.platform == "win32":
+                        try:
+                            subprocess.run(["cmd", "/c", "copy", "/y", str(cookie_path), str(temp_copy)], 
+                                           capture_output=True, timeout=2, check=False)
+                        except Exception:
+                            pass
+        
+        if not temp_copy.exists() or temp_copy.stat().st_size == 0:
+            return 0
 
         clauses: list[str] = []
         params: list[str] = []
@@ -355,11 +415,14 @@ def _cookie_count_from_db(cookie_path: Path, domains: tuple[str, ...]) -> int:
         if not clauses:
             return 0
 
-        with sqlite3.connect(temp_copy) as connection:
+        connection = sqlite3.connect(temp_copy)
+        try:
             row = connection.execute(
                 f"SELECT COUNT(*) FROM cookies WHERE {' OR '.join(clauses)}",
                 tuple(params),
             ).fetchone()
+        finally:
+            connection.close()
     except Exception:
         return 0
     finally:

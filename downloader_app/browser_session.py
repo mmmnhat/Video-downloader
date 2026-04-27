@@ -464,9 +464,11 @@ class BrowserSessionManager:
                     "profile_dir": str(detected["selectedProfileDir"]),
                 }
             except (BrowserConfigError, BrowserSessionError) as exc:
-                raise BrowserSessionError(str(exc)) from exc
+                # Do not fail hard here. The configured profile can be stale or
+                # partially unreadable; continue with normal browser scanning.
+                last_error = exc
 
-        for candidate in self._candidates:
+        for candidate in self._ordered_candidates():
             try:
                 # Load ALL cookies into the cache so we can export any domain later
                 cookiejar = self._load_cookiejar(candidate, domain_name="")
@@ -517,8 +519,10 @@ class BrowserSessionManager:
                         user_data_dir=Path(str(detected["userDataDir"])),
                         domain_name=domain_name,
                     )
-            except (BrowserConfigError, BrowserSessionError) as exc:
-                raise BrowserSessionError(str(exc)) from exc
+            except (BrowserConfigError, BrowserSessionError):
+                # Fall back to browser_cookie3 default discovery instead of
+                # failing the whole session on a single configured profile.
+                pass
 
         try:
             if candidate.loader_name == "coccoc":
@@ -679,9 +683,16 @@ class BrowserSessionManager:
         configured = browser_config_manager.get_feature("downloader")
         if configured.browser_path:
             try:
-                return [self._configured_candidate()]
-            except BrowserConfigError as exc:
-                raise BrowserSessionError(str(exc)) from exc
+                configured_candidate = self._configured_candidate()
+            except BrowserConfigError:
+                configured_candidate = None
+            if configured_candidate is not None:
+                return [configured_candidate] + [
+                    candidate
+                    for candidate in self._candidates
+                    if candidate != configured_candidate
+                ]
+            return list(self._candidates)
 
         if self._active_candidate is None:
             return list(self._candidates)

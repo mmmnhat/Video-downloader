@@ -28,7 +28,7 @@ from downloader_app.browser_config import (
     launch_browser_with_profile,
 )
 from downloader_app.browser_session import browser_session
-from downloader_app.runtime import resolve_binary
+from downloader_app.runtime import app_path, resolve_binary
 
 
 GEMINI_DEFAULT_URL = "https://gemini.google.com/app"
@@ -59,6 +59,8 @@ PROFILE_ITEMS = (
     "Preferences",
     "Secure Preferences",
     "Network Persistent State",
+    "Web Data",
+    "Account Web Data",
 )
 PROFILE_DIR_COOKIE_RELATIVE_PATHS = (
     Path("Cookies"),
@@ -94,6 +96,20 @@ GEMINI_STARTER_GEM_LABEL_MARKERS = (
     "start a new conversation with gem:",
 )
 VISIBLE_GEMINI_CLOSE_DELAY_MS = 0
+GEMINI_SCAN_PROFILE_NAME = "Default"
+
+# Profile copy configuration
+PROFILE_SKIP_DIRS = {
+    "cache", "code cache", "gpucache", "media cache", "shadercache",
+    "service worker/cachestorage", "service worker/scriptcache",
+    "safe browsing", "grshadercache", "webstorage/quota_manager",
+    "safe browsing network", "sessions",
+    # Note: IndexedDB is NOT skipped here by default because Gemini depends on it for gems/history
+}
+PROFILE_SKIP_FILES = {
+    "lock", "singleton-lock", "lockfile", "cookies-journal", "history-journal",
+    "last session", "last tabs", "current session", "current tabs",
+}
 
 
 class SharedBrowserContext:
@@ -287,17 +303,36 @@ class SharedBrowserContext:
             self._profile, self._runtime_root, runtime_id
         )
 
-        # Đảm bảo không có asyncio loop đang chạy trong thread này.
-        # Playwright Sync API yêu cầu thread "sạch" không có running loop.
+        # Fix Playwright Asyncio conflict:
+        # Playwright Sync API cannot run if an event loop is already active in the thread.
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                print(f"[GeminiWebAdapter] Thread {threading.get_ident()} has a RUNNING loop. Attempting to clear.")
-                # Nếu loop đang chạy, Playwright Sync API CHẮC CHẮN sẽ lỗi.
-                # Tuy nhiên set_event_loop(None) chỉ ảnh hưởng get_event_loop() tiếp theo,
-                # nó không dừng được loop đang chạy. Nhưng đây là nỗ lực tốt nhất.
-                asyncio.set_event_loop(None)
-        except RuntimeError:
+            import asyncio
+            try:
+                # Use a more robust check for a running loop
+                try:
+                    loop = asyncio.get_running_loop()
+                    if loop.is_running():
+                        # If we're here, there IS a running loop in this thread.
+                        # We MUST use a different thread or use the Async API.
+                        # Since we're in a Sync context, we try to set a new loop.
+                        asyncio.set_event_loop(asyncio.new_event_loop())
+                except RuntimeError:
+                    # No running loop, but check if there's an initialized one
+                    try:
+                        loop = asyncio.get_event_loop()
+                        if loop.is_running():
+                            asyncio.set_event_loop(asyncio.new_event_loop())
+                        else:
+                            # Not running, but exists. Some versions of Playwright still complain.
+                            asyncio.set_event_loop(None)
+                    except Exception:
+                        pass
+            except Exception:
+                try:
+                    asyncio.set_event_loop(asyncio.new_event_loop())
+                except Exception:
+                    pass
+        except Exception:
             pass
 
         self._playwright = sync_playwright().start()
@@ -309,6 +344,20 @@ class SharedBrowserContext:
             args=[
                 f"--profile-directory={self._profile.profile_name}",
                 "--disable-blink-features=AutomationControlled",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-sync",
+                "--disable-background-networking",
+                "--disable-background-timer-throttling",
+                "--disable-backgrounding-occluded-windows",
+                "--disable-breakpad",
+                "--disable-component-update",
+                "--disable-domain-reliability",
+                "--disable-features=IsolateOrigins,site-per-process,Translate,OptimizationHints,DialMediaRouteProvider",
+                "--disable-ipc-flooding-protection",
+                "--disable-renderer-backgrounding",
+                "--force-color-profile=srgb",
+                "--metrics-recording-only",
             ],
         )
         try:
@@ -640,7 +689,14 @@ def _cookie_count_for_domains(cookie_path: Path, domains: tuple[str, ...]) -> in
     try:
         with tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False) as handle:
             temp_copy = Path(handle.name)
-        shutil.copy2(cookie_path, temp_copy)
+        
+        # Use our robust copy logic to handle locked files
+        try:
+            _robust_copy_file(cookie_path, temp_copy)
+        except Exception as exc:
+            if "Permission denied" in str(exc) or "[Errno 13]" in str(exc) or "[Errno 32]" in str(exc):
+                print(f"[GeminiWebAdapter] KHÔNG THỂ lấy cookie vì trình duyệt đang mở. Vui lòng ĐÓNG CocCoc/Chrome rồi thử lại.", flush=True)
+            raise
 
         clauses = []
         params: list[str] = []
@@ -650,18 +706,24 @@ def _cookie_count_for_domains(cookie_path: Path, domains: tuple[str, ...]) -> in
             params.append(f"%.{domain}")
         where = " OR ".join(f"({clause})" for clause in clauses)
 
-        with sqlite3.connect(temp_copy) as connection:
+        connection = sqlite3.connect(temp_copy)
+        try:
             row = connection.execute(
                 f"SELECT COUNT(*) FROM cookies WHERE {where}",
                 tuple(params),
             ).fetchone()
-    except Exception:
+            return int(row[0]) if row else 0
+        finally:
+            connection.close()
+    except Exception as exc:
+        print(f"[GeminiWebAdapter] Failed to count cookies in {cookie_path}: {exc}", flush=True)
         return 0
     finally:
         if temp_copy is not None:
-            temp_copy.unlink(missing_ok=True)
-
-    return int(row[0]) if row else 0
+            try:
+                temp_copy.unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 def _cookie_paths_for_profile(profile_dir: Path) -> list[Path]:
@@ -727,18 +789,146 @@ def detect_gemini_browser_profile(domains: tuple[str, ...] = GEMINI_AUTH_DOMAINS
         browser_names = "/".join(candidate.name for candidate in partial_candidates)
         raise GeminiWebError(
             "Da tim thay du lieu profile Gemini nhung khong tim duoc ung dung "
-            f"{browser_names} tren may nay. Hay cai lai browser tuong ung hoac mo app tu thu muc Applications."
+            f"{browser_names} tren may nay."
         )
-
     raise GeminiWebError("Khong tim thay CocCoc/Chrome/Edge co profile Gemini tren may nay.")
+
+def _robust_copy_file(source: Path, destination: Path) -> None:
+    """Copies a file, retrying and using fallback streams, win32api, sqlite backup or cmd copy if locked on Windows."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    
+    # 0. Skip known lock files that are guaranteed to be locked and useless
+    if source.name.lower() in {"lock", "singleton-lock", "cookies-journal", "web data-journal"}:
+        return
+
+    # 1. Try standard copyfile first
+    try:
+        shutil.copyfile(source, destination)
+        return
+    except (PermissionError, OSError):
+        pass
+
+    # 2. For SQLite files (like Cookies), try sqlite3 backup API with nolock=1
+    if source.name.lower() in {"cookies", "web data", "history", "login data"} or source.suffix.lower() == ".sqlite":
+        try:
+            # Use URI mode to bypass some locks
+            src_path = str(source.absolute())
+            if sys.platform == "win32":
+                src_path = src_path.replace("\\", "/")
+                if not src_path.startswith("/"):
+                    src_path = "/" + src_path
+            
+            # nolock=1 and immutable=1 are key for reading locked SQLite files
+            src_uri = f"file://{src_path}?mode=ro&nolock=1&immutable=1"
+            
+            src_conn = sqlite3.connect(src_uri, uri=True)
+            try:
+                dst_conn = sqlite3.connect(destination)
+                try:
+                    src_conn.backup(dst_conn)
+                finally:
+                    dst_conn.close()
+            finally:
+                src_conn.close()
+            return
+        except Exception:
+            pass
+
+    # 3. For Windows, try win32file with aggressive sharing flags
+    if sys.platform == "win32":
+        try:
+            import win32file
+            import win32con
+            
+            handle = win32file.CreateFile(
+                str(source),
+                win32con.GENERIC_READ,
+                win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE | win32con.FILE_SHARE_DELETE,
+                None,
+                win32con.OPEN_EXISTING,
+                win32con.FILE_ATTRIBUTE_NORMAL,
+                None
+            )
+            try:
+                # We use open() for destination. If destination was created by NamedTemporaryFile, 
+                # it might be locked on Windows, so we wrap this in try-except.
+                with open(destination, "wb") as fdst:
+                    while True:
+                        res, data = win32file.ReadFile(handle, 1024 * 1024)
+                        if not data:
+                            break
+                        fdst.write(data)
+                return
+            finally:
+                handle.Close()
+        except Exception:
+            pass
+
+    # 4. Try Windows shell copy
+    if sys.platform == "win32":
+        try:
+            res = subprocess.run(
+                ["cmd", "/c", "copy", "/y", str(source), str(destination)],
+                capture_output=True,
+                check=False,
+                timeout=5
+            )
+            if res.returncode == 0 and destination.exists() and destination.stat().st_size > 0:
+                return
+        except Exception:
+            pass
+
+    # 5. Fallback to stream copy with retries
+    for attempt in range(3):
+        try:
+            with open(source, "rb") as fsrc:
+                with open(destination, "wb") as fdst:
+                    shutil.copyfileobj(fsrc, fdst)
+            return
+        except (PermissionError, OSError) as exc:
+            if attempt < 2:
+                time.sleep(0.5)
+                continue
+            # If we've failed all robust methods AND all retries of simple stream copy,
+            # then we finally log a warning for critical files.
+            if source.name.lower() in {"cookies", "web data", "history"} or source.suffix.lower() == ".sqlite":
+                if "Permission denied" in str(exc) or "[Errno 13]" in str(exc) or "[Errno 32]" in str(exc):
+                    print(f"[GeminiWebAdapter] Warning: Can't read {source.name} (browser open). Trying to continue anyway.", flush=True)
+            raise
+        except Exception:
+            if attempt < 2:
+                time.sleep(0.5)
+                continue
+            raise
 
 
 def _copy_profile_item(source: Path, destination: Path) -> None:
     if source.is_dir():
-        shutil.copytree(source, destination, dirs_exist_ok=True)
+        # shutil.copytree with dirs_exist_ok=True is good, but we need to handle individual file errors
+        if not destination.exists():
+            destination.mkdir(parents=True, exist_ok=True)
+        
+        for child in source.iterdir():
+            try:
+                _copy_profile_item(child, destination / child.name)
+            except Exception:
+                # Non-critical profile files can be transiently locked.
+                # Keep scan/runtime creation best-effort.
+                pass
         return
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, destination)
+
+    try:
+        _robust_copy_file(source, destination)
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        # Ignore errors for non-essential files
+        if source.name.lower() in {"cookies-journal", "lock", "singleton-lock", "lockfile"} or source.suffix.lower() in {".tmp", ".temp"}:
+            return
+
+        # Re-raise only for critical items like Cookies/Local State.
+        if source.name.lower() in {"cookies", "local state"}:
+            raise
 
 
 def _copy_filtered_directory(
@@ -807,30 +997,73 @@ def build_gemini_runtime_profile(
     runtime_root: Path,
     runtime_id: str,
     *,
-    copy_full_profile: bool = False,
+    copy_full_profile: bool = True, # Default to true as requested
 ) -> Path:
     path = runtime_root / runtime_id
     if path.exists():
         shutil.rmtree(path, ignore_errors=True)
     path.mkdir(parents=True, exist_ok=True)
 
-    for item in PROFILE_ROOT_ITEMS:
-        source = profile.user_data_dir / item
-        if source.exists():
-            _copy_profile_item(source, path / item)
+    # 1. Copy Local State (Root level)
+    local_state = profile.user_data_dir / "Local State"
+    if local_state.exists():
+        _copy_profile_item(local_state, path / "Local State")
 
+    # 2. Copy Profile directory (Recursive with exclusions)
     runtime_profile_dir = path / profile.profile_name
-    runtime_profile_dir.mkdir(parents=True, exist_ok=True)
+    
     if copy_full_profile:
-        _copy_gems_runtime_profile(profile, path)
-        return path
-
-    for item in PROFILE_ITEMS:
-        source = profile.profile_dir / item
-        if source.exists():
-            _copy_profile_item(source, runtime_profile_dir / item)
+        _copy_directory_recursive_filtered(
+            profile.profile_dir,
+            runtime_profile_dir,
+            skip_dirs=PROFILE_SKIP_DIRS,
+            skip_files=PROFILE_SKIP_FILES,
+        )
+    else:
+        # Legacy/Selective mode
+        runtime_profile_dir.mkdir(parents=True, exist_ok=True)
+        for item in PROFILE_ITEMS:
+            source = profile.profile_dir / item
+            if source.exists():
+                _copy_profile_item(source, runtime_profile_dir / item)
 
     return path
+
+
+def _copy_directory_recursive_filtered(
+    source: Path,
+    destination: Path,
+    *,
+    skip_dirs: set[str],
+    skip_files: set[str],
+    current_rel_path: str = "",
+) -> None:
+    if not source.exists():
+        return
+    
+    if not destination.exists():
+        destination.mkdir(parents=True, exist_ok=True)
+
+    for item in source.iterdir():
+        rel_name = (f"{current_rel_path}/{item.name}" if current_rel_path else item.name).lower()
+        
+        if item.is_dir():
+            if item.name.lower() in skip_dirs or rel_name in skip_dirs:
+                continue
+            _copy_directory_recursive_filtered(
+                item,
+                destination / item.name,
+                skip_dirs=skip_dirs,
+                skip_files=skip_files,
+                current_rel_path=rel_name,
+            )
+        else:
+            if item.name.lower() in skip_files or rel_name in skip_files:
+                continue
+            try:
+                _copy_profile_item(item, destination / item.name)
+            except Exception:
+                pass
 
 
 def _cookie_matches_domain(cookie_domain: str, domains: tuple[str, ...]) -> bool:
@@ -856,21 +1089,42 @@ def _load_browser_cookiejar(profile: GeminiBrowserProfile):
         raise GeminiWebError(f"Khong tim thay cookie db cho profile {profile.profile_name}.")
 
     for cookie_path in cookie_paths:
+        temp_cookie: Path | None = None
+        temp_key: Path | None = None
         try:
-            if profile.name.lower() == "coccoc":
-                class CocCocProfile(browser_cookie3.ChromiumBased):
-                    def __init__(self, c_file, k_file, d_name):
-                        super().__init__(
-                            browser="CocCoc",
-                            cookie_file=str(c_file),
-                            domain_name=d_name,
-                            key_file=str(k_file),
-                            os_crypt_name="coccoc",
-                            osx_key_service="CocCoc Safe Storage",
-                            osx_key_user="CocCoc",
-                        )
+            with tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False) as h1:
+                temp_cookie = Path(h1.name)
+            with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as h2:
+                temp_key = Path(h2.name)
 
-                extracted = CocCocProfile(cookie_path, key_file, "").load()
+            _robust_copy_file(cookie_path, temp_cookie)
+            _robust_copy_file(key_file, temp_key)
+
+            if profile.name.lower() == "coccoc":
+                extracted = None
+                last_exc: Exception | None = None
+                for crypt_name in ("coccoc", "chrome"):
+                    try:
+                        class CocCocProfile(browser_cookie3.ChromiumBased):
+                            def __init__(self, c_file, k_file, d_name):
+                                super().__init__(
+                                    browser="CocCoc",
+                                    cookie_file=str(c_file),
+                                    domain_name=d_name,
+                                    key_file=str(k_file),
+                                    os_crypt_name=crypt_name,
+                                    osx_key_service="CocCoc Safe Storage",
+                                    osx_key_user="CocCoc",
+                                )
+
+                        extracted = CocCocProfile(temp_cookie, temp_key, "").load()
+                        break
+                    except Exception as exc:  # noqa: BLE001
+                        last_exc = exc
+                if extracted is None:
+                    if last_exc is not None:
+                        raise last_exc
+                    continue
             else:
                 loader_name = profile.name.lower()
                 if loader_name == "chrome":
@@ -879,12 +1133,22 @@ def _load_browser_cookiejar(profile: GeminiBrowserProfile):
                     loader = browser_cookie3.edge
                 else:
                     raise GeminiWebError(f"Khong ho tro dong bo cookie tu {profile.name}.")
-                extracted = loader(cookie_file=str(cookie_path), key_file=str(key_file), domain_name="")
+                extracted = loader(cookie_file=str(temp_cookie), key_file=str(temp_key), domain_name="")
 
             for cookie in extracted:
                 combined.set_cookie(cookie)
-        except Exception:
+        except Exception as exc:
+            print(
+                f"[GeminiWebAdapter] Failed to load cookies from {cookie_path}: {exc}. "
+                "This can happen with CocCoc app-bound cookie encryption.",
+                flush=True,
+            )
             continue
+        finally:
+            if temp_cookie:
+                temp_cookie.unlink(missing_ok=True)
+            if temp_key:
+                temp_key.unlink(missing_ok=True)
 
     return combined
 
@@ -914,8 +1178,69 @@ def _build_playwright_cookies(profile: GeminiBrowserProfile, domains: tuple[str,
     return list(deduped.values())
 
 
+def _build_playwright_cookies_from_browser_session(domains: tuple[str, ...]) -> list[dict]:
+    try:
+        from downloader_app.browser_session import browser_session
+        _browser_name, domain_cookies = browser_session.get_domain_cookies(list(domains))
+    except Exception as exc:  # noqa: BLE001
+        print(f"[GeminiWebAdapter] Browser-session cookie fallback failed: {exc}", flush=True)
+        return []
+
+    deduped: dict[tuple[str, str, str], dict] = {}
+    for cookie in domain_cookies:
+        domain = str(cookie.domain or "")
+        name = str(cookie.name or "")
+        value = str(cookie.value or "")
+        if not domain or not name:
+            continue
+
+        payload = {
+            "name": name,
+            "value": value,
+            "domain": domain,
+            "path": str(cookie.path or "/"),
+            "httpOnly": bool(
+                getattr(cookie, "has_nonstandard_attr", lambda *_: False)("HttpOnly")
+            ),
+            "secure": bool(cookie.secure),
+        }
+        if cookie.expires:
+            payload["expires"] = float(cookie.expires)
+
+        deduped[(payload["domain"], payload["path"], payload["name"])] = payload
+
+    return list(deduped.values())
+
+
+def _gem_scan_user_data_dir() -> Path:
+    path = app_path("cache", "story_pipeline", "gem_scan_profile")
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _launch_browser_detached(executable: Path, args: list[str]) -> None:
+    popen_kwargs: dict[str, object] = {}
+    if sys.platform == "win32":
+        popen_kwargs["creationflags"] = (
+            getattr(subprocess, "DETACHED_PROCESS", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        )
+    subprocess.Popen([str(executable), *args], **popen_kwargs)
+
+
 def _sync_browser_cookies_to_context(context, profile: GeminiBrowserProfile) -> int:
+    configured = browser_config_manager.get_feature("story")
+    strict_profile = bool(str(configured.profile_name or "").strip())
+
     cookies = _build_playwright_cookies(profile, GEMINI_AUTH_DOMAINS)
+    if not cookies:
+        cookies = _build_playwright_cookies_from_browser_session(GEMINI_AUTH_DOMAINS)
+        if cookies and strict_profile:
+            print(
+                "[GeminiWebAdapter] Using live browser-session cookies because the configured "
+                "Story profile cookie DB is locked or unreadable.",
+                flush=True,
+            )
     if not cookies:
         return 0
     context.add_cookies(cookies)
@@ -2333,35 +2658,43 @@ class GeminiWebAdapter:
         except ImportError:
             return []
 
-        profile = detect_gemini_browser_profile()
-        runtime_id = f"list-gems-{uuid.uuid4().hex[:8]}"
-        # The minimal generation runtime does not always expose the Gemini "My Gems"
-        # state. Use a broader but still filtered profile snapshot so gem scanning
-        # stays fast even when the source browser profile is very large.
-        runtime_profile = build_gemini_runtime_profile(
-            profile,
-            self._runtime_root,
-            runtime_id,
-            copy_full_profile=True,
-        )
+        configured = browser_config_manager.get_feature("story")
+        strict_profile = bool(str(configured.profile_name or "").strip())
+        base_profile = detect_gemini_browser_profile()
+        if strict_profile:
+            candidate_dirs = [base_profile.profile_dir]
+        else:
+            candidate_dirs = [base_profile.profile_dir] + [
+                profile_dir
+                for profile_dir in _iter_profile_dirs(base_profile.user_data_dir)
+                if profile_dir != base_profile.profile_dir
+            ]
 
-        playwright = None
-        context = None
-        try:
-            playwright = sync_playwright().start()
-            context = playwright.chromium.launch_persistent_context(
-                str(runtime_profile),
-                headless=True,
-                executable_path=str(profile.executable_path),
-                args=[f"--profile-directory={profile.profile_name}"],
+        def _is_login_gate(page) -> bool:
+            return bool(
+                page.evaluate("""() => {
+                    // Check for redirect to accounts.google.com
+                    if (window.location.host.includes('accounts.google.com')) return true;
+                    
+                    // Check for explicit login buttons that are prominent
+                    const loginButtons = Array.from(document.querySelectorAll('a, button')).filter(el => {
+                        const text = (el.innerText || el.textContent || '').toLowerCase();
+                        return (text === 'sign in' || text === 'đăng nhập') && el.offsetParent !== null;
+                    });
+                    if (loginButtons.length > 0 && document.querySelectorAll('gemini-app, .main-content').length === 0) return true;
+                    
+                    // Check for the Absence of the main app container which indicates we are not inside Gemini
+                    const hasApp = !!document.querySelector('gemini-app') || !!document.querySelector('.chat-history') || !!document.querySelector('chat-window');
+                    if (!hasApp && (window.location.pathname.includes('/app') || window.location.pathname.includes('/gems'))) {
+                         // If we are on an app path but don't see the app container, we might be on a landing page or login gate
+                         return true;
+                    }
+                    
+                    return false;
+                }""")
             )
-            _sync_browser_cookies_to_context(context, profile)
-            page = context.pages[0] if context.pages else context.new_page()
-            page.set_default_timeout(30_000)
 
-            page.goto(GEMINI_GEMS_VIEW_URL, wait_until="domcontentloaded", timeout=25_000)
-            page.wait_for_timeout(3_000)
-
+        def _collect_gems_from_page(page) -> list[dict]:
             dismiss_button = page.get_by_role("button", name="Dismiss")
             try:
                 if dismiss_button.count():
@@ -2412,12 +2745,9 @@ class GeminiWebAdapter:
                 state = read_all_gems_state()
                 container_links = list(state.get("links") or [])
                 fallback_links = [l for l in read_fallback_gem_links() if _is_custom_gem_link(l)]
-                
-                # Combine both sources
                 combined_links = container_links + fallback_links
-                
+
                 if combined_links:
-                    # If this is the first time we find something, wait a bit for potential more gems to load
                     if i < 3:
                         page.wait_for_timeout(1500)
                         state = read_all_gems_state()
@@ -2441,13 +2771,72 @@ class GeminiWebAdapter:
                 page.wait_for_timeout(1000)
 
             return _normalize_gem_entries(raw_gems)
-        except Exception as e:
-            print(f"[DEBUG] Failed to list gems: {e}")
-            return []
-        finally:
-            if context: context.close()
-            if playwright: playwright.stop()
-            shutil.rmtree(runtime_profile, ignore_errors=True)
+
+        for candidate_dir in candidate_dirs:
+            profile = GeminiBrowserProfile(
+                name=base_profile.name,
+                app_path=base_profile.app_path,
+                executable_path=base_profile.executable_path,
+                user_data_dir=base_profile.user_data_dir,
+                profile_dir=candidate_dir,
+            )
+            runtime_id = f"list-gems-{candidate_dir.name.replace(' ', '_')}-{uuid.uuid4().hex[:6]}"
+            runtime_profile = build_gemini_runtime_profile(
+                profile,
+                self._runtime_root,
+                runtime_id,
+                copy_full_profile=True,
+            )
+
+            playwright = None
+            context = None
+            try:
+                playwright = sync_playwright().start()
+                context = playwright.chromium.launch_persistent_context(
+                    str(runtime_profile),
+                    headless=True,
+                    executable_path=str(profile.executable_path),
+                    args=[
+                        f"--profile-directory={profile.profile_name}",
+                        "--disable-blink-features=AutomationControlled",
+                        "--no-first-run",
+                        "--no-default-browser-check",
+                        "--disable-sync",
+                        "--disable-features=Translate,OptimizationHints",
+                        "--disable-background-networking",
+                        "--disable-component-update",
+                    ],
+                )
+                _sync_browser_cookies_to_context(context, profile)
+                if strict_profile:
+                    cookie_probe = context.cookies("https://gemini.google.com")
+                    if not cookie_probe:
+                        print(
+                            f"[GeminiWebAdapter] Profile `{profile.profile_name}` has no readable Gemini cookies in strict mode. "
+                            "Please login Gemini in this exact profile and keep only this profile active when refreshing session.",
+                            flush=True,
+                        )
+                page = context.pages[0] if context.pages else context.new_page()
+                page.set_default_timeout(30_000)
+                page.goto(GEMINI_GEMS_VIEW_URL, wait_until="domcontentloaded", timeout=45_000)
+                page.wait_for_timeout(4_000)
+
+                if _is_login_gate(page):
+                    continue
+
+                normalized = _collect_gems_from_page(page)
+                if normalized:
+                    return normalized
+            except Exception as e:
+                print(f"[DEBUG] Failed to list gems for profile {profile.profile_name}: {e}")
+            finally:
+                if context:
+                    context.close()
+                if playwright:
+                    playwright.stop()
+                shutil.rmtree(runtime_profile, ignore_errors=True)
+
+        return []
 
     def list_gems(self) -> list[dict]:
         """
@@ -2918,7 +3307,7 @@ class GeminiWebAdapter:
     def _extract_error_text(self, page) -> str | None:
         try:
             message = page.evaluate(
-                """() => {
+                r"""() => {
                     const nodes = Array.from(document.querySelectorAll('body *'));
                     const isVisible = (el) => {
                         const rect = el.getBoundingClientRect();
