@@ -1,23 +1,27 @@
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
-  AlertCircle,
-  Check,
-  ChevronRight,
-  FolderOpen,
   Loader2,
   Pause,
   Play,
   RefreshCw,
   RotateCcw,
-  Sparkles,
+  Plus,
+  X,
+  FolderOpen,
+  FileVideo,
+  Image as ImageIcon,
+  Video as VideoIcon,
+  MessageSquare,
 } from "lucide-react";
 
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-import { SessionStatusAlert } from "@/components/ui/session-status-alert";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Switch } from "@/components/ui/switch";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -28,12 +32,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { TooltipFieldLabel } from "@/components/ui/tooltip-field-label";
 import {
   TAB_CARD_GAP_CLASS,
-  TAB_VIEWPORT_CARD_HEIGHT_CLASS,
 } from "@/lib/layout";
 import { cn } from "@/lib/utils";
 import {
@@ -45,6 +47,8 @@ import {
   chooseFolder,
   listStoryGems,
   listStoryVideos,
+  cancelStoryVideo,
+  scanStoryFolder,
   openFolder,
   openStoryLogin,
   pauseStoryVideo,
@@ -70,11 +74,10 @@ type StepSelection = {
 type QueueFilter = "all" | "running" | "review" | "queued";
 type GemOption = { name: string; url: string };
 
-const SEGMENTED_TAB_LIST_CLASS = "rounded-xl border border-border/70 bg-muted/20 p-1";
-const SEGMENTED_TAB_TRIGGER_CLASS = "rounded-lg px-3 py-2 text-sm font-medium whitespace-nowrap transition-colors";
+
 
 const STORY_SSE_EVENTS = [
-  "da ket noi",
+  "connected",
   "story.video.created",
   "story.video.updated",
   "story.step.updated",
@@ -185,15 +188,21 @@ function progressPercent(summary: StoryVideoSummary) {
   return Math.round((summary.completedSteps / summary.stepTotal) * 100);
 }
 
-function formatTimestampMs(value: number) {
-  const totalSeconds = Math.max(0, Math.floor(value / 1000));
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
-}
 
 function orderedMarkers(markers: StoryMarker[]) {
   return [...markers].sort((a, b) => a.index - b.index);
+}
+
+function composeMergedPrompt(
+  globalPrompt: string,
+  videoPrompt: string,
+  markerSeed: string,
+  stepPrompt: string,
+) {
+  return [globalPrompt, videoPrompt, markerSeed, stepPrompt]
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 function orderedSteps(steps: StoryStep[]) {
@@ -208,17 +217,6 @@ function findStep(marker: StoryMarker, stepId: string) {
   return marker.steps.find((step) => step.id === stepId) ?? null;
 }
 
-function composeMergedPrompt(
-  globalPrompt: string,
-  videoPrompt: string,
-  markerSeed: string,
-  stepPrompt: string,
-) {
-  return [globalPrompt, videoPrompt, markerSeed, stepPrompt]
-    .map((part) => part.trim())
-    .filter(Boolean)
-    .join("\n\n");
-}
 
 function extractVideoThumbnail(video: StoryVideoDetail) {
   for (const marker of orderedMarkers(video.markers)) {
@@ -338,7 +336,7 @@ function VideoThumb({
 
 export default function StoryStudio() {
   const [bootLoading, setBootLoading] = useState(true);
-  const [bootError, setBootError] = useState("");
+
 
   const [settingsDraft, setSettingsDraft] = useState<StorySettings | null>(null);
   const [globalPrompt, setGlobalPrompt] = useState("");
@@ -358,13 +356,18 @@ export default function StoryStudio() {
   const [savingPrompt, setSavingPrompt] = useState(false);
   const [, setSavingSettings] = useState(false);
   const [choosingOutputFolder, setChoosingOutputFolder] = useState(false);
+  const [sourceFolderPath, setSourceFolderPath] = useState("");
+  const [choosingSourceFolder, setChoosingSourceFolder] = useState(false);
+  const [importingSourceFolder, setImportingSourceFolder] = useState(false);
   const [sessionRefreshing, setSessionRefreshing] = useState(false);
   const [availableGems, setAvailableGems] = useState<GemOption[]>([]);
   const [fetchingGems, setFetchingGems] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [actionBusyKey, setActionBusyKey] = useState<string | null>(null);
   const [queueFilter, setQueueFilter] = useState<QueueFilter>("all");
-  const [rightPanelTab, setRightPanelTab] = useState<"gemini" | "prompt" | "history" | "workers">("prompt");
+  const [leftPanelTab, setLeftPanelTab] = useState<"gemini" | "prompt">("prompt");
+  const [mainPanelTab, setMainPanelTab] = useState<"videos" | "collection" | "history" | "workers">("videos");
+
 
   const [videoThumbs, setVideoThumbs] = useState<Record<string, string>>({});
   const thumbInflightRef = useRef<Set<string>>(new Set());
@@ -456,30 +459,33 @@ export default function StoryStudio() {
 
   const bootstrap = useCallback(async () => {
     setBootLoading(true);
-    setBootError("");
     try {
-      const [payload, gems] = await Promise.all([
-        getStoryBootstrap(),
-        listStoryGems().catch(() => null),
-      ]);
-      const nextSettings = gems ? sanitizeGeminiSettings(payload.settings, gems) : payload.settings;
-      lastSavedSettingsRef.current = JSON.stringify(nextSettings);
+      const payload = await getStoryBootstrap();
+      lastSavedSettingsRef.current = JSON.stringify(payload.settings);
       lastFailedSettingsRef.current = null;
       const initialVideoId = payload.activeVideoId ?? payload.videoSummaries[0]?.id ?? null;
       startTransition(() => {
-        setSettingsDraft(nextSettings);
+        setSettingsDraft(payload.settings);
         setGlobalPrompt(payload.globalPrompt);
         setGlobalPromptDraft(payload.globalPrompt);
         setVideoSummaries(payload.videoSummaries);
         setActiveVideoId(payload.activeVideoId);
         setSessionStatus(payload.sessionStatus);
-        setAvailableGems(gems ?? []);
       });
       if (initialVideoId) {
         await loadVideoDetail(initialVideoId, { silent: true });
       }
+      
+      // Auto-refresh session status if it's currently checking or not ready
+      if (payload.sessionStatus && !payload.sessionStatus.dependencies_ready) {
+        void getStorySessionStatus(true).then((status) => {
+          startTransition(() => {
+            setSessionStatus(status);
+          });
+        }).catch(console.error);
+      }
     } catch (error) {
-      setBootError(getErrorMessage(error));
+      console.error(getErrorMessage(error));
     } finally {
       setBootLoading(false);
     }
@@ -784,6 +790,55 @@ export default function StoryStudio() {
     }
   }, [settingsDraft]);
 
+  const handleImportSourceFolder = useCallback(async (pathOverride?: string) => {
+    const folderPath = (typeof pathOverride === "string" ? pathOverride : sourceFolderPath).trim();
+    if (!folderPath) {
+      toast.error("Hãy chọn thư mục video trước.");
+      return;
+    }
+    setImportingSourceFolder(true);
+    try {
+      const importedVideos = await scanStoryFolder(folderPath);
+      const latestVideo = importedVideos.at(-1) ?? null;
+      startTransition(() => {
+        setVideoSummaries((current) => {
+          const importedMap = new Map(importedVideos.map((v) => [v.id, v]));
+          const preserved = current.filter((v) => !importedMap.has(v.id));
+          return [...importedVideos, ...preserved].sort((a, b) =>
+            b.createdAt.localeCompare(a.createdAt),
+          );
+        });
+      });
+      if (latestVideo) {
+        applyVideoDetail(latestVideo);
+      }
+      await refreshSummaries(true);
+      toast.success(
+        importedVideos.length === 1
+          ? "Đã nhập 1 video từ thư mục."
+          : `Đã nhập ${importedVideos.length} video từ thư mục.`,
+      );
+    } catch (error) {
+      toast.error(getErrorMessage(error));
+    } finally {
+      setImportingSourceFolder(false);
+    }
+  }, [applyVideoDetail, refreshSummaries, sourceFolderPath]);
+
+  const handleChooseSourceFolder = useCallback(async () => {
+    setChoosingSourceFolder(true);
+    try {
+      const { path } = await chooseFolder();
+      if (!path) return;
+      setSourceFolderPath(path);
+      await handleImportSourceFolder(path);
+    } catch (error) {
+      toast.error(getErrorMessage(error));
+    } finally {
+      setChoosingSourceFolder(false);
+    }
+  }, [handleImportSourceFolder]);
+
   const handleSaveGlobalPrompt = useCallback(async () => {
     setSavingPrompt(true);
     try {
@@ -986,764 +1041,756 @@ export default function StoryStudio() {
   }
 
   return (
-    <div className={cn("grid lg:grid-cols-[22rem_minmax(0,1fr)_19rem]", TAB_CARD_GAP_CLASS)}>
-      {bootError ? (
-        <Alert className="lg:col-span-3" variant="destructive">
-          <AlertTitle>Không tải được dữ liệu khởi tạo Story</AlertTitle>
-          <AlertDescription>{bootError}</AlertDescription>
-        </Alert>
-      ) : null}
-
-      <Card className={`border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)] ${TAB_VIEWPORT_CARD_HEIGHT_CLASS} lg:order-3 lg:overflow-hidden`}>
-        <CardContent className="flex min-h-0 flex-1 flex-col gap-4">
+    <div className={cn("grid lg:grid-cols-[22rem_minmax(0,1fr)]", TAB_CARD_GAP_CLASS)}>
+      {/* -------------------- LEFT PANEL: Cài đặt -------------------- */}
+      <Tabs value={leftPanelTab} onValueChange={(v) => setLeftPanelTab(v as any)} className="flex flex-col min-h-0">
+        {/* Header: trạng thái session + nút điều khiển */}
+        <div className="flex items-center gap-2 mb-4 flex-none">
+          {/* Chấm xanh trạng thái */}
           <div
-            role="tablist"
-            aria-label="Lọc hàng đợi video"
-            className={cn("grid grid-cols-4 gap-2", SEGMENTED_TAB_LIST_CLASS)}
-          >
-            {[
-              { value: "all", label: "Tất cả" },
-              { value: "running", label: "Chạy" },
-              { value: "review", label: "Duyệt" },
-              { value: "queued", label: "Chờ" },
-            ].map((item) => (
-              <button
-                key={item.value}
-                role="tab"
-                aria-selected={queueFilter === item.value}
-                type="button"
-                className={cn(
-                  "flex min-h-12 flex-col items-center justify-center gap-1 px-2 text-center",
-                  SEGMENTED_TAB_TRIGGER_CLASS,
-                  queueFilter === item.value
-                    ? "bg-primary text-primary-foreground shadow-sm"
-                    : "text-muted-foreground hover:bg-background/70 hover:text-foreground",
-                )}
-                onClick={() => setQueueFilter(item.value as QueueFilter)}
-              >
-                <span className="text-[11px] leading-none">{item.label}</span>
-                <span className="text-xs font-semibold leading-none tabular-nums">
-                  {queueCounts[item.value as QueueFilter]}
-                </span>
-              </button>
-            ))}
-          </div>
-
-          <Separator />
-
-          <div className="flex-1 overflow-auto">
-            <div className="flex flex-col gap-2">
-              {filteredVideoSummaries.map((video) => {
-                const tone = storyStatusTone(video.status);
-                const selected = selectedVideoId === video.id;
-                const progress = progressPercent(video);
-                return (
-                  <button
-                    key={video.id}
-                    type="button"
-                    onClick={() => void handleSelectVideo(video.id)}
-                    className={cn(
-                      "w-full rounded-xl border px-2 py-2 text-left transition-colors",
-                      selected
-                        ? "border-primary/60 bg-primary/10"
-                        : "border-border/70 bg-card/50 hover:bg-muted/35",
-                    )}
-                  >
-                    <div className="flex items-start gap-2">
-                      <VideoThumb
-                        path={videoThumbs[video.id]}
-                        alt={video.name}
-                        className="size-12 shrink-0"
-                      />
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate text-sm font-medium text-foreground">
-                          {video.name}
-                        </div>
-                        <div className="mt-1 flex items-center gap-2">
-                          <Badge variant={tone.variant} className={tone.className}>
-                            {storyStatusLabel(video.status)}
-                          </Badge>
-                          <span className="text-[11px] text-muted-foreground tabular-nums">
-                            {video.completedSteps}/{video.stepTotal}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-muted">
-                      <div
-                        className="h-full rounded-full bg-primary"
-                        style={{ width: `${progress}%` }}
-                      />
-                    </div>
-                  </button>
-                );
-              })}
-              {filteredVideoSummaries.length === 0 ? (
-                <div className="rounded-lg border border-dashed border-border/70 px-3 py-4 text-xs text-muted-foreground">
-                  Không có video phù hợp với bộ lọc {storyStatusLabel(queueFilter)}.
-                </div>
-              ) : null}
-            </div>
-          </div>
-
-        </CardContent>
-      </Card>
-
-      <Card className={`border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)] ${TAB_VIEWPORT_CARD_HEIGHT_CLASS} lg:order-2 lg:overflow-hidden`}>
-        <CardHeader className="gap-2">
-          <CardTitle className="flex items-center justify-between text-base">
-            {selectedVideo ? (
-              <Badge variant="outline" className={storyStatusTone(selectedVideo.status).className}>
-                {storyStatusLabel(selectedVideo.status)}
-              </Badge>
-            ) : null}
-          </CardTitle>
-          {detailLoading ? (
-            <span title="Đang đồng bộ">
-              <Loader2 className="size-4 animate-spin text-muted-foreground" />
-            </span>
-          ) : null}
-        </CardHeader>
-        <CardContent className="flex min-h-0 flex-1 flex-col gap-4">
-          <div className="flex-1 overflow-auto pr-1">
-            {!selectedVideo ? (
-              <div className="rounded-xl border border-border/70 bg-muted/20 px-4 py-5 text-sm text-muted-foreground">
-                Chưa có video. Hãy import manifest để bắt đầu.
-              </div>
-            ) : (
-              <div className="flex flex-col gap-4">
-                {[
-                  { key: "active", title: "Đang xử lý", markers: markerGroups.active },
-                  { key: "queued", title: "Đang chờ", markers: markerGroups.queued },
-                  { key: "done", title: "Hoàn tất", markers: markerGroups.done },
-                ].map((group) => (
-                  <div key={group.key} className="flex flex-col gap-2">
-                    <div className="text-sm font-medium text-foreground">
-                      {group.title}
-                    </div>
-                    <div className="flex flex-col gap-2">
-                      {group.markers.length === 0 ? (
-                        <div className="rounded-lg border border-dashed border-border/70 px-3 py-2 text-xs text-muted-foreground">
-                          Không có marker
-                        </div>
-                      ) : null}
-                      {group.markers.map((marker) => {
-                        const expanded = expandedMarkerIds.includes(marker.id);
-                        const markerTone = storyStatusTone(marker.status);
-                        return (
-                          <div
-                            key={marker.id}
-                            className={cn(
-                              "rounded-xl border border-border/70 bg-card/40",
-                              marker.id === selectedMarkerId ? "border-primary/60 bg-primary/8" : "",
-                            )}
-                          >
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setSelectedMarkerId(marker.id);
-                                handleToggleMarker(marker.id);
-                              }}
-                              className="flex w-full items-center justify-between px-3 py-2 text-left"
-                            >
-                              <div className="min-w-0">
-                                <div className="truncate text-sm font-medium text-foreground">
-                                  {`M${String(marker.index).padStart(3, "0")} - ${marker.label}`}
-                                </div>
-                                <div className="mt-0.5 text-xs text-muted-foreground tabular-nums">
-                                  {formatTimestampMs(marker.timestampMs)}
-                                </div>
-                              </div>
-                              <Badge variant={markerTone.variant} className={markerTone.className}>
-                                {storyStatusLabel(marker.status)}
-                              </Badge>
-                            </button>
-
-                            {expanded ? (
-                              <div className="border-t border-border/60 px-3 py-3">
-                                <div className="flex overflow-x-auto pb-1">
-                                  <div className="flex min-w-max items-start gap-2">
-                                    {orderedSteps(marker.steps).map((step, index, allSteps) => {
-                                      const latestAttempt = step.attempts.at(-1);
-                                      const inputPath = latestAttempt?.inputImagePath ?? marker.inputFramePath;
-                                      const outputPath = latestAttempt?.previewPath ?? latestAttempt?.normalizedPath ?? null;
-                                      const normalizedReady = Boolean(latestAttempt?.normalizedPath);
-                                      const stepBusyAccept =
-                                        actionBusyKey === selectionKey("accept", marker.id, step.id);
-                                      const stepBusyRegen =
-                                        actionBusyKey === selectionKey("regenerate", marker.id, step.id);
-                                      const stepBusyRefine =
-                                        actionBusyKey === selectionKey("refine", marker.id, step.id);
-                                      const stepSelected =
-                                        selectedMarkerId === marker.id && selectedStepId === step.id;
-                                      return (
-                                        <div key={step.id} className="flex items-start gap-2">
-                                          <div
-                                            className={cn(
-                                              "w-64 rounded-lg border border-border/70 bg-background/55 p-2",
-                                              stepSelected ? "border-primary/60 bg-primary/8" : "",
-                                            )}
-                                          >
-                                            <button
-                                              type="button"
-                                              onClick={() => {
-                                                setSelectedMarkerId(marker.id);
-                                                setSelectedStepId(step.id);
-                                                setSelectedAttemptId(
-                                                  step.selectedAttemptId ?? step.attempts.at(-1)?.id ?? null,
-                                                );
-                                              }}
-                                              className="mb-2 w-full rounded-md px-1 py-1 text-left text-sm font-medium text-foreground hover:bg-muted/40"
-                                            >
-                                              {step.title}
-                                            </button>
-                                            <div className="grid grid-cols-2 gap-2">
-                                              <VideoThumb
-                                                path={inputPath}
-                                                alt={`${step.title} input`}
-                                                className="h-20 w-full"
-                                              />
-                                              <div className="relative">
-                                                <VideoThumb
-                                                  path={outputPath}
-                                                  alt={`${step.title} output`}
-                                                  className="h-20 w-full"
-                                                />
-                                                {normalizedReady ? (
-                                                  <span className="absolute right-1 top-1 inline-flex items-center gap-1 rounded-full border border-emerald-300/40 bg-emerald-500/20 px-2 py-0.5 text-[10px] text-emerald-100">
-                                                    <Check className="size-3" />
-                                                    chuẩn
-                                                  </span>
-                                                ) : null}
-                                              </div>
-                                            </div>
-                                            <div className="mt-2 flex gap-1">
-                                              <Button
-                                                type="button"
-                                                size="sm"
-                                                className="flex-1"
-                                                disabled={step.status !== "review" || stepBusyAccept}
-                                                onClick={() =>
-                                                  void runStepAction(
-                                                    "accept",
-                                                    marker.id,
-                                                    step.id,
-                                                    step.selectedAttemptId ?? step.attempts.at(-1)?.id,
-                                                  )
-                                                }
-                                              >
-                                                {stepBusyAccept ? (
-                                                  <Loader2 className="size-3 animate-spin" />
-                                                ) : (
-                                                  "Duyệt"
-                                                )}
-                                              </Button>
-                                              <Button
-                                                type="button"
-                                                size="sm"
-                                                variant="outline"
-                                                disabled={step.status !== "review" || stepBusyRegen}
-                                                onClick={() => void runStepAction("regenerate", marker.id, step.id)}
-                                              >
-                                                {stepBusyRegen ? (
-                                                  <Loader2 className="size-3 animate-spin" />
-                                                ) : (
-                                                  <RotateCcw className="size-3" />
-                                                )}
-                                              </Button>
-                                              <Button
-                                                type="button"
-                                                size="sm"
-                                                variant="outline"
-                                                disabled={
-                                                  step.status !== "review" ||
-                                                  !step.attempts.at(-1)?.normalizedPath ||
-                                                  stepBusyRefine
-                                                }
-                                                onClick={() =>
-                                                  void runStepAction(
-                                                    "refine",
-                                                    marker.id,
-                                                    step.id,
-                                                    step.attempts.at(-1)?.id,
-                                                  )
-                                                }
-                                              >
-                                                {stepBusyRefine ? (
-                                                  <Loader2 className="size-3 animate-spin" />
-                                                ) : (
-                                                  <Sparkles className="size-3" />
-                                                )}
-                                              </Button>
-                                            </div>
-                                          </div>
-                                          {selectedVideo?.mode === "chain" && index < allSteps.length - 1 ? (
-                                            <div className="pt-24 text-muted-foreground">
-                                              <ChevronRight className="size-4" />
-                                            </div>
-                                          ) : null}
-                                        </div>
-                                      );
-                                    })}
-                                  </div>
-                                </div>
-                              </div>
-                            ) : null}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ))}
-              </div>
+            className={cn(
+              "size-2.5 rounded-full flex-none transition-colors",
+              sessionStatus?.authenticated
+                ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]"
+                : "bg-muted-foreground/30"
             )}
-          </div>
+            title={sessionStatus?.authenticated ? "Đã kết nối Gemini" : "Chưa kết nối"}
+          />
+          {/* Nút đăng nhập */}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-8 text-xs font-semibold flex-1"
+            onClick={() => void handleOpenLogin()}
+          >
+            Đăng nhập
+          </Button>
+          {/* Nút làm mới phiên */}
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            className="size-8 flex-none"
+            onClick={() => void handleRefreshSession()}
+            disabled={sessionRefreshing}
+            title="Làm mới phiên"
+          >
+            {sessionRefreshing ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <RefreshCw className="size-3.5" />
+            )}
+          </Button>
+          {/* Tab Gemini | Prompt */}
+          <TabsList className="h-8 flex-none">
+            <TabsTrigger value="gemini" className="text-xs px-2">Gemini</TabsTrigger>
+            <TabsTrigger value="prompt" className="text-xs px-2">Prompt</TabsTrigger>
+          </TabsList>
+        </div>
 
-        </CardContent>
-      </Card>
-
-      <Card className={`border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)] ${TAB_VIEWPORT_CARD_HEIGHT_CLASS} lg:order-1 lg:overflow-hidden`}>
-        <CardContent className="flex min-h-0 flex-1 flex-col gap-4">
-          <div className={cn("grid grid-cols-4 gap-2", SEGMENTED_TAB_LIST_CLASS)}>
-            {[
-              { value: "gemini" as const, label: "Gemini" },
-              { value: "prompt" as const, label: "Prompt" },
-              { value: "history" as const, label: "Lịch sử" },
-              { value: "workers" as const, label: "Luồng" },
-            ].map((tab) => (
-              <button
-                key={tab.value}
-                type="button"
-                aria-pressed={rightPanelTab === tab.value}
-                onClick={() => setRightPanelTab(tab.value)}
-                className={cn(
-                  SEGMENTED_TAB_TRIGGER_CLASS,
-                  rightPanelTab === tab.value
-                    ? "bg-primary text-primary-foreground shadow-sm"
-                    : "text-muted-foreground hover:bg-background/70 hover:text-foreground",
-                )}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
-
-          <div className="flex-1 overflow-auto pr-1">
-            {rightPanelTab === "gemini" ? (
-              <div className="flex flex-col gap-4">
-                <SessionStatusAlert
-                  authenticated={Boolean(sessionStatus?.authenticated)}
-                  notReadyTitle={"Phiên Gemini chưa sẵn sàng"}
-                  message={sessionStatus?.message ?? "Chưa có thông tin phiên."}
-                />
-
-                <div className="grid grid-cols-2 gap-2">
-                  <Button type="button" variant="outline" onClick={() => void handleOpenLogin()}>
-                    {"Mở đăng nhập Gemini"}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    disabled={sessionRefreshing}
-                    onClick={() => void handleRefreshSession()}
-                  >
-                    {sessionRefreshing ? "Đang làm mới..." : "Làm mới phiên"}
-                  </Button>
-                </div>
-
-                {settingsDraft ? (
-                  <div className="rounded-xl border border-border/70 bg-muted/20 p-3">
-                    <div className="flex flex-col gap-3">
-                      <div className="flex flex-col gap-1">
-                        <TooltipFieldLabel
-                          htmlFor="story-workers"
-                          tooltip="Số video tối đa được xử lý đồng thời trong Story Pipeline."
-                          className="text-sm font-medium text-foreground"
-                        >
-                          Số luồng tối đa
-                        </TooltipFieldLabel>
-                        <Input
-                          id="story-workers"
-                          type="number"
-                          min={1}
-                          max={8}
-                          value={settingsDraft.max_parallel_videos}
-                          onChange={(event) =>
-                            setSettingsDraft((current) =>
-                              current
-                                ? {
-                                    ...current,
-                                    max_parallel_videos: Math.min(
-                                      8,
-                                      Math.max(1, Number(event.target.value) || 1),
-                                    ),
-                                  }
-                                : current,
-                            )
-                          }
-                        />
-                      </div>
-
-                      <div className="flex flex-col gap-1">
-                        <TooltipFieldLabel
-                          tooltip="Chọn Gem mặc định để điều hướng prompt. Có thể bấm nút làm mới để quét lại danh sách."
-                          className="text-sm font-medium text-foreground"
-                        >
-                          Chọn Gem
-                        </TooltipFieldLabel>
-                        <div className="flex gap-2">
-                          <Select
-                            value={currentGemUrl || GEMINI_DEFAULT_URL}
-                            onValueChange={(value) =>
-                              setSettingsDraft((current) =>
-                                current ? { ...current, gemini_base_url: value } : current
-                              )
-                            }
-                          >
-                            <SelectTrigger className="flex-1">
-                              <SelectValue placeholder="Chọn một Gem..." />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectGroup>
-                                <SelectLabel>Gem khả dụng</SelectLabel>
-                                <SelectItem value={GEMINI_DEFAULT_URL}>Gemini mặc định</SelectItem>
-                                {showStoredGemOption ? (
-                                  <SelectItem value={currentGemUrl}>Gem đang lưu</SelectItem>
-                                ) : null}
-                                {availableGems.map((gem) => (
-                                  <SelectItem key={gem.url} value={gem.url}>
-                                    {gem.name}
-                                  </SelectItem>
-                                ))}
-                              </SelectGroup>
-                            </SelectContent>
-                          </Select>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="icon"
-                            disabled={fetchingGems}
-                            onClick={() => void handleFetchGems()}
-                            title="Làm mới danh sách Gem"
-                          >
-                            {fetchingGems ? (
-                              <Loader2 className="size-4 animate-spin" />
-                            ) : (
-                              <RefreshCw className="size-4" />
-                            )}
-                          </Button>
-                        </div>
-                      </div>
-
-                      <div className="flex flex-col gap-1">
-                        <TooltipFieldLabel
-                          tooltip="Chọn nơi lưu toàn bộ output của Story Pipeline."
-                          className="text-sm font-medium text-foreground"
-                        >
-                          Thư mục output
-                        </TooltipFieldLabel>
-                        <div className="flex gap-2">
-                          <Input
-                            value={settingsDraft.output_root}
-                            readOnly
-                            placeholder="Chọn thư mục output..."
-                            className="text-xs"
-                          />
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="icon"
-                            disabled={choosingOutputFolder}
-                            onClick={() => void handleChooseOutputFolder()}
-                            title="Chọn thư mục output"
-                          >
-                            {choosingOutputFolder ? (
-                              <Loader2 className="size-4 animate-spin" />
-                            ) : (
-                              <FolderOpen className="size-4" />
-                            )}
-                          </Button>
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-1 gap-2">
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          disabled={!settingsDraft.output_root.trim()}
-                          onClick={() => void handleOpenOutputFolder()}
-                        >
-                          <FolderOpen className="size-4" />
-                          Mở thư mục output
-                        </Button>
-                      </div>
-
-                    </div>
-                  </div>
-                ) : null}
-              </div>
-            ) : rightPanelTab === "prompt" ? (
-              <div className="flex flex-col gap-4">
-                <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-muted/20 p-3">
-                  <div className="flex items-center gap-2">
-                    <Badge className="bg-primary/85 text-primary-foreground">Global</Badge>
-                    <TooltipFieldLabel
-                      tooltip="Prompt tổng áp dụng cho toàn bộ quy trình Story Pipeline."
-                      className="text-sm font-medium text-foreground"
-                    >
-                      Prompt tổng
-                    </TooltipFieldLabel>
-                  </div>
-                  <Textarea
-                    value={globalPromptDraft}
-                    onChange={(event) => setGlobalPromptDraft(event.target.value)}
-                    className="min-h-20"
-                  />
-                  <Button
-                    type="button"
-                    variant="outline"
-                    disabled={savingPrompt || globalPromptDraft.trim() === globalPrompt.trim()}
-                    onClick={() => void handleSaveGlobalPrompt()}
-                  >
-                    {savingPrompt ? <Loader2 className="size-4 animate-spin" /> : "Lưu prompt tổng"}
-                  </Button>
-                </div>
-
-                <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-muted/20 p-3">
-                  <div className="flex items-center gap-2">
-                    <Badge className="bg-indigo-500/80 text-indigo-50">Video</Badge>
-                    <TooltipFieldLabel
-                      tooltip="Ngữ cảnh prompt riêng của video đang chọn."
-                      className="text-sm font-medium text-foreground"
-                    >
-                      Prompt ngữ cảnh
-                    </TooltipFieldLabel>
-                  </div>
-                  <Textarea value={selectedVideo?.videoPrompt ?? ""} readOnly className="min-h-16" />
-                </div>
-
-                <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-muted/20 p-3">
-                  <div className="flex items-center gap-2">
-                    <Badge className="bg-amber-500/80 text-amber-50">Step</Badge>
-                    <TooltipFieldLabel
-                      tooltip="Gồm seed prompt của marker và modifier prompt của bước hiện tại."
-                      className="text-sm font-medium text-foreground"
-                    >
-                      Seed và modifier
-                    </TooltipFieldLabel>
-                  </div>
-                  <Textarea
-                    value={[
-                      selectedMarker?.seedPrompt ?? "",
-                      selectedStep?.modifierPrompt ?? "",
-                    ]
-                      .filter(Boolean)
-                      .join("\n\n")}
-                    readOnly
-                    className="min-h-20"
-                  />
-                </div>
-
-                <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-muted/20 p-3">
+        <TabsContent value="gemini" className="flex-1 min-h-0 m-0 outline-none flex flex-col gap-4 overflow-y-auto pr-1">
+          {settingsDraft ? (
+            <>
+              {/* Nhập video */}
+              <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-muted/20 p-3">
+                <div className="flex flex-col gap-1">
                   <TooltipFieldLabel
-                    tooltip="Bản ghép cuối cùng của prompt tổng, prompt video và prompt bước."
+                    tooltip="Chọn thư mục chứa video và file XMP để import vào Story Pipeline."
                     className="text-sm font-medium text-foreground"
                   >
-                    Xem trước prompt gộp
+                    Nhập video
                   </TooltipFieldLabel>
-                  <Textarea value={mergedPrompt} readOnly className="min-h-24 text-xs" />
-                </div>
-              </div>
-            ) : rightPanelTab === "history" ? (
-              <div className="flex flex-col gap-4">
-                <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-muted/20 p-3">
-                  <div className="flex items-center gap-2">
-                    <Badge className="bg-sky-500/80 text-sky-50">History</Badge>
-                    <TooltipFieldLabel
-                      tooltip="Danh sách các lần render của bước hiện tại để so sánh và chọn lại."
-                      className="text-sm font-medium text-foreground"
+                  <div className="flex gap-2">
+                    <Input
+                      value={sourceFolderPath}
+                      onChange={(e) => setSourceFolderPath(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          void handleImportSourceFolder();
+                        }
+                      }}
+                      placeholder="Dán đường dẫn hoặc chọn thư mục..."
+                      className="text-xs"
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      disabled={choosingSourceFolder || importingSourceFolder}
+                      onClick={() => void handleChooseSourceFolder()}
+                      title="Chọn thư mục video"
                     >
-                      Lịch sử lần thử
-                    </TooltipFieldLabel>
+                      {choosingSourceFolder || importingSourceFolder ? (
+                        <Loader2 className="size-4 animate-spin" />
+                      ) : (
+                        <FolderOpen className="size-4" />
+                      )}
+                    </Button>
                   </div>
-                  <div className="text-xs text-muted-foreground">
-                    {selectedMarker && selectedStep
-                      ? `${selectedMarker.label} / ${selectedStep.title}`
-                      : "Chọn một bước để xem các lần thử đã tạo."}
-                  </div>
-                  <div className="flex gap-2 overflow-x-auto pb-1">
-                    {selectedStep?.attempts
-                      ?.slice()
-                      .reverse()
-                      .map((attempt) => {
-                        const selected = selectedAttempt?.id === attempt.id;
-                        return (
-                          <button
-                            key={attempt.id}
-                            type="button"
-                            onClick={() => setSelectedAttemptId(attempt.id)}
-                            className={cn(
-                              "w-24 shrink-0 rounded-lg border p-1.5 text-left",
-                              selected
-                                ? "border-primary/70 bg-primary/12"
-                                : "border-border/70 bg-background/50",
-                            )}
-                          >
-                            <VideoThumb
-                              path={attempt.previewPath ?? attempt.normalizedPath}
-                              alt={`Lần thử ${attempt.index}`}
-                              className="h-14 w-full"
-                            />
-                            <div className="mt-1 truncate text-[11px] text-foreground">
-                              {`A${attempt.index} - ${attempt.mode}`}
-                            </div>
-                          </button>
-                        );
-                      })}
-                    {!selectedStep || selectedStep.attempts.length === 0 ? (
-                      <div className="rounded-lg border border-dashed border-border/70 px-3 py-4 text-xs text-muted-foreground">
-                        Chưa có lần thử.
-                      </div>
-                    ) : null}
-                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="mt-1"
+                    disabled={!sourceFolderPath.trim() || importingSourceFolder}
+                    onClick={() => void handleImportSourceFolder()}
+                  >
+                    {importingSourceFolder ? (
+                      <Loader2 className="size-3.5 mr-2 animate-spin" />
+                    ) : (
+                      <Plus className="size-3.5 mr-2" />
+                    )}
+                    Nhập video từ thư mục
+                  </Button>
                 </div>
               </div>
-            ) : (
-              <div className="flex flex-col gap-4">
-                <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-muted/20 p-3">
-                  <div className="flex items-center gap-2">
-                    <Badge className="bg-emerald-500/80 text-emerald-50">Workers</Badge>
-                    <TooltipFieldLabel
-                      tooltip="Hiển thị các video đang chạy trên từng luồng xử lý song song."
-                      className="text-sm font-medium text-foreground"
+
+              {/* Thư mục output và số luồng */}
+              <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-muted/20 p-3">
+                <div className="flex flex-col gap-1">
+                  <TooltipFieldLabel
+                    tooltip="Thư mục xuất file video và hình ảnh."
+                    className="text-sm font-medium text-foreground"
+                  >
+                    Thư mục output
+                  </TooltipFieldLabel>
+                  <div className="flex gap-2">
+                    <Input
+                      value={settingsDraft.output_root}
+                      readOnly
+                      placeholder="Chọn thư mục output..."
+                      className="text-xs"
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      disabled={choosingOutputFolder}
+                      onClick={() => void handleChooseOutputFolder()}
+                      title="Chọn thư mục output"
                     >
-                      Luồng xử lý
-                    </TooltipFieldLabel>
+                      {choosingOutputFolder ? (
+                        <Loader2 className="size-4 animate-spin" />
+                      ) : (
+                        <FolderOpen className="size-4" />
+                      )}
+                    </Button>
                   </div>
-                  <div className="text-xs text-muted-foreground">
-                    Theo dõi nhanh video đang chiếm từng luồng xử lý.
-                  </div>
-                  <div className="flex flex-col gap-2">
-                    {workerSlots.map((video, index) => (
-                      <div
-                        key={`worker-tab-${index + 1}`}
-                        className="flex items-center justify-between rounded-lg border border-border/70 bg-background/60 px-3 py-2 text-sm"
-                      >
-                        <span className="font-medium text-muted-foreground">W{index + 1}</span>
-                        <span className="max-w-[14rem] truncate text-right text-foreground">
-                          {video ? video.name : "Rảnh"}
-                        </span>
-                      </div>
-                    ))}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="mt-1"
+                    disabled={!settingsDraft.output_root.trim()}
+                    onClick={() => void handleOpenOutputFolder()}
+                  >
+                    <FolderOpen className="size-4 mr-2" />
+                    Mở thư mục output
+                  </Button>
+                </div>
+
+                <div className="flex flex-col gap-1 mt-2">
+                  <TooltipFieldLabel
+                    htmlFor="story-workers"
+                    tooltip="Số video tối đa được xử lý đồng thời trong Story Pipeline."
+                    className="text-sm font-medium text-foreground"
+                  >
+                    Số luồng tối đa
+                  </TooltipFieldLabel>
+                  <Input
+                    id="story-workers"
+                    type="number"
+                    min={1}
+                    max={10}
+                    value={settingsDraft.max_parallel_videos}
+                    onChange={(event) =>
+                      setSettingsDraft((current) =>
+                        current
+                          ? {
+                              ...current,
+                              max_parallel_videos: Math.min(
+                                10,
+                                Math.max(1, Number(event.target.value) || 1),
+                              ),
+                            }
+                          : current,
+                      )
+                    }
+                  />
+                </div>
+              </div>
+
+              {/* Mô hình và Headless */}
+              <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-muted/20 p-3">
+                <div className="flex flex-col gap-1">
+                  <TooltipFieldLabel
+                    tooltip="Chọn tốc độ xử lý: Nhanh tối ưu tốc độ, Tư duy cân bằng suy luận, Pro ưu tiên chất lượng."
+                    className="text-sm font-medium text-foreground"
+                  >
+                    Mô hình
+                  </TooltipFieldLabel>
+                  <Select
+                    value={settingsDraft.gemini_model ?? "gemini-2.5-flash"}
+                    onValueChange={(value) =>
+                      setSettingsDraft((current) => current ? { ...current, gemini_model: value } : null)
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Chọn mô hình..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        <SelectLabel>Tốc độ / Chất lượng</SelectLabel>
+                        <SelectItem value="gemini-2.5-flash">⚡ Nhanh — Gemini 2.5 Flash</SelectItem>
+                        <SelectItem value="gemini-2.5-flash-thinking">🧠 Tư duy — Gemini 2.5 Flash Thinking</SelectItem>
+                        <SelectItem value="gemini-2.5-pro">🎯 Pro — Gemini 2.5 Pro</SelectItem>
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="flex items-center justify-between gap-4 mt-1">
+                  <TooltipFieldLabel
+                    tooltip="Chạy trình duyệt ẩn danh không hiển thị UI."
+                    className="text-sm font-medium text-foreground mb-0"
+                  >
+                    Chạy nền (headless)
+                  </TooltipFieldLabel>
+                  <Switch
+                    checked={settingsDraft.gemini_headless ?? true}
+                    onCheckedChange={(checked) =>
+                      setSettingsDraft((current) => current ? { ...current, gemini_headless: checked } : null)
+                    }
+                  />
+                </div>
+              </div>
+
+              {/* Gem (base URL) */}
+              <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-muted/20 p-3">
+                <div className="flex flex-col gap-1">
+                  <TooltipFieldLabel
+                    tooltip="Chọn Gem để điều hướng prompt. Bấm làm mới để quét lại danh sách từ trình duyệt."
+                    className="text-sm font-medium text-foreground"
+                  >
+                    Gem
+                  </TooltipFieldLabel>
+                  <div className="flex gap-2">
+                    <Select
+                      value={currentGemUrl || GEMINI_DEFAULT_URL}
+                      onValueChange={(value) =>
+                        setSettingsDraft((current) =>
+                          current ? { ...current, gemini_base_url: value } : current
+                        )
+                      }
+                    >
+                      <SelectTrigger className="flex-1">
+                        <SelectValue placeholder="Chọn một Gem..." />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          <SelectLabel>Gem khả dụng</SelectLabel>
+                          <SelectItem value={GEMINI_DEFAULT_URL}>Gemini mặc định</SelectItem>
+                          {showStoredGemOption ? (
+                            <SelectItem value={currentGemUrl}>Gem đang lưu</SelectItem>
+                          ) : null}
+                          {availableGems.map((gem) => (
+                            <SelectItem key={gem.url} value={gem.url}>
+                              {gem.name}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      disabled={fetchingGems}
+                      onClick={() => void handleFetchGems()}
+                      title="Làm mới danh sách Gem"
+                    >
+                      {fetchingGems ? (
+                        <Loader2 className="size-4 animate-spin" />
+                      ) : (
+                        <RefreshCw className="size-4" />
+                      )}
+                    </Button>
                   </div>
                 </div>
               </div>
-            )}
+            </>
+          ) : null}
+        </TabsContent>
+
+        <TabsContent value="prompt" className="flex-1 min-h-0 m-0 outline-none flex flex-col gap-4 overflow-y-auto pr-1">
+          <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-muted/20 p-3">
+            <div className="flex items-center gap-2">
+              <Badge className="bg-primary/85 text-primary-foreground">Global</Badge>
+              <TooltipFieldLabel
+                tooltip="Prompt tổng áp dụng cho toàn bộ quy trình Story Pipeline."
+                className="text-sm font-medium text-foreground"
+              >
+                Prompt tổng
+              </TooltipFieldLabel>
+            </div>
+            <Textarea
+              value={globalPromptDraft}
+              onChange={(event) => setGlobalPromptDraft(event.target.value)}
+              className="min-h-20"
+            />
+            <Button
+              type="button"
+              variant="outline"
+              disabled={savingPrompt || globalPromptDraft.trim() === globalPrompt.trim()}
+              onClick={() => void handleSaveGlobalPrompt()}
+            >
+              {savingPrompt ? <Loader2 className="size-4 animate-spin" /> : "Lưu prompt tổng"}
+            </Button>
           </div>
 
-          <Separator />
-          <div className="flex flex-col gap-2">
-            <div className="grid grid-cols-2 gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                disabled={!selectedVideoId || actionBusyKey === "video:run"}
-                onClick={() => void handleRunVideo()}
-              >
-                {actionBusyKey === "video:run" ? (
-                  <Loader2 className="size-4 animate-spin" />
-                ) : (
-                  <Play className="size-4" />
-                )}
-                Chạy
+          {selectedVideo ? (
+            <>
+              <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-muted/20 p-3">
+                <div className="flex items-center gap-2">
+                  <Badge className="bg-indigo-500/80 text-indigo-50">Video</Badge>
+                  <TooltipFieldLabel
+                    tooltip="Ngữ cảnh prompt riêng của video đang chọn."
+                    className="text-sm font-medium text-foreground"
+                  >
+                    Prompt ngữ cảnh
+                  </TooltipFieldLabel>
+                </div>
+                <Textarea value={selectedVideo?.videoPrompt ?? ""} readOnly className="min-h-16" />
+              </div>
+
+              <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-muted/20 p-3">
+                <div className="flex items-center gap-2">
+                  <Badge className="bg-amber-500/80 text-amber-50">Step</Badge>
+                  <TooltipFieldLabel
+                    tooltip="Gồm seed prompt của marker và modifier prompt của bước hiện tại."
+                    className="text-sm font-medium text-foreground"
+                  >
+                    Seed và modifier
+                  </TooltipFieldLabel>
+                </div>
+                <Textarea
+                  value={[
+                    selectedMarker?.seedPrompt ?? "",
+                    selectedStep?.modifierPrompt ?? "",
+                  ]
+                    .filter(Boolean)
+                    .join("\n\n")}
+                  readOnly
+                  className="min-h-20"
+                />
+              </div>
+
+              <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-muted/20 p-3">
+                <TooltipFieldLabel
+                  tooltip="Bản ghép cuối cùng của prompt tổng, prompt video và prompt bước."
+                  className="text-sm font-medium text-foreground"
+                >
+                  Xem trước prompt gộp
+                </TooltipFieldLabel>
+                <Textarea value={mergedPrompt} readOnly className="min-h-24 text-xs" />
+              </div>
+            </>
+          ) : (
+            <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm border border-dashed rounded-lg py-8">
+              Chọn video để xem chi tiết prompt
+            </div>
+          )}
+        </TabsContent>
+      </Tabs>
+
+      {/* -------------------- MAIN PANEL -------------------- */}
+      <Tabs value={mainPanelTab} onValueChange={(v) => setMainPanelTab(v as any)} className="flex flex-col min-h-0 lg:col-span-1">
+        <div className="flex items-center justify-between mb-4 flex-none">
+          <h2 className="text-lg font-semibold tracking-tight text-foreground">Không gian làm việc</h2>
+          <TabsList className="h-9">
+            <TabsTrigger value="videos" className="text-xs">Tiến trình</TabsTrigger>
+            <TabsTrigger value="collection" className="text-xs">Bộ sưu tập</TabsTrigger>
+            <TabsTrigger value="history" className="text-xs">Lịch sử</TabsTrigger>
+            <TabsTrigger value="workers" className="text-xs">Luồng</TabsTrigger>
+          </TabsList>
+        </div>
+
+        <TabsContent value="videos" className="flex-1 min-h-0 m-0 outline-none flex flex-col">
+          <div className="flex-none flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <Badge variant="secondary" className="bg-muted/50 text-muted-foreground font-medium">
+                {videoSummaries.length} video
+              </Badge>
+              <Select value={queueFilter} onValueChange={(val) => setQueueFilter(val as any)}>
+                <SelectTrigger className="h-7 text-xs px-2 w-[110px] bg-background border-border/60">
+                  <SelectValue placeholder="Lọc" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Tất cả ({queueCounts.all})</SelectItem>
+                  <SelectItem value="running">Đang chạy ({queueCounts.running})</SelectItem>
+                  <SelectItem value="review">Chờ duyệt ({queueCounts.review})</SelectItem>
+                  <SelectItem value="queued">Hàng đợi ({queueCounts.queued})</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" size="sm" className="h-8 gap-1.5" onClick={() => void refreshSummaries(false)}>
+                <RefreshCw className="size-3.5" />
+                Làm mới
               </Button>
-              <Button
-                type="button"
-                variant="outline"
-                disabled={!selectedVideoId || actionBusyKey === "video:pause"}
-                onClick={() => void handlePauseVideo()}
-              >
-                {actionBusyKey === "video:pause" ? (
-                  <Loader2 className="size-4 animate-spin" />
-                ) : (
-                  <Pause className="size-4" />
-                )}
-                Tạm dừng
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                disabled={
-                  !selectedMarkerId ||
-                  !selectedStepId ||
-                  selectedStep?.status !== "review" ||
-                  actionBusyKey === selectionKey("regenerate", selectedMarkerId, selectedStepId)
-                }
-                onClick={() => {
-                  if (!selectedMarkerId || !selectedStepId) {
-                    return;
-                  }
-                  void runStepAction("regenerate", selectedMarkerId, selectedStepId);
-                }}
-              >
-                <RotateCcw className="size-4" />
-                Tạo lại
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                disabled={
-                  !selectedMarkerId ||
-                  !selectedStepId ||
-                  !selectedAttempt?.id ||
-                  selectedStep?.status !== "review" ||
-                  actionBusyKey === selectionKey("refine", selectedMarkerId, selectedStepId)
-                }
-                onClick={() => {
-                  if (!selectedMarkerId || !selectedStepId || !selectedAttempt?.id) {
-                    return;
-                  }
-                  void runStepAction("refine", selectedMarkerId, selectedStepId, selectedAttempt.id);
-                }}
-              >
-                <Sparkles className="size-4" />
-                Tinh chỉnh
+              <Button size="sm" className="h-8 gap-1.5" onClick={() => toast.info("Tính năng tạo video mới đang phát triển")}>
+                <Plus className="size-3.5" />
+                Video mới
               </Button>
             </div>
-
-            <Button
-              type="button"
-              className="w-full"
-              disabled={!selectedMarkerId || !selectedStepId || selectedStep?.status !== "review" || actionBusyKey === "step:accept-next"}
-              onClick={() => void handleAcceptAndNext()}
-            >
-              {actionBusyKey === "step:accept-next" ? (
-                <Loader2 className="size-4 animate-spin" />
-              ) : (
-                <Check className="size-4" />
-              )}
-              Duyệt và tiếp
-            </Button>
-
-            <Button
-              type="button"
-              variant="ghost"
-              className="w-full"
-              disabled={!selectedMarkerId || !selectedStepId}
-              onClick={() => {
-                if (!selectedMarkerId || !selectedStepId) {
-                  return;
-                }
-                void runStepAction("skip", selectedMarkerId, selectedStepId);
-              }}
-            >
-              <AlertCircle className="size-4" />
-              Bỏ qua bước
-            </Button>
           </div>
-        </CardContent>
-      </Card>
+
+          <div className="grid grid-cols-[16rem_1fr] gap-4 flex-1 min-h-0 overflow-hidden">
+            {/* Sidebar danh sách video */}
+            <Card className="border-border/70 shadow-sm flex flex-col overflow-hidden">
+              <CardContent className="p-0 flex-1 overflow-y-auto">
+                <div className="flex flex-col p-2 gap-1.5">
+                  {filteredVideoSummaries.map((summary) => {
+                    const isSelected = selectedVideoId === summary.id;
+                    const tone = storyStatusTone(summary.status);
+                    return (
+                      <button
+                        key={summary.id}
+                        type="button"
+                        onClick={() => void handleSelectVideo(summary.id)}
+                        className={cn(
+                          "flex flex-col gap-1.5 rounded-lg px-3 py-2.5 text-left text-sm transition-all border",
+                          isSelected
+                            ? "bg-accent/80 text-accent-foreground border-accent-foreground/20 shadow-sm"
+                            : "bg-transparent text-muted-foreground border-transparent hover:bg-muted/50 hover:text-foreground",
+                        )}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <span className="font-medium truncate flex-1 leading-snug">
+                            {summary.id}
+                          </span>
+                          <Badge variant={tone.variant} className={cn("text-[10px] uppercase font-bold px-1.5 py-0 h-4 leading-none tracking-wider", tone.className)}>
+                            {storyStatusLabel(summary.status)}
+                          </Badge>
+                        </div>
+                        <div className="flex items-center gap-2 w-full">
+                          <div className="h-1 flex-1 bg-muted rounded-full overflow-hidden">
+                            <div
+                              className={cn("h-full rounded-full transition-all duration-500", isSelected ? "bg-primary" : "bg-primary/40")}
+                              style={{ width: `${progressPercent(summary)}%` }}
+                            />
+                          </div>
+                          <span className="text-xs font-mono opacity-60 flex-none">{progressPercent(summary)}%</span>
+                        </div>
+                      </button>
+                    );
+                  })}
+                  {filteredVideoSummaries.length === 0 && (
+                    <div className="py-8 text-center text-sm text-muted-foreground">
+                      Không có video nào.
+                    </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Chi tiết Video được chọn */}
+            <Card className="border-border/70 shadow-sm flex flex-col overflow-hidden">
+              {detailLoading ? (
+                <div className="flex-1 flex items-center justify-center text-muted-foreground">
+                  <Loader2 className="size-5 animate-spin mr-2" />
+                  Đang tải...
+                </div>
+              ) : selectedVideo ? (
+                <>
+                  <CardHeader className="py-4 px-5 border-b border-border/50 bg-muted/10 flex-row items-center justify-between">
+                    <div>
+                      <CardTitle className="text-base truncate flex items-center gap-2">
+                        <FileVideo className="size-4 text-muted-foreground" />
+                        {selectedVideo.id}
+                      </CardTitle>
+                      <CardDescription className="mt-1 flex items-center gap-3 text-xs">
+                        <span className="flex items-center gap-1.5"><ImageIcon className="size-3" /> {selectedVideo.completedSteps}/{selectedVideo.stepTotal}</span>
+                        <span className="opacity-50">·</span>
+                        <span className="flex items-center gap-1.5"><MessageSquare className="size-3" /> {selectedVideo.reviewSteps} cần duyệt</span>
+                      </CardDescription>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Button variant="outline" size="sm" onClick={handlePauseVideo} disabled={selectedVideo.status === "paused"}>
+                        <Pause className="size-3.5 mr-1.5" />
+                        Tạm dừng
+                      </Button>
+                      <Button variant="outline" size="sm" onClick={handleRunVideo} disabled={selectedVideo.status === "running"}>
+                        <Play className="size-3.5 mr-1.5" />
+                        Tiếp tục
+                      </Button>
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <Button variant="outline" size="sm" className="text-destructive hover:bg-destructive/10 border-destructive/20">
+                            <X className="size-3.5 mr-1.5" />
+                            Dừng
+                          </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <div className="flex flex-col gap-2 mb-4">
+                            <AlertDialogTitle>Dừng tiến trình?</AlertDialogTitle>
+                            <AlertDialogDescription>
+                              Video đang được xử lý sẽ bị dừng lại. Bạn có thể tiếp tục sau.
+                            </AlertDialogDescription>
+                          </div>
+                          <div className="flex justify-end gap-2 mt-4">
+                            <AlertDialogCancel>Huỷ</AlertDialogCancel>
+                            <AlertDialogAction onClick={async () => {
+                               try {
+                                 const detail = await cancelStoryVideo(selectedVideoId!);
+                                 applyVideoDetail(detail);
+                                 toast.success("Đã dừng video");
+                               } catch(e) {
+                                 toast.error(getErrorMessage(e));
+                               }
+                            }}>Xác nhận dừng</AlertDialogAction>
+                          </div>
+                        </AlertDialogContent>
+                      </AlertDialog>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="flex-1 overflow-hidden p-0 flex">
+                    {/* Danh sách Markers */}
+                    <ScrollArea className="w-[300px] border-r border-border/50 bg-muted/5">
+                      <div className="p-3 space-y-4">
+                        {markerGroups.active.length > 0 && (
+                          <div className="space-y-1.5">
+                            <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-1">Đang xử lý / Lỗi</h4>
+                            {markerGroups.active.map((marker) => (
+                              <MarkerItem
+                                key={marker.id}
+                                marker={marker}
+                                isExpanded={expandedMarkerIds.includes(marker.id)}
+                                isSelected={selectedMarkerId === marker.id}
+                                selectedStepId={selectedStepId}
+                                onToggle={() => handleToggleMarker(marker.id)}
+                                onSelectStep={(stepId) => {
+                                  setSelectedMarkerId(marker.id);
+                                  setSelectedStepId(stepId);
+                                }}
+                              />
+                            ))}
+                          </div>
+                        )}
+                        {markerGroups.queued.length > 0 && (
+                          <div className="space-y-1.5">
+                            <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-1">Hàng đợi ({markerGroups.queued.length})</h4>
+                            {markerGroups.queued.slice(0, 5).map((marker) => (
+                              <MarkerItem
+                                key={marker.id}
+                                marker={marker}
+                                isExpanded={expandedMarkerIds.includes(marker.id)}
+                                isSelected={selectedMarkerId === marker.id}
+                                selectedStepId={selectedStepId}
+                                onToggle={() => handleToggleMarker(marker.id)}
+                                onSelectStep={(stepId) => {
+                                  setSelectedMarkerId(marker.id);
+                                  setSelectedStepId(stepId);
+                                }}
+                              />
+                            ))}
+                          </div>
+                        )}
+                        {markerGroups.done.length > 0 && (
+                          <div className="space-y-1.5">
+                            <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-1">Đã xong ({markerGroups.done.length})</h4>
+                            {markerGroups.done.slice(-5).map((marker) => (
+                              <MarkerItem
+                                key={marker.id}
+                                marker={marker}
+                                isExpanded={expandedMarkerIds.includes(marker.id)}
+                                isSelected={selectedMarkerId === marker.id}
+                                selectedStepId={selectedStepId}
+                                onToggle={() => handleToggleMarker(marker.id)}
+                                onSelectStep={(stepId) => {
+                                  setSelectedMarkerId(marker.id);
+                                  setSelectedStepId(stepId);
+                                }}
+                              />
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </ScrollArea>
+                    
+                    {/* Chi tiết Step được chọn */}
+                    <div className="flex-1 flex flex-col bg-background min-w-0">
+                      {selectedStep ? (
+                        <div className="flex-1 flex flex-col p-5 gap-5 overflow-y-auto">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <Badge variant="outline" className="text-xs font-mono">STEP {selectedStep.index}</Badge>
+                              <Badge variant={storyStatusTone(selectedStep.status).variant} className={storyStatusTone(selectedStep.status).className}>
+                                {storyStatusLabel(selectedStep.status)}
+                              </Badge>
+                            </div>
+                            <div className="text-sm font-medium">Attempt: {selectedAttempt?.index ?? "-"}</div>
+                          </div>
+                          
+                          <div className="grid grid-cols-2 gap-4">
+                            <div className="space-y-2">
+                              <label className="text-xs font-semibold text-muted-foreground">Input / Source</label>
+                              <div className="aspect-video bg-muted/30 rounded-lg border flex items-center justify-center overflow-hidden">
+                                {selectedMarker?.inputFramePath ? (
+                                  <VideoThumb path={selectedMarker.inputFramePath} alt="Input" className="w-full h-full rounded-none border-0" />
+                                ) : (
+                                  <ImageIcon className="size-8 text-muted-foreground/30" />
+                                )}
+                              </div>
+                            </div>
+                            <div className="space-y-2">
+                              <label className="text-xs font-semibold text-muted-foreground">Output / Preview</label>
+                              <div className="aspect-video bg-muted/30 rounded-lg border flex items-center justify-center overflow-hidden relative group">
+                                {selectedAttempt?.previewPath || selectedAttempt?.normalizedPath ? (
+                                  <>
+                                    <VideoThumb path={selectedAttempt.previewPath || selectedAttempt.normalizedPath} alt="Preview" className="w-full h-full rounded-none border-0" />
+                                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                      <Button size="icon" variant="secondary" className="rounded-full size-10">
+                                        <Play className="size-4" />
+                                      </Button>
+                                    </div>
+                                  </>
+                                ) : (
+                                  <VideoIcon className="size-8 text-muted-foreground/30" />
+                                )}
+                              </div>
+                            </div>
+                          </div>
+
+                          {selectedStep.status === "review" && (
+                            <div className="p-4 rounded-lg bg-amber-500/10 border border-amber-500/20 flex flex-col gap-3">
+                              <p className="text-sm font-medium text-amber-600/90 dark:text-amber-400">
+                                Output cần được duyệt trước khi tiếp tục.
+                              </p>
+                              <div className="flex gap-2">
+                                <Button size="sm" onClick={handleAcceptAndNext} disabled={Boolean(actionBusyKey)}>
+                                  <Play className="size-3.5 mr-1.5" /> Duyệt & Tiếp tục
+                                </Button>
+                                <Button size="sm" variant="outline" onClick={() => runStepAction("regenerate", selectedMarker!.id, selectedStep.id)} disabled={Boolean(actionBusyKey)}>
+                                  <RotateCcw className="size-3.5 mr-1.5" /> Tạo lại
+                                </Button>
+                              </div>
+                            </div>
+                          )}
+
+                          <div className="space-y-2">
+                            <label className="text-xs font-semibold text-muted-foreground">Log / Output</label>
+                            <div className="bg-muted/40 rounded-lg p-3 border font-mono text-xs text-muted-foreground max-h-[150px] overflow-y-auto whitespace-pre-wrap">
+                              {selectedAttempt?.error || "Không có lỗi hoặc log."}
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm">
+                          Chọn một step bên trái để xem chi tiết
+                        </div>
+                      )}
+                    </div>
+                  </CardContent>
+                </>
+              ) : (
+                <div className="flex-1 flex items-center justify-center text-muted-foreground">
+                  Chọn một video bên trái để xem chi tiết
+                </div>
+              )}
+            </Card>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="collection" className="flex-1 min-h-0 m-0 outline-none">
+           <div className="flex items-center justify-center h-full text-muted-foreground border border-border/70 rounded-lg bg-card shadow-sm">
+             Tính năng Bộ sưu tập đang được cập nhật
+           </div>
+        </TabsContent>
+
+        <TabsContent value="history" className="flex-1 min-h-0 m-0 outline-none">
+           <div className="flex items-center justify-center h-full text-muted-foreground border border-border/70 rounded-lg bg-card shadow-sm">
+             Tính năng Lịch sử đang được cập nhật
+           </div>
+        </TabsContent>
+
+        <TabsContent value="workers" className="flex-1 min-h-0 m-0 outline-none flex flex-col">
+           <div className="grid grid-cols-2 gap-4">
+             {workerSlots.map((video, idx) => (
+               <Card key={idx} className="border-border/70">
+                 <CardHeader className="py-3 px-4 bg-muted/30 border-b border-border/50">
+                   <CardTitle className="text-sm flex items-center gap-2">
+                     <div className="size-2 rounded-full bg-emerald-500 animate-pulse" />
+                     Worker {idx + 1}
+                   </CardTitle>
+                 </CardHeader>
+                 <CardContent className="p-4">
+                   {video ? (
+                     <div className="text-sm">
+                       <span className="font-medium text-foreground">{video.id}</span>
+                       <div className="text-muted-foreground mt-1">Đang chạy... ({progressPercent(video)}%)</div>
+                     </div>
+                   ) : (
+                     <div className="text-sm text-muted-foreground italic">Đang chờ việc...</div>
+                   )}
+                 </CardContent>
+               </Card>
+             ))}
+           </div>
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}
+
+function MarkerItem({ marker, isExpanded, isSelected, selectedStepId, onToggle, onSelectStep }: {
+  marker: StoryMarker;
+  isExpanded: boolean;
+  isSelected: boolean;
+  selectedStepId: string | null;
+  onToggle: () => void;
+  onSelectStep: (stepId: string) => void;
+}) {
+  const tone = storyStatusTone(marker.status);
+  return (
+    <div className="flex flex-col border border-border/50 rounded-md overflow-hidden bg-background">
+      <button
+        type="button"
+        className={cn("flex items-center justify-between p-2 text-left hover:bg-muted/30 transition-colors", isSelected && "bg-muted/50")}
+        onClick={onToggle}
+      >
+        <div className="flex items-center gap-2 overflow-hidden">
+          <Badge variant="outline" className="text-[10px] px-1 h-4 flex-none">{marker.index}</Badge>
+          <span className="text-xs font-medium truncate">{marker.id}</span>
+        </div>
+        <Badge variant={tone.variant} className={cn("text-[9px] px-1 h-3.5 flex-none", tone.className)}>
+          {storyStatusLabel(marker.status)}
+        </Badge>
+      </button>
+      {isExpanded && marker.steps.length > 0 && (
+        <div className="flex flex-col gap-[1px] bg-border/40 border-t border-border/50">
+          {orderedSteps(marker.steps).map((step) => {
+            const stepTone = storyStatusTone(step.status);
+            const isStepSelected = isSelected && selectedStepId === step.id;
+            return (
+              <button
+                key={step.id}
+                type="button"
+                className={cn(
+                  "flex items-center justify-between px-3 py-1.5 text-left text-[11px] bg-background hover:bg-muted/40 transition-colors",
+                  isStepSelected && "bg-accent/10 text-accent-foreground font-medium"
+                )}
+                onClick={() => onSelectStep(step.id)}
+              >
+                <span>Step {step.index}</span>
+                <span className={cn("text-[10px]", stepTone.className || "text-muted-foreground")}>{storyStatusLabel(step.status)}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

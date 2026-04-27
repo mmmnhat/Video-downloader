@@ -24,6 +24,34 @@ export type Settings = {
   cookies_map: Record<string, string>;
 };
 
+export type FeatureBrowserConfig = {
+  browser_path: string;
+  profile_name: string;
+};
+
+export type BrowserConfigPayload = {
+  downloader: FeatureBrowserConfig;
+  tts: FeatureBrowserConfig;
+  story: FeatureBrowserConfig;
+};
+
+export type BrowserProfileOption = {
+  name: string;
+  display_name: string;
+  path: string;
+  cookie_count: number;
+};
+
+export type BrowserProfileProbeResult = {
+  browserName: string;
+  executablePath: string;
+  userDataDir: string;
+  profiles: BrowserProfileOption[];
+  selectedProfileName: string;
+  selectedProfileDir: string;
+  message: string;
+};
+
 export type BatchStats = {
   queued: number;
   downloading: number;
@@ -220,6 +248,32 @@ export type TtsBootstrapPayload = {
   activeBatchId: string | null;
 };
 
+export type CacheGroup = {
+  id: string;
+  feature: "story" | "tts" | string;
+  title: string;
+  description: string;
+  path: string;
+  openPath: string;
+  exists: boolean;
+  sizeBytes: number;
+  fileCount: number;
+  dirCount: number;
+  active: boolean;
+  canDelete: boolean;
+};
+
+export type CacheBootstrapPayload = {
+  rootPath: string;
+  groups: CacheGroup[];
+  summary: {
+    groupCount: number;
+    existingGroupCount: number;
+    totalSizeBytes: number;
+    totalFileCount: number;
+  };
+};
+
 export type TtsVoice = {
   voiceId: string;
   name: string;
@@ -283,6 +337,8 @@ export type StoryMarker = {
   seedPrompt: string;
   status: string;
   steps: StoryStep[];
+  parentMarkerId: string | null;
+  variantIndex: number;
 };
 
 export type StoryVideoSummary = {
@@ -405,6 +461,19 @@ export async function cancelBatch(batchId: string) {
   });
 }
 
+export async function pauseBatch(batchId: string) {
+  return requestJson<Record<string, unknown>>(`/api/batches/${batchId}/pause`, {
+    method: "POST",
+  });
+}
+
+export async function resumeBatch(batchId: string) {
+  return requestJson<Record<string, unknown>>(`/api/batches/${batchId}/resume`, {
+    method: "POST",
+  });
+}
+
+
 export async function retryFailed(batchId: string) {
   return requestJson<Record<string, unknown>>(`/api/batches/${batchId}/retry-failed`, {
     method: "POST",
@@ -419,8 +488,42 @@ export async function updateSettings(settings: Settings) {
   });
 }
 
+export async function getBrowserConfig() {
+  return requestJson<BrowserConfigPayload>("/api/browser-config");
+}
+
+export async function updateBrowserConfig(payload: BrowserConfigPayload) {
+  return requestJson<BrowserConfigPayload>("/api/browser-config", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function probeBrowserProfiles(
+  feature: "downloader" | "tts" | "story",
+  browserPath: string,
+  profileName = "",
+) {
+  return requestJson<BrowserProfileProbeResult>("/api/browser-config/profiles", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      feature,
+      browser_path: browserPath,
+      profile_name: profileName,
+    }),
+  });
+}
+
 export async function chooseFolder() {
   return requestJson<{ path: string }>("/api/system/choose-folder", {
+    method: "POST",
+  });
+}
+
+export async function chooseBrowser() {
+  return requestJson<{ path: string }>("/api/system/choose-browser", {
     method: "POST",
   });
 }
@@ -564,6 +667,18 @@ export async function cancelTtsBatch(batchId: string) {
   });
 }
 
+export async function pauseTtsBatch(batchId: string) {
+  return requestJson<TtsBatchDetail>(`/api/tts/batches/${batchId}/pause`, {
+    method: "POST",
+  });
+}
+
+export async function resumeTtsBatch(batchId: string) {
+  return requestJson<TtsBatchDetail>(`/api/tts/batches/${batchId}/resume`, {
+    method: "POST",
+  });
+}
+
 export async function pickTtsTake(batchId: string, itemId: string, takeId: string) {
   return requestJson<TtsBatchDetail>(`/api/tts/batches/${batchId}/pick`, {
     method: "POST",
@@ -596,6 +711,23 @@ export async function exportTtsBatch(batchId: string, itemIds: string[], destina
       }),
     },
   );
+}
+
+export async function getCacheBootstrap() {
+  return requestJson<CacheBootstrapPayload>("/api/cache/bootstrap");
+}
+
+export async function clearCache(cacheId: string) {
+  return requestJson<{
+    cleared: string[];
+    skipped: Array<{ id: string; reason: string }>;
+    removedBytes: number;
+    bootstrap: CacheBootstrapPayload;
+  }>("/api/cache/clear", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ cache_id: cacheId }),
+  });
 }
 
 export async function getStoryBootstrap() {
@@ -679,12 +811,47 @@ export async function pauseStoryVideo(videoId: string) {
   });
 }
 
+export async function cancelStoryVideo(videoId: string) {
+  return requestJson<StoryVideoDetail>(`/api/story/videos/${videoId}/cancel`, {
+    method: "POST",
+  });
+}
+
+export async function exportStoryVideo(
+  videoId: string,
+  destinationDir: string,
+  stepIds?: string[]
+) {
+  return requestJson<{
+    exportedCount: number;
+    skippedCount: number;
+    destinationDir: string;
+    files: string[];
+  }>(`/api/story/videos/${videoId}/export`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ destination_dir: destinationDir, step_ids: stepIds }),
+  });
+}
+
 export async function applyStoryAction(payload: {
-  action: "run" | "pause" | "accept" | "regenerate" | "refine" | "skip";
+  action:
+    | "run"
+    | "pause"
+    | "cancel"
+    | "accept"
+    | "regenerate"
+    | "refine"
+    | "skip"
+    | "retry"
+    | "update_video_prompt"
+    | "update_marker_seed"
+    | "update_step_prompt";
   videoId: string;
   markerId?: string;
   stepId?: string;
   attemptId?: string;
+  prompt?: string;
 }) {
   return requestJson<StoryVideoDetail>("/api/story/actions", {
     method: "POST",
@@ -695,6 +862,7 @@ export async function applyStoryAction(payload: {
       marker_id: payload.markerId,
       step_id: payload.stepId,
       attempt_id: payload.attemptId,
+      prompt: payload.prompt,
     }),
   });
 }

@@ -18,19 +18,28 @@ from queue import Empty, Queue
 from urllib.parse import urlparse
 from urllib.request import HTTPCookieProcessor, Request, build_opener
 
+from downloader_app.browser_config import (
+    BrowserConfigError,
+    browser_config_manager,
+    detect_profiles_for_browser_path,
+    launch_browser_with_profile,
+)
 from downloader_app.browser_session import browser_session
 from downloader_app.jobs import build_sheet_sequence_stem, sanitize_file_stem, utc_now
-from downloader_app.runtime import app_path
+from downloader_app.runtime import app_path, cache_path
 from downloader_app.sheets import filter_entries_by_sequence_range
 from downloader_app.tts_sheet import SheetTextEntry, scan_text_sheet
 
 
 ELEVENLABS_LOGIN_URL = "https://elevenlabs.io/app/sign-in?redirect=%2Fapp%2Fspeech-synthesis%2Ftext-to-speech"
 ELEVENLABS_TTS_URL = "https://elevenlabs.io/app/speech-synthesis/text-to-speech"
-TTS_BATCH_ROOT = app_path("tts_batches")
+TTS_BATCH_ROOT = cache_path("tts", "batches")
 TTS_STATE_FILE = app_path("tts_state.json")
-TTS_PROFILE_ROOT = app_path("tts_profiles")
+TTS_CACHE_ROOT = cache_path("tts")
+TTS_PROFILE_ROOT = TTS_CACHE_ROOT / "profiles"
 TTS_RUNTIME_ROOT = TTS_PROFILE_ROOT / "runtime"
+TTS_SCRATCH_ROOT = TTS_CACHE_ROOT / "scratch"
+TTS_VOICE_CACHE_FILE = TTS_CACHE_ROOT / "voices_cache.json"
 FINAL_BATCH_STATUSES = {"completed", "completed_with_errors", "cancelled"}
 ACTIVE_BATCH_STATUSES = {"queued", "running", "cancelling"}
 TTS_AUTH_DOMAIN = "elevenlabs.io"
@@ -557,6 +566,24 @@ def _choose_profile_dir(user_data_dir: Path, domain: str = TTS_AUTH_DOMAIN) -> P
 
 
 def detect_tts_browser_profile() -> TtsBrowserProfile:
+    configured = browser_config_manager.get_feature("tts")
+    if configured.browser_path:
+        try:
+            detected = detect_profiles_for_browser_path(
+                feature="tts",
+                browser_path=configured.browser_path,
+                profile_name=configured.profile_name,
+            )
+        except BrowserConfigError as exc:
+            raise ElevenLabsError(str(exc)) from exc
+        return TtsBrowserProfile(
+            name=str(detected["browserName"]),
+            app_path=Path(str(detected.get("appPath") or Path(str(detected["executablePath"])).parent)),
+            executable_path=Path(str(detected["executablePath"])),
+            user_data_dir=Path(str(detected["userDataDir"])),
+            profile_dir=Path(str(detected["selectedProfileDir"])),
+        )
+
     ranked_candidates: list[tuple[int, TtsBrowserProfile]] = []
     fallback_profiles: list[TtsBrowserProfile] = []
 
@@ -593,6 +620,24 @@ def detect_tts_browser_profile() -> TtsBrowserProfile:
 
 
 def detect_tts_login_browser() -> TtsBrowserCandidate:
+    configured = browser_config_manager.get_feature("tts")
+    if configured.browser_path:
+        try:
+            detected = detect_profiles_for_browser_path(
+                feature="tts",
+                browser_path=configured.browser_path,
+                profile_name=configured.profile_name,
+            )
+        except BrowserConfigError as exc:
+            raise ElevenLabsError(str(exc)) from exc
+        executable_path = Path(str(detected["executablePath"]))
+        return TtsBrowserCandidate(
+            name=str(detected["browserName"]),
+            app_path=Path(str(detected.get("appPath") or executable_path.parent)),
+            executable_path=executable_path,
+            user_data_dir=Path(str(detected["userDataDir"])),
+        )
+
     candidates = _available_browser_candidates()
     if candidates:
         return candidates[0]
@@ -770,11 +815,6 @@ class ElevenLabsAutomation:
                     f"Chưa tìm thấy phiên ElevenLabs trong {self.browser_name}. Hãy đăng nhập ElevenLabs trong {self.browser_name} rồi bấm Làm mới phiên."
                 )
             
-            if hasattr(self, "_cached_custom_voices") and self._cached_custom_voices:
-                if not wait_for_workspace:
-                    print("[TTS] ElevenLabs cached voices ready, bypassing workspace wait.", flush=True)
-                    return
-
             if self._has_ready_tts_workspace():
                 if wait_for_workspace:
                     self._wait_for_idle_ui(timeout_ms=1000)
@@ -1410,13 +1450,6 @@ class ElevenLabsAutomation:
             except Exception as exc:
                 print(f"[TTS] API call with xi-api-key failed: {exc}", flush=True)
 
-        if intercepted_fallback and not open_picker:
-            print(
-                f"[TTS] Using {len(intercepted_fallback)} intercepted My Voice entries from page load.",
-                flush=True,
-            )
-            return intercepted_fallback
-
         # --- Strategy 2: Navigate page, intercept network, extract xi-api-key + voice data ---
         try:
             import json as _json
@@ -1726,23 +1759,13 @@ class ElevenLabsSessionManager:
         opened = False
 
         try:
-            profile = detect_tts_browser_profile()
-            browser_name = profile.name
-            profile_dir = str(profile.profile_dir)
-
-            launch_command = [str(profile.executable_path)]
-            if profile.profile_name:
-                launch_command.append(f"--profile-directory={profile.profile_name}")
-            launch_command.append(ELEVENLABS_LOGIN_URL)
-
-            popen_kwargs: dict[str, object] = {}
-            if sys.platform == "win32":
-                popen_kwargs["creationflags"] = (
-                    getattr(subprocess, "DETACHED_PROCESS", 0)
-                    | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-                )
-            subprocess.Popen(launch_command, **popen_kwargs)
-            opened = True
+            opened_payload = launch_browser_with_profile(
+                feature="tts",
+                target_url=ELEVENLABS_LOGIN_URL,
+            )
+            opened = bool(opened_payload.get("opened", True))
+            browser_name = str(opened_payload.get("browser", browser_name))
+            profile_dir = str(opened_payload.get("profileDir", profile_dir))
         except Exception as exc:
             warning_message = _format_exception_message(exc)
             try:
@@ -1781,6 +1804,7 @@ class TtsManager:
         self._lock = threading.RLock()
         self._batches: dict[str, TtsBatch] = {}
         self._cancel_events: dict[str, threading.Event] = {}
+        self._pause_events: dict[str, threading.Event] = {}
         self._session = ElevenLabsSessionManager()
         self._state_file = state_file or TTS_STATE_FILE
         self._voice_cache: list[dict] | None = None
@@ -1800,21 +1824,26 @@ class TtsManager:
     def list_available_voices(self, refresh: bool = False) -> list[dict]:
         import time
         import json
-        
-        cache_file = TTS_BATCH_ROOT.parent / "voices_cache.json"
-        
-        if refresh:
+
+        cache_file = TTS_VOICE_CACHE_FILE
+
+        def _clear_voice_cache() -> None:
             self._voice_cache = None
             self._voice_cache_time = 0
-        elif self._voice_cache:
+
+        if refresh:
+            _clear_voice_cache()
+        elif not cache_file.exists():
+            # Manual cache deletion should force the next request to rescan voices.
+            _clear_voice_cache()
+        elif self._voice_cache is not None:
             cache_has_ownership_flag = any(
                 isinstance(voice, dict) and ("isOwner" in voice or "is_owner" in voice)
                 for voice in self._voice_cache
             )
             if not cache_has_ownership_flag:
-                self._voice_cache = None
-                self._voice_cache_time = 0
-        
+                _clear_voice_cache()
+
         # Load from memory or disk cache
         if self._voice_cache is None and cache_file.exists():
             try:
@@ -1826,8 +1855,7 @@ class TtsManager:
                         for voice in cached_voices
                     )
                     if cached_voices and not cache_has_ownership_flag:
-                        self._voice_cache = None
-                        self._voice_cache_time = 0
+                        _clear_voice_cache()
                     else:
                         self._voice_cache = [
                             voice
@@ -1838,19 +1866,24 @@ class TtsManager:
             except Exception:
                 pass
 
-        if not refresh and self._voice_cache is not None and (time.time() - self._voice_cache_time) < 3600:
+        if not refresh and self._voice_cache and (time.time() - self._voice_cache_time) < 3600:
             return self._voice_cache
+
+        if not refresh:
+            # If not explicitly refreshing, return what we have (cached or empty)
+            # to avoid triggering an expensive browser scan automatically.
+            return self._voice_cache or []
 
         voices: list[dict] | None = None
         last_error: Exception | None = None
         for headless_mode in (True, False):
             try:
                 with ElevenLabsAutomation(
-                    TTS_BATCH_ROOT / "_scratch",
+                    TTS_SCRATCH_ROOT,
                     headless=headless_mode,
                 ) as automation:
-                    automation.ensure_authenticated(wait_for_workspace=False)
-                    fetched = automation._fetch_available_voices(open_picker=False)
+                    automation.ensure_authenticated(wait_for_workspace=True)
+                    fetched = automation._fetch_available_voices(open_picker=True)
                 voices = fetched
                 if fetched:
                     break
@@ -1909,10 +1942,18 @@ class TtsManager:
             if isinstance(is_owner, bool):
                 payload["isOwner"] = is_owner
             results.append(payload)
-        
+
+        if not results:
+            _clear_voice_cache()
+            try:
+                cache_file.unlink(missing_ok=True)
+            except Exception:
+                pass
+            return results
+
         self._voice_cache = results
         self._voice_cache_time = time.time()
-        
+
         # Persist to disk
         try:
             cache_file.write_text(
@@ -1921,7 +1962,7 @@ class TtsManager:
             )
         except Exception:
             pass
-            
+
         return results
 
     def open_login(self) -> dict:
@@ -2075,6 +2116,37 @@ class TtsManager:
                 return active[0].id
             return None
 
+    def pause_batch(self, batch_id: str) -> dict:
+        with self._lock:
+            batch = self._require_batch(batch_id)
+            if batch.status in FINAL_BATCH_STATUSES or batch.status == "paused":
+                return self._serialize_batch_detail(batch)
+            batch.status = "paused"
+            batch.last_updated_at = utc_now()
+            self._pause_events.setdefault(batch_id, threading.Event()).set()
+            # Also set cancel_event to aggressively kill active TTS runs.
+            self._cancel_events.setdefault(batch_id, threading.Event()).set()
+            self._persist_state_locked()
+            return self._serialize_batch_detail(batch)
+
+    def resume_batch(self, batch_id: str) -> dict:
+        with self._lock:
+            batch = self._require_batch(batch_id)
+            if batch.status != "paused":
+                return self._serialize_batch_detail(batch)
+            
+            self._cancel_events[batch_id] = threading.Event()
+            self._pause_events[batch_id] = threading.Event()
+            
+            batch.status = "queued" if self._batch_has_pending_items(batch) else "completed"
+            batch.last_updated_at = utc_now()
+            self._persist_state_locked()
+
+        if self._batch_has_pending_items(batch):
+            self._start_batch_worker(batch_id)
+            
+        return self.get_batch_detail(batch_id) or {}
+
     def cancel_batch(self, batch_id: str) -> dict:
         with self._lock:
             batch = self._require_batch(batch_id)
@@ -2114,6 +2186,7 @@ class TtsManager:
 
             cancel_event = threading.Event()
             self._cancel_events[batch_id] = cancel_event
+            self._pause_events[batch_id] = threading.Event()
             batch.status = "queued"
             batch.last_updated_at = now
             self._persist_state_locked()
@@ -2191,6 +2264,7 @@ class TtsManager:
             batch.status = "running"
             batch.last_updated_at = utc_now()
             cancel_event = self._cancel_events.setdefault(batch_id, threading.Event())
+            pause_event = self._pause_events.setdefault(batch_id, threading.Event())
             self._persist_state_locked()
 
         item_queue: Queue[str] = Queue()
@@ -2213,7 +2287,7 @@ class TtsManager:
             for worker_index in range(worker_count):
                 worker = threading.Thread(
                     target=self._process_batch_worker,
-                    args=(batch_id, worker_index + 1, item_queue, cancel_event, auth_errors, fatal_errors),
+                    args=(batch_id, worker_index + 1, item_queue, cancel_event, pause_event, auth_errors, fatal_errors),
                     daemon=True,
                 )
                 workers.append(worker)
@@ -2297,6 +2371,7 @@ class TtsManager:
         worker_index: int,
         item_queue: Queue[str],
         cancel_event: threading.Event,
+        pause_event: threading.Event,
         auth_errors: list[str],
         fatal_errors: list[str],
     ) -> None:
@@ -2334,7 +2409,7 @@ class TtsManager:
                             pass
                         time.sleep(0.8)
 
-                while not cancel_event.is_set():
+                while not cancel_event.is_set() and not pause_event.is_set():
                     if auth_errors or fatal_errors:
                         return
                     try:
@@ -2343,7 +2418,7 @@ class TtsManager:
                         return
 
                     try:
-                        self._process_batch_item(batch_id, item_id, automation, cancel_event)
+                        self._process_batch_item(batch_id, item_id, automation, cancel_event, pause_event)
                     finally:
                         item_queue.task_done()
         except ElevenLabsAuthError as exc:
@@ -2362,6 +2437,7 @@ class TtsManager:
         item_id: str,
         automation: ElevenLabsAutomation,
         cancel_event: threading.Event,
+        pause_event: threading.Event,
     ) -> None:
         with self._lock:
             batch = self._require_batch(batch_id)
@@ -2390,6 +2466,16 @@ class TtsManager:
         ]
 
         for group_start in range(0, len(pending_take_ids), outputs_per_generation):
+            if pause_event.is_set():
+                with self._lock:
+                    item.status = "queued"
+                    item.error = "Tạm dừng."
+                    for t in item.takes:
+                        if t.status in {"queued", "running"}:
+                            t.status = "queued"
+                    self._persist_state_locked()
+                break
+                
             if cancel_event.is_set():
                 break
             take_group_ids = pending_take_ids[group_start : group_start + outputs_per_generation]

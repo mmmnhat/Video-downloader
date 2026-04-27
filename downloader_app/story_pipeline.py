@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 import threading
@@ -19,12 +20,13 @@ from downloader_app.gemini_web_adapter import (
     open_gemini_login_window,
 )
 from downloader_app.jobs import sanitize_file_stem
-from downloader_app.runtime import app_path
+from downloader_app.runtime import app_path, cache_path
 from downloader_app.xmp_scanner import xmp_scanner
 
 
 STORY_STATE_FILE = app_path("story_pipeline_state.json")
-STORY_OUTPUT_ROOT = app_path("story_pipeline")
+STORY_EXPORT_ROOT = app_path("story_exports")
+STORY_CACHE_ROOT = cache_path("story_pipeline")
 MAX_EVENT_BACKLOG = 500
 SESSION_STATUS_TTL_SECONDS = 45.0
 
@@ -33,8 +35,25 @@ def utc_now() -> str:
     return datetime.utcnow().isoformat(timespec="seconds") + "Z"
 
 
-def story_debug_root(output_root: str | Path) -> Path:
-    return Path(output_root).expanduser() / "_debug" / "gemini_selector"
+def story_debug_root() -> Path:
+    return STORY_CACHE_ROOT / "debug" / "gemini_selector"
+
+
+def story_generated_root() -> Path:
+    return STORY_CACHE_ROOT / "generated"
+
+
+def story_gemini_runtime_root() -> Path:
+    return STORY_CACHE_ROOT / "gemini_runtime"
+
+
+def story_accepted_root() -> Path:
+    """Thu muc persistent de luu anh da duoc user accept. Khong bi xoa khi restart."""
+    return STORY_CACHE_ROOT / "accepted"
+
+
+def story_gem_scan_runtime_root() -> Path:
+    return STORY_CACHE_ROOT / "gem_scan_runtime"
 
 
 class StoryPipelineError(RuntimeError):
@@ -60,6 +79,7 @@ class StoryAttempt:
     status: str
     prompt: str
     input_image_path: str
+    thread_url: str | None = None
     preview_path: str | None = None
     normalized_path: str | None = None
     error: str | None = None
@@ -77,6 +97,8 @@ class StoryStep:
     selected_attempt_id: str | None = None
     pending_mode: str = "auto"
     pending_input_path: str | None = None
+    pending_thread_url: str | None = None
+    pending_prompt_override: str | None = None
     attempts: list[StoryAttempt] = field(default_factory=list)
 
 
@@ -90,6 +112,8 @@ class StoryMarker:
     seed_prompt: str
     status: str = "queued"
     steps: list[StoryStep] = field(default_factory=list)
+    parent_marker_id: str | None = None  # None = goc, co gia tri = variant refine
+    variant_index: int = 0              # 0 = goc, 1/2/3... = bien the refine
 
 
 @dataclass
@@ -110,6 +134,7 @@ class StoryVideo:
 class GenerationResult:
     preview_path: str
     normalized_path: str
+    thread_url: str | None = None
 
 
 class StoryGenerationAdapter(Protocol):
@@ -145,10 +170,12 @@ class LocalPreviewAdapter:
 
         preview_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(input_image_path, preview_path)
-        shutil.copy2(preview_path, normalized_path)
+        if preview_path.resolve() != normalized_path.resolve():
+            shutil.copy2(preview_path, normalized_path)
         return GenerationResult(
             preview_path=str(preview_path),
-            normalized_path=str(normalized_path),
+            normalized_path=str(normalized_path if preview_path.resolve() != normalized_path.resolve() else preview_path),
+            thread_url=None,
         )
 
 
@@ -166,33 +193,59 @@ class StoryPipelineManager:
         self._event_sequence = 0
         self._event_backlog: list[dict] = []
 
-        self._settings = StorySettings(output_root=str(output_root or STORY_OUTPUT_ROOT))
+        self._settings = StorySettings(output_root=str(output_root or STORY_EXPORT_ROOT))
         self._global_prompt = ""
         self._videos: dict[str, StoryVideo] = {}
         self._active_video_id: str | None = None
         self._injected_adapter = adapter
         self._adapter: StoryGenerationAdapter = LocalPreviewAdapter()
-        self._queue: Queue[str] = Queue()
-        self._queued_video_ids: set[str] = set()
+        self._queue: Queue[tuple] = Queue()          # (video_id, marker_id) hoặc ("__shutdown__", "")
+        self._queued_marker_ids: set[str] = set()   # marker_id đang trong queue
         self._shutdown_event = threading.Event()
         self._workers: list[threading.Thread] = []
         self._session_status_cache: dict | None = None
         self._session_status_cache_time: float = 0.0
 
+        # Reset thu muc hinh anh generated (cache) khi restart app de tranh rác
+        shutil.rmtree(story_generated_root(), ignore_errors=True)
+
         self._load_state()
+        self._reset_runtime_state_for_restart()
         self._refresh_adapter_locked()
         self._start_workers()
 
     def get_bootstrap(self) -> dict:
-        session_status = self.get_session_status(refresh=False)
         with self._lock:
             return {
                 "settings": asdict(self._settings),
                 "globalPrompt": self._global_prompt,
                 "videoSummaries": [self._serialize_video_summary(video) for video in self._videos.values()],
                 "activeVideoId": self._active_video_id,
-                "sessionStatus": session_status,
+                "sessionStatus": self._bootstrap_session_status_locked(),
             }
+
+    def _bootstrap_session_status_locked(self) -> dict:
+        if self._session_status_cache is not None:
+            return dict(self._session_status_cache)
+
+        if self._settings.generation_backend != "gemini_web":
+            return {
+                "backend": self._settings.generation_backend,
+                "dependencies_ready": True,
+                "authenticated": True,
+                "browser": None,
+                "profile_dir": "",
+                "message": "Dang dung local preview adapter (khong can Gemini session).",
+            }
+
+        return {
+            "backend": self._settings.generation_backend,
+            "dependencies_ready": False,
+            "authenticated": False,
+            "browser": None,
+            "profile_dir": "",
+            "message": "Dang kiem tra phien Gemini...",
+        }
 
     def list_video_summaries(self, *, status: str | None = None, limit: int | None = None) -> list[dict]:
         with self._lock:
@@ -214,12 +267,62 @@ class StoryPipelineManager:
                 return None
             return self._serialize_video_detail(video)
 
+    def export_selected(self, video_id: str, destination_dir: str, step_ids: list[str] | None = None) -> dict:
+        target_dir = Path(destination_dir).expanduser()
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        with self._lock:
+            video = self._require_video(video_id)
+            selected_attempts: list[tuple[StoryMarker, StoryStep, StoryAttempt]] = []
+            for marker in marker_order(video.markers):
+                for step in step_order(marker.steps):
+                    if not step.selected_attempt_id:
+                        continue
+                    if step_ids is not None and step.id not in step_ids:
+                        continue
+                    attempt = next(
+                        (candidate for candidate in step.attempts if candidate.id == step.selected_attempt_id),
+                        None,
+                    )
+                    if attempt is None:
+                        continue
+                    selected_attempts.append((marker, step, attempt))
+
+        if not selected_attempts:
+            raise StoryPipelineError("Video nay chua co anh nao duoc chon de export.")
+
+        exported: list[str] = []
+        skipped = 0
+        for marker, step, attempt in selected_attempts:
+            source_path_raw = attempt.normalized_path or attempt.preview_path
+            if not source_path_raw:
+                skipped += 1
+                continue
+            source_path = Path(source_path_raw)
+            if not source_path.exists():
+                skipped += 1
+                continue
+            suffix = source_path.suffix or ".jpg"
+            preferred_name = f"{self._build_attempt_stem(video, marker, step, attempt.index)}{suffix}"
+            copied = _copy_with_unique_name(source_path, target_dir, preferred_name)
+            exported.append(str(copied))
+
+        if not exported:
+            raise StoryPipelineError("Khong tim thay file anh hop le de export.")
+
+        return {
+            "exportedCount": len(exported),
+            "skippedCount": skipped,
+            "destinationDir": str(target_dir),
+            "files": exported,
+        }
+
     def get_session_status(self, refresh: bool = False) -> dict:
         with self._lock:
             backend = self._settings.generation_backend
             headless = self._settings.gemini_headless
             base_url = self._settings.gemini_base_url
-            runtime_root = Path(self._settings.output_root) / "_gemini_runtime"
+            runtime_root = story_gemini_runtime_root()
             cache = self._session_status_cache
             cache_time = self._session_status_cache_time
 
@@ -268,7 +371,17 @@ class StoryPipelineManager:
     def list_available_gems(self) -> list[dict]:
         if self._settings.generation_backend != "gemini_web":
             return []
-        return self._adapter.list_gems()
+        runtime_root = story_gem_scan_runtime_root()
+        runtime_root.mkdir(parents=True, exist_ok=True)
+        adapter = GeminiWebAdapter(
+            runtime_root=runtime_root,
+            headless=True,
+            base_url=self._settings.gemini_base_url,
+            response_timeout_ms=self._settings.gemini_response_timeout_ms,
+            model_name=self._settings.gemini_model,
+            debug_selector=False,
+        )
+        return adapter.list_gems()
 
     def update_settings(self, payload: dict) -> dict:
         with self._lock:
@@ -390,16 +503,33 @@ class StoryPipelineManager:
             self._active_video_id = video.id
             self._persist_state_locked()
             self._record_event_locked("story.video.updated", {"videoId": video.id})
-            self._enqueue_video_locked(video.id)
+            self._enqueue_pending_markers_locked()
             return self._serialize_video_detail(video)
 
     def pause_video(self, video_id: str) -> dict:
         with self._lock:
             video = self._require_video(video_id)
-            if video.status == "completed":
+            if video.status in {"completed", "cancelled"}:
                 return self._serialize_video_detail(video)
             video.status = "paused"
             video.last_updated_at = utc_now()
+            self._persist_state_locked()
+            self._record_event_locked("story.video.updated", {"videoId": video.id})
+            return self._serialize_video_detail(video)
+
+    def cancel_video(self, video_id: str) -> dict:
+        with self._lock:
+            video = self._require_video(video_id)
+            if video.status in {"completed", "cancelled"}:
+                return self._serialize_video_detail(video)
+            video.status = "cancelled"
+            video.last_updated_at = utc_now()
+            for marker in video.markers:
+                if marker.status in {"queued", "running"}:
+                    marker.status = "cancelled"
+                for step in marker.steps:
+                    if step.status in {"queued", "running"}:
+                        step.status = "cancelled"
             self._persist_state_locked()
             self._record_event_locked("story.video.updated", {"videoId": video.id})
             return self._serialize_video_detail(video)
@@ -410,6 +540,7 @@ class StoryPipelineManager:
         marker_id = str(payload.get("marker_id", "")).strip()
         step_id = str(payload.get("step_id", "")).strip()
         attempt_id = str(payload.get("attempt_id", "")).strip() or None
+        prompt_override = str(payload.get("prompt", "")).strip() or None
 
         if not action:
             raise StoryPipelineError("action la bat buoc")
@@ -420,12 +551,49 @@ class StoryPipelineManager:
             return self.run_video(video_id)
         if action == "pause":
             return self.pause_video(video_id)
-
-        if not marker_id or not step_id:
-            raise StoryPipelineError("marker_id va step_id la bat buoc")
+        if action == "cancel":
+            return self.cancel_video(video_id)
 
         with self._lock:
             video = self._require_video(video_id)
+
+            if action == "update_video_prompt":
+                video.video_prompt = prompt_override or ""
+                video.last_updated_at = utc_now()
+                self._persist_state_locked()
+                self._record_event_locked("story.video.updated", {"videoId": video.id})
+                return self._serialize_video_detail(video)
+
+            if action == "update_marker_seed":
+                if not marker_id:
+                    raise StoryPipelineError("marker_id la bat buoc")
+                marker = self._require_marker(video, marker_id)
+                marker.seed_prompt = prompt_override or ""
+                video.last_updated_at = utc_now()
+                self._persist_state_locked()
+                self._record_event_locked(
+                    "story.step.updated",
+                    {"videoId": video.id, "markerId": marker.id},
+                )
+                return self._serialize_video_detail(video)
+
+            if action == "update_step_prompt":
+                if not marker_id or not step_id:
+                    raise StoryPipelineError("marker_id va step_id la bat buoc")
+                marker = self._require_marker(video, marker_id)
+                step = self._require_step(marker, step_id)
+                step.modifier_prompt = prompt_override or ""
+                video.last_updated_at = utc_now()
+                self._persist_state_locked()
+                self._record_event_locked(
+                    "story.step.updated",
+                    {"videoId": video.id, "markerId": marker.id, "stepId": step.id},
+                )
+                return self._serialize_video_detail(video)
+
+            if not marker_id or not step_id:
+                raise StoryPipelineError("marker_id va step_id la bat buoc")
+
             marker = self._require_marker(video, marker_id)
             step = self._require_step(marker, step_id)
 
@@ -433,14 +601,15 @@ class StoryPipelineManager:
                 self._accept_step_attempt_locked(video, marker, step, attempt_id=attempt_id)
                 self._persist_state_locked()
                 self._record_event_locked("story.step.updated", {"videoId": video.id, "markerId": marker.id, "stepId": step.id})
-                if video.status == "queued":
-                    self._enqueue_video_locked(video.id)
+                self._enqueue_pending_markers_locked()
                 return self._serialize_video_detail(video)
 
             if action == "skip":
                 step.status = "skipped"
                 step.pending_mode = "auto"
                 step.pending_input_path = None
+                step.pending_thread_url = None
+                step.pending_prompt_override = None
                 step.selected_attempt_id = None
                 video.status = "queued"
                 video.last_updated_at = utc_now()
@@ -448,14 +617,55 @@ class StoryPipelineManager:
                 self._refresh_video_status_locked(video)
                 self._persist_state_locked()
                 self._record_event_locked("story.step.updated", {"videoId": video.id, "markerId": marker.id, "stepId": step.id})
-                self._enqueue_video_locked(video.id)
+                self._enqueue_pending_markers_locked()
                 return self._serialize_video_detail(video)
 
-            if action in {"regenerate", "refine"}:
-                self._queue_regeneration_locked(video, marker, step, action=action, attempt_id=attempt_id)
+            if action == "retry":
+                # Cho phep retry tu ca 'failed' lan 'review' (khong hai long ket qua)
+                if step.status not in {"failed", "review"}:
+                    raise StoryPipelineError("Chi co the retry step o trang thai failed hoac review")
+                latest_attempt = step.attempts[-1] if step.attempts else None
+                step.status = "queued"
+                step.pending_mode = "retry"
+                # Retry dung input goc (input_image_path) de tao lai tu dau, khong dung normalized output
+                step.pending_input_path = latest_attempt.input_image_path if latest_attempt else None
+                # Retry van su dung cung thread URL de tiep tuc trong cung cuoc hoi thoai
+                step.pending_thread_url = latest_attempt.thread_url if latest_attempt else None
+                step.pending_prompt_override = None
+                marker.status = "queued"
+                video.status = "queued"
+                video.error = None
+                video.last_updated_at = utc_now()
                 self._persist_state_locked()
                 self._record_event_locked("story.step.updated", {"videoId": video.id, "markerId": marker.id, "stepId": step.id})
-                self._enqueue_video_locked(video.id)
+                self._enqueue_pending_markers_locked()
+                return self._serialize_video_detail(video)
+
+            if action == "regenerate":
+                self._queue_regeneration_locked(
+                    video,
+                    marker,
+                    step,
+                    action=action,
+                    attempt_id=attempt_id,
+                    prompt_override=prompt_override,
+                )
+                self._persist_state_locked()
+                self._record_event_locked("story.step.updated", {"videoId": video.id, "markerId": marker.id, "stepId": step.id})
+                self._enqueue_pending_markers_locked()
+                return self._serialize_video_detail(video)
+
+            if action == "refine":
+                self._queue_refine_as_variant_locked(
+                    video,
+                    marker,
+                    step,
+                    attempt_id=attempt_id,
+                    prompt_override=prompt_override,
+                )
+                self._persist_state_locked()
+                self._record_event_locked("story.video.updated", {"videoId": video.id})
+                self._enqueue_pending_markers_locked()
                 return self._serialize_video_detail(video)
 
             raise StoryPipelineError(f"Action khong ho tro: {action}")
@@ -476,14 +686,14 @@ class StoryPipelineManager:
     def close(self) -> None:
         self._shutdown_event.set()
         for _ in self._workers:
-            self._queue.put("__shutdown__")
+            self._queue.put(("__shutdown__", ""))
         for worker in self._workers:
             worker.join(timeout=0.5)
 
     def _restart_workers(self) -> None:
         self._shutdown_event.set()
         for _ in self._workers:
-            self._queue.put("__shutdown__")
+            self._queue.put(("__shutdown__", ""))
         for worker in self._workers:
             worker.join(timeout=0.5)
         self._shutdown_event.clear()
@@ -498,41 +708,56 @@ class StoryPipelineManager:
             self._workers.append(worker)
 
     def _worker_loop(self) -> None:
+        # Đảm bảo thread worker không có asyncio loop running để tránh conflict với Playwright Sync API
+        try:
+            asyncio.set_event_loop(None)
+        except Exception:
+            pass
+
         while not self._shutdown_event.is_set():
             try:
-                video_id = self._queue.get(timeout=0.5)
+                item = self._queue.get(timeout=0.5)
             except Empty:
                 continue
 
             try:
+                video_id, marker_id = item
                 if video_id == "__shutdown__":
                     return
-                self._process_video(video_id)
+                self._process_marker(video_id, marker_id)
             finally:
                 self._queue.task_done()
 
-    def _process_video(self, video_id: str) -> None:
+    def _process_marker(self, video_id: str, marker_id: str) -> None:
+        """Xử lý một marker cụ thể trong một worker thread / một browser tab."""
         with self._lock:
-            self._queued_video_ids.discard(video_id)
+            self._queued_marker_ids.discard(marker_id)
             video = self._videos.get(video_id)
             if video is None:
                 return
-            if video.status in {"paused", "completed"}:
+            if video.status in {"paused"}:
                 return
 
-            step_context = self._next_step_to_generate_locked(video)
-            if step_context is None:
+            marker = next((m for m in video.markers if m.id == marker_id), None)
+            if marker is None:
+                return
+            if marker.status in {"completed", "skipped"}:
+                return
+
+            step = self._next_step_in_marker_locked(marker)
+            if step is None:
+                # Không có step nào cần xử lý, cập nhật trạng thái
+                self._refresh_marker_status_locked(video, marker)
                 self._refresh_video_status_locked(video)
                 self._persist_state_locked()
                 self._record_event_locked("story.video.updated", {"videoId": video.id})
                 return
 
-            marker, step = step_context
             marker.status = "running"
             step.status = "running"
             mode = step.pending_mode or "auto"
             input_path = step.pending_input_path or self._resolve_step_input_locked(video, marker, step)
-            prompt = self._merge_prompt(video, marker, step)
+            prompt = (step.pending_prompt_override or "").strip() or self._merge_prompt(video, marker, step)
 
             attempt = StoryAttempt(
                 id=f"att-{uuid.uuid4().hex[:10]}",
@@ -541,11 +766,14 @@ class StoryPipelineManager:
                 status="running",
                 prompt=prompt,
                 input_image_path=input_path,
+                thread_url=step.pending_thread_url,
                 started_at=utc_now(),
             )
             step.attempts.append(attempt)
             step.pending_mode = "auto"
             step.pending_input_path = None
+            step.pending_thread_url = None
+            step.pending_prompt_override = None
             video.status = "running"
             video.last_updated_at = utc_now()
             self._active_video_id = video.id
@@ -564,7 +792,8 @@ class StoryPipelineManager:
                 attempt.completed_at = utc_now()
                 step.status = "failed"
                 marker.status = "failed"
-                video.status = "failed"
+                # Không đặt video thành failed nếu các marker khác vẫn đang chạy
+                self._refresh_video_status_locked(video)
                 video.error = str(exc)
                 video.last_updated_at = utc_now()
                 self._persist_state_locked()
@@ -576,12 +805,14 @@ class StoryPipelineManager:
 
         with self._lock:
             attempt.status = "review"
+            attempt.thread_url = result.thread_url or attempt.thread_url
             attempt.preview_path = result.preview_path
             attempt.normalized_path = result.normalized_path
             attempt.completed_at = utc_now()
             step.status = "review"
             marker.status = "review"
-            video.status = "review"
+            # Cập nhật video status: có thể có marker khác vẫn đang running
+            self._refresh_video_status_locked(video)
             video.error = None
             video.last_updated_at = utc_now()
             self._persist_state_locked()
@@ -589,6 +820,7 @@ class StoryPipelineManager:
                 "story.attempt.review",
                 {"videoId": video.id, "markerId": marker.id, "stepId": step.id, "attemptId": attempt.id},
             )
+            self._enqueue_pending_markers_locked()
 
     def _run_generation(
         self,
@@ -597,15 +829,9 @@ class StoryPipelineManager:
         step: StoryStep,
         attempt: StoryAttempt,
     ) -> GenerationResult:
-        output_dir = (
-            Path(self._settings.output_root)
-            / sanitize_file_stem(video.name)
-            / f"marker_{marker.index:03d}"
-            / f"step_{step.index:02d}"
-            / f"attempt_{attempt.index:02d}"
-        )
-        preview_path = output_dir / "preview.jpg"
-        normalized_path = output_dir / "normalized.jpg"
+        attempt_dir = self._attempt_cache_dir(video, marker, step, attempt.index)
+        preview_path = attempt_dir / "preview.jpg"
+        normalized_path = attempt_dir / "normalized.jpg"
 
         return self._adapter.generate(
             prompt=attempt.prompt,
@@ -617,17 +843,76 @@ class StoryPipelineManager:
                 "markerId": marker.id,
                 "stepId": step.id,
                 "attemptId": attempt.id,
-                "mode": video.mode,
+                "mode": attempt.mode,
+                "threadUrl": attempt.thread_url,
+                "videoMode": video.mode,
+                "geminiModel": self._settings.gemini_model,
             },
         )
 
+    def _attempt_cache_dir(
+        self,
+        video: StoryVideo,
+        marker: StoryMarker,
+        step: StoryStep,
+        attempt_index: int,
+    ) -> Path:
+        variant_suffix = "" if marker.variant_index <= 0 else f"_v{marker.variant_index}"
+        return (
+            story_generated_root()
+            / video.id
+            / f"marker_{marker.index:03d}{variant_suffix}"
+            / f"step_{step.index:02d}"
+            / f"attempt_{attempt_index:02d}"
+        )
+
+    def _build_attempt_stem(
+        self,
+        video: StoryVideo,
+        marker: StoryMarker,
+        step: StoryStep,
+        attempt_index: int,
+    ) -> str:
+        source_name = video.name or video.source_video_path or video.id
+        video_stem = sanitize_file_stem(Path(source_name).stem) or sanitize_file_stem(video.id)
+        variant_suffix = "" if marker.variant_index <= 0 else f".v{marker.variant_index}"
+        attempt_suffix = "" if attempt_index <= 1 else f".a{attempt_index}"
+        return f"{video_stem}.mark{marker.index:03d}{variant_suffix}.step{step.index:02d}{attempt_suffix}"
+
     def _next_step_to_generate_locked(self, video: StoryVideo) -> tuple[StoryMarker, StoryStep] | None:
-        for marker in sorted(video.markers, key=lambda item: item.index):
+        # Uu tien variant markers (refine) - chay doc lap, khong bi block boi root
+        for marker in sorted(video.markers, key=lambda item: (item.index, item.variant_index)):
+            if marker.parent_marker_id is None:
+                continue  # Bo qua root marker o buoc nay
             for step in sorted(marker.steps, key=lambda item: item.index):
                 if step.status == "review":
                     return None
                 if step.status in {"queued", "failed"}:
                     return marker, step
+
+        # Sau do xu ly root markers
+        for marker in sorted(video.markers, key=lambda item: item.index):
+            if marker.parent_marker_id is not None:
+                continue  # Bo qua variant marker
+            for step in sorted(marker.steps, key=lambda item: item.index):
+                if step.status == "review":
+                    return None
+                if step.status in {"queued", "failed"}:
+                    return marker, step
+        return None
+
+    def _next_step_in_marker_locked(self, marker: StoryMarker) -> StoryStep | None:
+        """
+        Tìm step tiếp theo cần xử lý trong một marker cụ thể.
+        - Nếu gặp step đang "review" → dừng, đợi user duyệt.
+        - Nếu gặp step "queued" hoặc "failed" → trả về step đó.
+        - Không còn step nào → trả về None.
+        """
+        for step in step_order(marker.steps):
+            if step.status == "review":
+                return None  # Dừng lại, đợi user accept/skip
+            if step.status in {"queued", "failed"}:
+                return step
         return None
 
     def _resolve_step_input_locked(self, video: StoryVideo, marker: StoryMarker, step: StoryStep) -> str:
@@ -660,26 +945,96 @@ class StoryPipelineManager:
         *,
         action: str,
         attempt_id: str | None,
+        prompt_override: str | None,
     ) -> None:
         if step.status != "review":
-            raise StoryPipelineError("Step khong o trang thai review de regenerate/refine")
+            raise StoryPipelineError("Step khong o trang thai review de regenerate")
 
         if not step.attempts:
             raise StoryPipelineError("Step chua co attempt")
 
         selected_attempt = self._pick_attempt(step, attempt_id)
-
-        if action == "regenerate":
-            next_input = selected_attempt.input_image_path
-        else:
-            next_input = selected_attempt.normalized_path or selected_attempt.preview_path
-            if not next_input:
-                raise StoryPipelineError("Khong co output de refine")
+        next_input = selected_attempt.input_image_path
 
         step.pending_mode = action
-        step.pending_input_path = next_input
+        step.pending_input_path = selected_attempt.input_image_path or next_input
+        step.pending_thread_url = selected_attempt.thread_url
+        step.pending_prompt_override = None
         step.status = "queued"
         marker.status = "queued"
+        video.status = "queued"
+        video.last_updated_at = utc_now()
+
+    def _queue_refine_as_variant_locked(
+        self,
+        video: StoryVideo,
+        marker: StoryMarker,
+        step: StoryStep,
+        *,
+        attempt_id: str | None,
+        prompt_override: str | None,
+    ) -> None:
+        if step.status != "review":
+            raise StoryPipelineError("Step khong o trang thai review de refine")
+        if not step.attempts:
+            raise StoryPipelineError("Step chua co attempt")
+        if not prompt_override:
+            raise StoryPipelineError("Refine bat buoc phai nhap prompt rieng.")
+
+        selected_attempt = self._pick_attempt(step, attempt_id)
+        next_input = selected_attempt.input_image_path or self._resolve_step_input_locked(video, marker, step)
+        
+        parent_id = marker.parent_marker_id or marker.id
+        existing_variants = [m for m in video.markers if m.parent_marker_id == parent_id or m.id == parent_id]
+        new_variant_index = max(m.variant_index for m in existing_variants) + 1
+
+        new_marker_id = f"marker-{uuid.uuid4().hex[:10]}"
+        new_steps = []
+        target_new_step = None
+        
+        import copy
+        for s in marker.steps:
+            new_s = StoryStep(
+                id=f"step-{uuid.uuid4().hex[:10]}",
+                index=s.index,
+                title=s.title,
+                modifier_prompt=s.modifier_prompt,
+                status=s.status,
+                selected_attempt_id=s.selected_attempt_id,
+                pending_mode=s.pending_mode,
+                pending_input_path=s.pending_input_path,
+                pending_thread_url=s.pending_thread_url,
+                pending_prompt_override=s.pending_prompt_override,
+            )
+            # Giữ lại attempts cho các step đã xong để UI hiển thị được lịch sử
+            # Nhưng với step đang refine thì bắt đầu lại từ đầu trong marker mới
+            if s.id != step.id:
+                new_s.attempts = copy.deepcopy(s.attempts)
+            else:
+                new_s.attempts = []
+                target_new_step = new_s
+            new_steps.append(new_s)
+
+        new_marker = StoryMarker(
+            id=new_marker_id,
+            index=marker.index,
+            label=marker.label,
+            timestamp_ms=marker.timestamp_ms,
+            input_frame_path=marker.input_frame_path,
+            seed_prompt=marker.seed_prompt,
+            status="queued",
+            steps=new_steps,
+            parent_marker_id=parent_id,
+            variant_index=new_variant_index,
+        )
+
+        target_new_step.pending_mode = "refine"
+        target_new_step.pending_input_path = selected_attempt.normalized_path or selected_attempt.preview_path or next_input
+        target_new_step.pending_thread_url = selected_attempt.thread_url
+        target_new_step.pending_prompt_override = prompt_override
+        target_new_step.status = "queued"
+
+        video.markers.append(new_marker)
         video.status = "queued"
         video.last_updated_at = utc_now()
 
@@ -700,17 +1055,54 @@ class StoryPipelineManager:
         if not chosen.preview_path and not chosen.normalized_path:
             raise StoryPipelineError("Attempt chua co output")
 
+        # Copy anh vao thu muc persistent de tranh bi xoa khi restart app
+        self._persist_accepted_image_locked(video, marker, step, chosen)
+
         chosen.status = "accepted"
         step.selected_attempt_id = chosen.id
         step.status = "completed"
         step.pending_mode = "auto"
         step.pending_input_path = None
+        step.pending_thread_url = None
+        step.pending_prompt_override = None
         marker.status = "completed" if all(candidate.status in {"completed", "skipped"} for candidate in marker.steps) else "queued"
         video.status = "completed" if self._video_all_steps_done(video) else "queued"
         video.last_updated_at = utc_now()
 
         if video.status == "completed":
             self._active_video_id = video.id
+        
+        self._enqueue_pending_markers_locked()
+
+    def _persist_accepted_image_locked(
+        self,
+        video: StoryVideo,
+        marker: StoryMarker,
+        step: StoryStep,
+        attempt: StoryAttempt,
+    ) -> None:
+        """Copy anh duoc accept vao story_accepted_root() de giu sau khi restart."""
+        source_raw = attempt.normalized_path or attempt.preview_path
+        if not source_raw:
+            return
+        source = Path(source_raw)
+        if not source.exists():
+            return
+
+        accepted_dir = story_accepted_root() / video.id
+        accepted_dir.mkdir(parents=True, exist_ok=True)
+        suffix = source.suffix or ".jpg"
+        stem = self._build_attempt_stem(video, marker, step, attempt.index)
+        dest = accepted_dir / f"{stem}{suffix}"
+        if not dest.exists():
+            try:
+                shutil.copy2(source, dest)
+            except OSError:
+                return  # Neu copy that bai, giu nguyen duong dan cu
+
+        # Cap nhat duong dan tren attempt de export luon tim duoc file
+        attempt.normalized_path = str(dest)
+        attempt.preview_path = str(dest)
 
     def _pick_attempt(self, step: StoryStep, attempt_id: str | None) -> StoryAttempt:
         if attempt_id:
@@ -722,7 +1114,10 @@ class StoryPipelineManager:
         return step.attempts[-1]
 
     def _video_all_steps_done(self, video: StoryVideo) -> bool:
+        # Chi kiem tra root markers, variant (refine) la tuy chon
         for marker in video.markers:
+            if marker.parent_marker_id is not None:
+                continue  # Bo qua variant marker
             for step in marker.steps:
                 if step.status not in {"completed", "skipped"}:
                     return False
@@ -746,7 +1141,15 @@ class StoryPipelineManager:
     def _refresh_video_status_locked(self, video: StoryVideo) -> None:
         if self._video_all_steps_done(video):
             video.status = "completed"
-        elif any(step.status == "review" for marker in video.markers for step in marker.steps):
+        elif any(marker.status == "running" for marker in video.markers):
+            # Ít nhất 1 marker đang chạy → video vẫn là "running"
+            video.status = "running"
+        elif any(
+            step.status == "review"
+            for marker in video.markers
+            if marker.parent_marker_id is None
+            for step in marker.steps
+        ):
             video.status = "review"
         elif video.status != "paused":
             video.status = "queued"
@@ -760,6 +1163,7 @@ class StoryPipelineManager:
                 step.selected_attempt_id = None
                 step.pending_mode = "auto"
                 step.pending_input_path = None
+                step.pending_thread_url = None
                 step.attempts = []
         video.status = "queued"
         video.error = None
@@ -795,12 +1199,13 @@ class StoryPipelineManager:
             if not input_frame_path:
                 raise StoryPipelineError(f"Marker '{label}' chua co input_frame")
 
-            seed_prompt = str(raw_marker.get("seed_prompt") or raw_marker.get("seed") or "").strip()
+            marker_comment = str(raw_marker.get("comment") or "").strip()
+            seed_prompt = str(raw_marker.get("seed_prompt") or raw_marker.get("seed") or label).strip()
             raw_steps = raw_marker.get("steps") or raw_marker.get("story_steps") or []
             if not isinstance(raw_steps, list):
                 raise StoryPipelineError("steps cua marker phai la array")
             if not raw_steps:
-                raw_steps = [{"title": label, "modifier_prompt": ""}]
+                raw_steps = [{"title": label, "modifier_prompt": marker_comment}]
 
             steps: list[StoryStep] = []
             for step_index, raw_step in enumerate(raw_steps, start=1):
@@ -851,7 +1256,6 @@ class StoryPipelineManager:
         parts = [
             self._global_prompt.strip(),
             video.video_prompt.strip(),
-            marker.seed_prompt.strip(),
             step.modifier_prompt.strip(),
         ]
         return "\n\n".join(part for part in parts if part)
@@ -944,6 +1348,8 @@ class StoryPipelineManager:
                     "inputFramePath": marker.input_frame_path,
                     "seedPrompt": marker.seed_prompt,
                     "status": marker.status,
+                    "parentMarkerId": marker.parent_marker_id,
+                    "variantIndex": marker.variant_index,
                     "steps": [
                         {
                             "id": step.id,
@@ -960,6 +1366,7 @@ class StoryPipelineManager:
                                     "status": attempt.status,
                                     "prompt": attempt.prompt,
                                     "inputImagePath": attempt.input_image_path,
+                                    "threadUrl": attempt.thread_url,
                                     "previewPath": attempt.preview_path,
                                     "normalizedPath": attempt.normalized_path,
                                     "error": attempt.error,
@@ -1022,22 +1429,27 @@ class StoryPipelineManager:
 
         self._global_prompt = str(raw.get("global_prompt", "")).strip() if isinstance(raw, dict) else ""
 
-        raw_videos = raw.get("videos") if isinstance(raw, dict) else []
-        if isinstance(raw_videos, list):
-            restored: dict[str, StoryVideo] = {}
-            for item in raw_videos:
-                try:
-                    video = self._deserialize_video(item)
-                except Exception:
-                    continue
-                restored[video.id] = video
-            self._videos = restored
+        self._global_prompt = str(raw.get("global_prompt", "")).strip() if isinstance(raw, dict) else ""
 
-        active_video_id = raw.get("active_video_id") if isinstance(raw, dict) else None
-        if isinstance(active_video_id, str) and active_video_id in self._videos:
+        # Load video state
+        self._videos = {}
+        serialized_videos = raw.get("videos", []) if isinstance(raw, dict) else []
+        if isinstance(serialized_videos, list):
+            for video_dict in serialized_videos:
+                try:
+                    video = self._deserialize_video_state(video_dict)
+                    self._videos[video.id] = video
+                except Exception:
+                    # Skip corrupted video entries
+                    pass
+
+        active_video_id = str(raw.get("active_video_id", "")).strip() if isinstance(raw, dict) else None
+        if active_video_id and active_video_id in self._videos:
             self._active_video_id = active_video_id
+        elif self._videos:
+            self._active_video_id = list(self._videos.keys())[0]
         else:
-            self._active_video_id = next(iter(self._videos), None)
+            self._active_video_id = None
 
     def _persist_state_locked(self) -> None:
         payload = {
@@ -1049,6 +1461,42 @@ class StoryPipelineManager:
 
         self._state_file.parent.mkdir(parents=True, exist_ok=True)
         self._state_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _reset_runtime_state_for_restart(self) -> None:
+        if not self._videos:
+            return
+
+        self._queued_video_ids.clear()
+        interruption_message = "Tien trinh bi gian doan khi khoi dong lai ung dung."
+
+        for video in self._videos.values():
+            for marker in marker_order(video.markers):
+                for step in step_order(marker.steps):
+                    for attempt in step.attempts:
+                        if attempt.status == "running":
+                            attempt.status = "failed"
+                            attempt.error = attempt.error or interruption_message
+                            attempt.completed_at = attempt.completed_at or utc_now()
+
+                    if step.status == "running":
+                        latest_attempt = step.attempts[-1] if step.attempts else None
+                        if latest_attempt and (latest_attempt.preview_path or latest_attempt.normalized_path):
+                            step.status = "review"
+                        elif latest_attempt is not None:
+                            step.status = "failed"
+                        else:
+                            step.status = "queued"
+
+                self._refresh_marker_status_locked(video, marker)
+
+            if video.status == "running":
+                video.status = "queued"
+            self._refresh_video_status_locked(video)
+
+        if self._active_video_id not in self._videos:
+            self._active_video_id = next(iter(self._videos), None)
+
+        self._persist_state_locked()
 
     def _serialize_video_state(self, video: StoryVideo) -> dict:
         return {
@@ -1070,6 +1518,8 @@ class StoryPipelineManager:
                     "input_frame_path": marker.input_frame_path,
                     "seed_prompt": marker.seed_prompt,
                     "status": marker.status,
+                    "parent_marker_id": marker.parent_marker_id,
+                    "variant_index": marker.variant_index,
                     "steps": [
                         {
                             "id": step.id,
@@ -1080,6 +1530,8 @@ class StoryPipelineManager:
                             "selected_attempt_id": step.selected_attempt_id,
                             "pending_mode": step.pending_mode,
                             "pending_input_path": step.pending_input_path,
+                            "pending_thread_url": step.pending_thread_url,
+                            "pending_prompt_override": step.pending_prompt_override,
                             "attempts": [
                                 {
                                     "id": attempt.id,
@@ -1088,6 +1540,7 @@ class StoryPipelineManager:
                                     "status": attempt.status,
                                     "prompt": attempt.prompt,
                                     "input_image_path": attempt.input_image_path,
+                                    "thread_url": attempt.thread_url,
                                     "preview_path": attempt.preview_path,
                                     "normalized_path": attempt.normalized_path,
                                     "error": attempt.error,
@@ -1117,6 +1570,7 @@ class StoryPipelineManager:
                         status=str(attempt_data.get("status", "queued")),
                         prompt=str(attempt_data.get("prompt", "")),
                         input_image_path=str(attempt_data.get("input_image_path", "")),
+                        thread_url=_optional_str(attempt_data.get("thread_url")),
                         preview_path=_optional_str(attempt_data.get("preview_path")),
                         normalized_path=_optional_str(attempt_data.get("normalized_path")),
                         error=_optional_str(attempt_data.get("error")),
@@ -1137,6 +1591,8 @@ class StoryPipelineManager:
                         selected_attempt_id=_optional_str(step_data.get("selected_attempt_id")),
                         pending_mode=str(step_data.get("pending_mode", "auto")),
                         pending_input_path=_optional_str(step_data.get("pending_input_path")),
+                        pending_thread_url=_optional_str(step_data.get("pending_thread_url")),
+                        pending_prompt_override=_optional_str(step_data.get("pending_prompt_override")),
                         attempts=attempts,
                     )
                 )
@@ -1151,6 +1607,8 @@ class StoryPipelineManager:
                     seed_prompt=str(marker_data.get("seed_prompt", "")),
                     status=str(marker_data.get("status", "queued")),
                     steps=steps,
+                    parent_marker_id=_optional_str(marker_data.get("parent_marker_id")),
+                    variant_index=int(marker_data.get("variant_index", 0)),
                 )
             )
 
@@ -1182,27 +1640,75 @@ class StoryPipelineManager:
         with self._event_condition:
             self._event_condition.notify_all()
 
-    def _enqueue_video_locked(self, video_id: str) -> None:
-        if video_id in self._queued_video_ids:
-            return
-        self._queued_video_ids.add(video_id)
-        self._queue.put(video_id)
+    def _enqueue_pending_markers_locked(self) -> None:
+        """
+        Đưa từng marker pending của tất cả video đang queued/running vào queue.
+        Mỗi marker = 1 queue item = 1 worker thread = 1 browser tab.
+        Luôn ưu tiên (priority=0) cho:
+          - Variant markers (refine)
+          - Markers có step đang retry/regenerate
+          - Markers có step bị failed cần xử lý lại
+        """
+        pending_items = []
+        for video in self._videos.values():
+            if video.status in {"paused", "completed"}:
+                continue
+            for marker in marker_order(video.markers):
+                if marker.id in self._queued_marker_ids:
+                    continue
+                if marker.status in {"completed", "review", "skipped"}:
+                    continue
+                # Marker có step đang chờ xử lý (queued hoặc failed)
+                has_pending = any(step.status in {"queued", "failed"} for step in marker.steps)
+                if not has_pending:
+                    continue
+
+                # Xác định mức ưu tiên:
+                # priority 0 = cao nhất (refine/retry/failed)
+                # priority 1 = thường (auto gen mới)
+                is_priority = (
+                    marker.parent_marker_id is not None  # Variant marker từ refine
+                    or marker.status == "failed"          # Marker thất bại
+                    or any(
+                        step.pending_mode in {"refine", "retry", "regenerate"}
+                        or step.status == "failed"
+                        for step in marker.steps
+                    )
+                )
+                priority = 0 if is_priority else 1
+                pending_items.append((priority, video.id, marker))
+
+        # Sắp xếp: priority tăng dần (0 trước), sau đó theo index và variant_index
+        pending_items.sort(key=lambda item: (item[0], item[2].index, item[2].variant_index))
+
+        for priority, video_id, marker in pending_items:
+            self._queued_marker_ids.add(marker.id)
+            self._queue.put((video_id, marker.id))
 
     def _refresh_adapter_locked(self) -> None:
         if self._injected_adapter is not None:
             self._adapter = self._injected_adapter
             return
 
+        # Shutdown browser window cũ trước khi tạo adapter mới
+        if hasattr(self._adapter, "shutdown"):
+            try:
+                self._adapter.shutdown()
+            except Exception:
+                pass
+
         if self._settings.generation_backend == "gemini_web":
-            runtime_root = Path(self._settings.output_root) / "_gemini_runtime"
+            runtime_root = story_gemini_runtime_root()
             runtime_root.mkdir(parents=True, exist_ok=True)
             self._adapter = GeminiWebAdapter(
                 runtime_root=runtime_root,
                 headless=self._settings.gemini_headless,
                 base_url=self._settings.gemini_base_url,
                 response_timeout_ms=self._settings.gemini_response_timeout_ms,
+                model_name=self._settings.gemini_model,
                 debug_selector=True,
-                debug_root=story_debug_root(self._settings.output_root),
+                debug_root=story_debug_root(),
+                max_tabs=self._settings.max_parallel_videos,
             )
             return
 
@@ -1234,8 +1740,26 @@ def _bool_value(value: object, *, default: bool) -> bool:
     return default
 
 
+def _copy_with_unique_name(source: Path, destination_dir: Path, preferred_name: str) -> Path:
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    target = destination_dir / preferred_name
+    if not target.exists():
+        shutil.copy2(source, target)
+        return target
+
+    stem = target.stem
+    suffix = target.suffix
+    counter = 2
+    while True:
+        candidate = destination_dir / f"{stem}-{counter}{suffix}"
+        if not candidate.exists():
+            shutil.copy2(source, candidate)
+            return candidate
+        counter += 1
+
+
 def marker_order(items: list[StoryMarker]) -> list[StoryMarker]:
-    return sorted(items, key=lambda item: item.index)
+    return sorted(items, key=lambda item: (item.index, item.variant_index))
 
 
 def step_order(items: list[StoryStep]) -> list[StoryStep]:

@@ -46,6 +46,7 @@ class XmpScanner:
                         "name": file_path.name,
                         "video_path": str(file_path),
                         "mode": "chain",
+                        "video_prompt": "",
                         "markers": []
                     }
                     
@@ -67,7 +68,13 @@ class XmpScanner:
                             "comment": m['comment'],
                             "timestamp_ms": int(m['timeSec'] * 1000),
                             "input_frame": str(frame_path),
-                            "seed_prompt": m['name'] + (f" ({m['comment']})" if m['comment'] else "")
+                            "seed_prompt": (m['name'] or f"Marker {idx}").strip(),
+                            "steps": [
+                                {
+                                    "title": (m['name'] or f"Marker {idx}").strip(),
+                                    "modifier_prompt": (m['comment'] or "").strip(),
+                                }
+                            ],
                         })
                     
                     results.append(video_results)

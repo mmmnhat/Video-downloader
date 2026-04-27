@@ -11,10 +11,20 @@ import {
 } from "react";
 import type { FormEvent } from "react";
 import { toast } from "sonner";
-import { DownloadCloud, Cookie, AudioLines, Clapperboard } from "lucide-react";
+import {
+  DownloadCloud,
+  Cookie,
+  AudioLines,
+  Archive,
+  Clapperboard,
+  Settings2,
+  Loader2,
+  RefreshCw,
+} from "lucide-react";
 import CookiesManager from "./components/CookiesManager";
 import UpdaterDialog from "./components/UpdaterDialog";
 import { useLocalStorage } from "./hooks/use-local-storage";
+import BrowserProfilesSettings from "./components/BrowserProfilesSettings";
 
 import {
   AlertDialog,
@@ -32,6 +42,7 @@ import {
   Card,
   CardContent,
   CardDescription,
+  CardFooter,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
@@ -78,6 +89,8 @@ import {
 import { Toaster } from "@/components/ui/sonner";
 import {
   cancelBatch,
+  pauseBatch,
+  resumeBatch,
   chooseFolder,
   createBatch,
   getBatch,
@@ -144,9 +157,13 @@ const QUALITY_OPTIONS = [
 ];
 const TtsStudio = lazy(() => import("./components/TtsStudio"));
 const StoryStudio = lazy(() => import("./components/StoryStudio"));
+const CacheManager = lazy(() => import("./components/CacheManager"));
 
 type TableMode = "preview" | "queue" | "empty";
 type BadgeVariant = "default" | "secondary" | "destructive" | "outline";
+type AppView = "downloader" | "tts" | "story" | "settings";
+type SettingsView = "cookies" | "browser-settings" | "cache";
+type StoredView = AppView | SettingsView;
 
 type UnifiedTableRow = {
   id: string;
@@ -161,10 +178,42 @@ type UnifiedTableRow = {
   result: string;
 };
 
+const DEFAULT_SETTINGS_VIEW: SettingsView = "cookies";
+const SETTINGS_NAV_ITEMS: Array<{
+  id: SettingsView;
+  label: string;
+  description: string;
+  icon: typeof Cookie;
+}> = [
+  {
+    id: "cookies",
+    label: "Cookie thủ công",
+    description: "Dán, chỉnh sửa hoặc xoá cookie thủ công theo nền tảng.",
+    icon: Cookie,
+  },
+  {
+    id: "browser-settings",
+    label: "Trình duyệt",
+    description: "Chọn profile và cấu hình cookie lấy từ trình duyệt.",
+    icon: Settings2,
+  },
+  {
+    id: "cache",
+    label: "Quản lý cache",
+    description: "Xem và dọn cache runtime cho Tạo ảnh AI và TTS.",
+    icon: Archive,
+  },
+];
+
 function App() {
-  const [currentView, setCurrentView] = useLocalStorage<
-    "downloader" | "cookies" | "tts" | "story"
-  >("app.current-view", "downloader");
+  const [storedView, setStoredView] = useLocalStorage<StoredView>(
+    "app.current-view",
+    "settings",
+  );
+  const [settingsView, setSettingsView] = useLocalStorage<SettingsView>(
+    "app.settings-view",
+    DEFAULT_SETTINGS_VIEW,
+  );
   const [batchSummaries, setBatchSummaries] = useState<BatchSummary[]>([]);
   const [selectedBatchId, setSelectedBatchId] = useState<string | null>(null);
   const [selectedBatch, setSelectedBatch] = useState<BatchDetail | null>(null);
@@ -198,6 +247,9 @@ function App() {
   const tableSourceRef = useRef("");
   const summaryRequestRef = useRef(0);
   const detailRequestRef = useRef(0);
+  const currentView: AppView = isSettingsView(storedView)
+    ? "settings"
+    : storedView;
 
   const currentBatch =
     tableSource !== TABLE_SOURCE_PREVIEW && selectedBatch?.id === selectedBatchId
@@ -212,6 +264,18 @@ function App() {
   );
   const isDirty =
     settingsSignature(settingsDraft) !== settingsSignature(persistedSettings);
+
+  useEffect(() => {
+    if (!isSettingsView(storedView)) {
+      return;
+    }
+
+    if (settingsView !== storedView) {
+      setSettingsView(storedView);
+    }
+
+    setStoredView("settings");
+  }, [settingsView, setSettingsView, setStoredView, storedView]);
 
   useEffect(() => {
     selectedBatchIdRef.current = selectedBatchId;
@@ -753,7 +817,33 @@ function App() {
   async function handleCancelBatch(batchId: string) {
     try {
       await cancelBatch(batchId);
-      toast.success("Batch đang dừng.");
+      toast.success("Batch đã bị dừng.");
+      await refreshSummaries();
+      if (selectedBatchId === batchId) {
+        await loadBatchDetail(batchId, { silent: true });
+      }
+    } catch (error) {
+      toast.error(getErrorMessage(error));
+    }
+  }
+
+  async function handlePauseBatch(batchId: string) {
+    try {
+      await pauseBatch(batchId);
+      toast.success("Batch đã tạm dừng.");
+      await refreshSummaries();
+      if (selectedBatchId === batchId) {
+        await loadBatchDetail(batchId, { silent: true });
+      }
+    } catch (error) {
+      toast.error(getErrorMessage(error));
+    }
+  }
+
+  async function handleResumeBatch(batchId: string) {
+    try {
+      await resumeBatch(batchId);
+      toast.success("Batch tiếp tục chạy.");
       await refreshSummaries();
       if (selectedBatchId === batchId) {
         await loadBatchDetail(batchId, { silent: true });
@@ -782,6 +872,11 @@ function App() {
     if (value !== TABLE_SOURCE_PREVIEW) {
       setSelectedBatchId(value);
     }
+  }
+
+  function handleOpenSettings(nextView: SettingsView = settingsView) {
+    setSettingsView(nextView);
+    setStoredView("settings");
   }
 
   const tableMode: TableMode = tableCleared
@@ -854,9 +949,9 @@ function App() {
     <>
       <Toaster position="top-center" richColors />
 
-      <div className="flex h-dvh overflow-hidden bg-background text-foreground">
+      <div className="flex h-dvh min-w-0 overflow-hidden bg-background text-foreground">
         {/* Sidebar */}
-        <aside className="w-[72px] flex flex-col border-r border-border bg-card py-4 transition-all duration-300 z-10">
+        <aside className="z-10 flex w-[72px] shrink-0 flex-col border-r border-border bg-card py-4 transition-all duration-300">
           <div className="mb-8 flex items-center justify-center">
             <div className="bg-primary/10 p-2 rounded-md">
               <DownloadCloud className="w-5 h-5 text-primary" />
@@ -867,34 +962,38 @@ function App() {
              <Button 
                 variant={currentView === "downloader" ? "secondary" : "ghost"} 
                 className="w-full justify-center" 
-                onClick={() => setCurrentView("downloader")}
-                title="Bảng điều khiển"
+                onClick={() => setStoredView("downloader")}
+                title="Tải video"
+                aria-label="Tải video"
              >
                 <DownloadCloud className="h-4 w-4" />
              </Button>
              <Button 
                 variant={currentView === "story" ? "secondary" : "ghost"} 
                 className="w-full justify-center" 
-                onClick={() => setCurrentView("story")}
-                title="Story Pipeline"
+                onClick={() => setStoredView("story")}
+                title="Tạo ảnh AI"
+                aria-label="Tạo ảnh AI"
              >
                 <Clapperboard className="h-4 w-4" />
              </Button>
              <Button 
                 variant={currentView === "tts" ? "secondary" : "ghost"} 
                 className="w-full justify-center" 
-                onClick={() => setCurrentView("tts")}
+                onClick={() => setStoredView("tts")}
                 title="Studio TTS"
+                aria-label="Studio TTS"
              >
                 <AudioLines className="h-4 w-4" />
              </Button>
-             <Button 
-                variant={currentView === "cookies" ? "secondary" : "ghost"} 
-                className="w-full justify-center" 
-                onClick={() => setCurrentView("cookies")}
-                title="Quản lý Cookie"
+             <Button
+                variant={currentView === "settings" ? "secondary" : "ghost"}
+                className="w-full justify-center"
+                onClick={() => handleOpenSettings()}
+                title="Cài đặt"
+                aria-label="Cài đặt"
              >
-                <Cookie className="h-4 w-4" />
+                <Settings2 className="h-4 w-4" />
              </Button>
           </nav>
 
@@ -904,11 +1003,11 @@ function App() {
         </aside>
 
         {/* Main Content Area */}
-        <div className="flex-1 overflow-auto">
+        <div className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto">
           <main
             className={
               currentView === "downloader"
-                ? `grid w-full ${TAB_CARD_GAP_CLASS} ${TAB_PAGE_PADDING_CLASS} lg:grid-cols-[minmax(22rem,28rem)_minmax(0,1fr)]`
+                ? `grid min-w-0 w-full ${TAB_CARD_GAP_CLASS} ${TAB_PAGE_PADDING_CLASS} lg:grid-cols-[minmax(22rem,28rem)_minmax(0,1fr)]`
                 : "hidden"
             }
           >
@@ -919,31 +1018,45 @@ function App() {
                 </Alert>
               ) : null}
 
-          <Card className={`border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)] lg:sticky ${TAB_STICKY_TOP_CLASS} ${TAB_VIEWPORT_CARD_HEIGHT_CLASS} lg:overflow-hidden`}>
-            <CardContent className="flex min-h-0 flex-1 flex-col gap-6 lg:overflow-auto">
+          <Card className={`relative min-w-0 border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)] lg:sticky ${TAB_STICKY_TOP_CLASS} ${TAB_VIEWPORT_CARD_HEIGHT_CLASS} lg:overflow-hidden flex flex-col`}>
+            <div className="absolute top-4 right-4 flex items-center gap-2 z-10">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 text-xs"
+                onClick={() => void handleOpenGoogleLogin()}
+              >
+                Đăng nhập
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                className="size-8"
+                onClick={() => void handleRefreshAuth()}
+                disabled={authRefreshing}
+                title="Làm mới phiên"
+              >
+                {authRefreshing ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <RefreshCw className="size-3.5" />
+                )}
+              </Button>
+              {Boolean(authStatus?.authenticated) && (
+                <div 
+                  className="h-2.5 w-2.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)] ml-1" 
+                  title="Đã kết nối Google" 
+                />
+              )}
+            </div>
+            <CardContent className="flex min-h-0 min-w-0 flex-1 flex-col gap-6 lg:overflow-x-hidden lg:overflow-y-auto pt-14">
               <SessionStatusAlert
                 authenticated={Boolean(authStatus?.authenticated)}
                 notReadyTitle={"Phiên trình duyệt chưa sẵn sàng"}
                 message={authSummary(authStatus)}
               />
-
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => void handleOpenGoogleLogin()}
-                >
-                  {"Mở đăng nhập Google"}
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => void handleRefreshAuth()}
-                  disabled={authRefreshing}
-                >
-                  {authRefreshing ? "Đang làm mới..." : "Làm mới phiên"}
-                </Button>
-              </div>
 
               <form className="flex flex-col gap-6" onSubmit={handleSubmitSheetUrl}>
                 <Field data-invalid={Boolean(previewError)}>
@@ -1058,7 +1171,7 @@ function App() {
 
                 <FieldSet>
                   <FieldLegend variant="label">Phạm vi STT</FieldLegend>
-                  <FieldGroup className="md:grid md:grid-cols-[minmax(0,12rem)_minmax(0,1fr)_minmax(0,1fr)]">
+                  <FieldGroup>
                     <Field>
                       <TooltipFieldLabel
                         htmlFor="sheet-range-mode"
@@ -1134,31 +1247,10 @@ function App() {
                   </FieldGroup>
                 </FieldSet>
 
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    disabled={previewLoading || startLoading}
-                    onClick={() => void handlePreviewSheetClick()}
-                  >
-                    {previewLoading ? "Đang kiểm tra..." : "Xem trước"}
-                  </Button>
-                  <Button
-                    type="button"
-                    disabled={
-                      startLoading ||
-                      previewLoading ||
-                      !sheetUrl.trim()
-                    }
-                    onClick={() => void handleStartBatchClick()}
-                  >
-                    {startLoading ? "Đang bắt đầu..." : "Bắt đầu"}
-                  </Button>
-                </div>
 
                 <FieldSet>
                   <FieldLegend variant="label">Thiết lập tải mặc định</FieldLegend>
-                  <FieldGroup className="md:grid md:grid-cols-2">
+                  <FieldGroup>
                     <Field>
                       <TooltipFieldLabel tooltip="Thiết lập chất lượng tải ưu tiên. Tự động sẽ chọn chất lượng tốt nhất hiện có.">
                         Chất lượng
@@ -1193,7 +1285,7 @@ function App() {
                         htmlFor="concurrent-downloads"
                         tooltip="Số lượt tải có thể chạy cùng lúc."
                       >
-                        Luồng tải
+                        Số luồng
                       </TooltipFieldLabel>
                       <Input
                         id="concurrent-downloads"
@@ -1220,7 +1312,7 @@ function App() {
                         htmlFor="retry-count"
                         tooltip="Số lần thử lại tự động sau khi tải thất bại."
                       >
-                        Số lần thử lại
+                        Thử lại
                       </TooltipFieldLabel>
                       <Input
                         id="retry-count"
@@ -1242,10 +1334,31 @@ function App() {
                 </FieldSet>
               </FieldGroup>
             </CardContent>
+            <CardFooter className="border-t border-border/70 pt-4 flex-none gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={previewLoading || startLoading}
+                onClick={() => void handlePreviewSheetClick()}
+              >
+                {previewLoading ? "Đang kiểm tra..." : "Xem trước"}
+              </Button>
+              <Button
+                type="button"
+                disabled={
+                  startLoading ||
+                  previewLoading ||
+                  !sheetUrl.trim()
+                }
+                onClick={() => void handleStartBatchClick()}
+              >
+                {startLoading ? "Đang bắt đầu..." : "Bắt đầu"}
+              </Button>
+            </CardFooter>
           </Card>
 
           {SHOW_UNIFIED_TABLE ? (
-            <Card className={`border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)] ${TAB_VIEWPORT_CARD_HEIGHT_CLASS} lg:overflow-hidden`}>
+            <Card className={`min-w-0 border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)] ${TAB_VIEWPORT_CARD_HEIGHT_CLASS} lg:overflow-hidden`}>
               {SHOW_TABLE_CONTEXT ? (
                 <CardHeader className="gap-4 border-b border-border/70">
                   <div>
@@ -1286,7 +1399,7 @@ function App() {
                               {batchSummaries.map((summary) => (
                                 <SelectItem key={summary.id} value={summary.id}>
                                   {statusLabel(summary.status)} ·{" "}
-                                  {formatCount(summary.discoveredUrlCount)} URLs ·{" "}
+                                  {formatCount(summary.discoveredUrlCount)} URL ·{" "}
                                   {formatDateTime(summary.createdAt)}
                                 </SelectItem>
                               ))}
@@ -1356,18 +1469,30 @@ function App() {
                       <Button
                         type="button"
                         variant="outline"
-                        onClick={() => void handleOpenFolder(currentBatch.outputDir)}
-                      >
-                        Mở thư mục
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="outline"
                         onClick={() => void handleRetryFailed(currentBatch.id)}
                         disabled={currentBatch.status === "running"}
                       >
                         Chạy lại lỗi
                       </Button>
+
+                      {currentBatch.status === "paused" ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => void handleResumeBatch(currentBatch.id)}
+                        >
+                          Tiếp tục
+                        </Button>
+                      ) : (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => void handlePauseBatch(currentBatch.id)}
+                          disabled={!["running", "queued"].includes(currentBatch.status)}
+                        >
+                          Tạm dừng
+                        </Button>
+                      )}
 
                       <AlertDialog>
                         <AlertDialogTrigger asChild>
@@ -1375,12 +1500,12 @@ function App() {
                             type="button"
                             variant="destructive"
                             disabled={
-                              !["running", "queued", "cancelling"].includes(
+                              !["running", "queued", "cancelling", "paused"].includes(
                                 currentBatch.status,
                               )
                             }
                           >
-                            Dừng batch
+                            Dừng
                           </Button>
                         </AlertDialogTrigger>
                         <AlertDialogContent>
@@ -1461,7 +1586,7 @@ function App() {
                     </EmptyHeader>
                   </Empty>
                 ) : tableRows.length > 0 ? (
-                  <div className="max-h-[60dvh] overflow-auto rounded-xl border border-border/70 lg:flex-1 lg:min-h-0 lg:max-h-none">
+                  <div className="min-w-0 max-h-[60dvh] overflow-auto rounded-xl border border-border/70 lg:flex-1 lg:min-h-0 lg:max-h-none">
                   <Table className="min-w-[58rem]">
                     <TableHeader>
                       <TableRow>
@@ -1514,7 +1639,7 @@ function App() {
           <main
             className={
               currentView === "story"
-                ? `w-full ${TAB_PAGE_PADDING_CLASS}`
+                ? `min-w-0 w-full ${TAB_PAGE_PADDING_CLASS}`
                 : "hidden"
             }
           >
@@ -1522,7 +1647,9 @@ function App() {
                 fallback={
                   <Card className="border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)]">
                     <CardContent className="py-12 text-center text-sm text-muted-foreground">
-                      Đang tải Story Pipeline...
+                      <p className="text-sm text-muted-foreground animate-pulse">
+                        Đang tải khu vực Tạo ảnh AI...
+                      </p>
                     </CardContent>
                   </Card>
                 }
@@ -1534,7 +1661,7 @@ function App() {
           <main
             className={
               currentView === "tts"
-                ? `w-full ${TAB_PAGE_PADDING_CLASS}`
+                ? `min-w-0 w-full ${TAB_PAGE_PADDING_CLASS}`
                 : "hidden"
             }
           >
@@ -1553,15 +1680,63 @@ function App() {
 
           <main
             className={
-              currentView === "cookies"
-                ? `w-full ${TAB_PAGE_PADDING_CLASS}`
+              currentView === "settings"
+                ? `min-w-0 w-full ${TAB_PAGE_PADDING_CLASS}`
                 : "hidden"
             }
           >
-            <CookiesManager
-              settings={settingsDraft}
-              onSettingsChange={setSettingsDraft}
-            />
+            <div className="flex min-w-0 flex-col gap-4 lg:flex-row lg:gap-6">
+              <aside className="min-w-0 lg:w-16 lg:shrink-0">
+                <Card className={`border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)] lg:sticky ${TAB_STICKY_TOP_CLASS} ${TAB_VIEWPORT_CARD_HEIGHT_CLASS}`}>
+                  <CardContent className="flex flex-col items-center gap-2 pt-4">
+                    {SETTINGS_NAV_ITEMS.map((item) => {
+                      const Icon = item.icon;
+                      return (
+                        <Button
+                          key={item.id}
+                          type="button"
+                          variant={settingsView === item.id ? "secondary" : "ghost"}
+                          size="icon"
+                          className="h-10 w-10 shrink-0"
+                          onClick={() => setSettingsView(item.id)}
+                          title={item.label}
+                          aria-label={item.label}
+                        >
+                          <Icon className="h-5 w-5" />
+                        </Button>
+                      );
+                    })}
+                  </CardContent>
+                </Card>
+              </aside>
+
+              <section className="min-w-0 flex-1">
+                {settingsView === "cache" ? (
+                  <Suspense
+                    fallback={
+                      <Card className="border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)]">
+                        <CardContent className="py-12 text-center text-sm text-muted-foreground">
+                      Đang tải quản lý cache...
+                        </CardContent>
+                      </Card>
+                    }
+                  >
+                    <CacheManager />
+                  </Suspense>
+                ) : null}
+
+                {settingsView === "cookies" ? (
+                  <CookiesManager
+                    settings={settingsDraft}
+                    onSettingsChange={setSettingsDraft}
+                  />
+                ) : null}
+
+                {settingsView === "browser-settings" ? (
+                  <BrowserProfilesSettings />
+                ) : null}
+              </section>
+            </div>
           </main>
         </div>
       </div>
@@ -1591,6 +1766,10 @@ function clampNumber(value: string, min: number, max: number) {
     return min;
   }
   return Math.min(max, Math.max(min, parsed));
+}
+
+function isSettingsView(value: StoredView): value is SettingsView {
+  return value === "cookies" || value === "browser-settings" || value === "cache";
 }
 
 function normalizeSettings(settings: Settings): Settings {

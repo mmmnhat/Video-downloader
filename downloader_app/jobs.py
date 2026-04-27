@@ -157,6 +157,7 @@ class DownloadManager:
         self._event_sequence = 0
         self._event_backlog: list[dict] = []
         self._cancel_events: dict[str, threading.Event] = {}
+        self._pause_events: dict[str, threading.Event] = {}
         self._active_processes: dict[str, dict[str, subprocess.Popen[str]]] = {}
         self._batch_cookie_map: dict[str, dict[str, str]] = {}
         self._yt_dlp_cmd = self._resolve_yt_dlp_command()
@@ -286,6 +287,7 @@ class DownloadManager:
         with self._lock:
             self._batches[batch.id] = batch
             self._cancel_events[batch.id] = threading.Event()
+            self._pause_events[batch.id] = threading.Event()
             self._active_processes[batch.id] = {}
             self._batch_cookie_map[batch.id] = settings.cookies_map
             self._persist_state_locked()
@@ -313,6 +315,53 @@ class DownloadManager:
             if process.poll() is None:
                 process.terminate()
 
+        return self.get_batch(batch_id) or {}
+
+    def pause_batch(self, batch_id: str) -> dict:
+        with self._lock:
+            batch = self._require_batch(batch_id)
+            if batch.status in FINAL_BATCH_STATUSES or batch.status == "paused":
+                return self._serialize_batch(batch)
+
+            batch.status = "paused"
+            batch.last_updated_at = utc_now()
+            pause_event = self._pause_events.setdefault(batch_id, threading.Event())
+            pause_event.set()
+            
+            # Use cancel event to aggressively kill processes like yt-dlp, so it stops immediately.
+            # We differentiate pause from cancel inside _process_item using pause_event.
+            cancel_event = self._cancel_events.setdefault(batch_id, threading.Event())
+            cancel_event.set()
+            
+            processes = list(self._active_processes.get(batch_id, {}).values())
+            self._persist_state_locked()
+            self._record_event_locked("batch.updated", {"batchId": batch_id})
+
+        for process in processes:
+            if process.poll() is None:
+                process.terminate()
+
+        return self.get_batch(batch_id) or {}
+
+    def resume_batch(self, batch_id: str) -> dict:
+        with self._lock:
+            batch = self._require_batch(batch_id)
+            if batch.status != "paused":
+                return self._serialize_batch(batch)
+
+            # Clear events so worker can run again
+            self._cancel_events[batch_id] = threading.Event()
+            self._pause_events[batch_id] = threading.Event()
+            self._active_processes[batch_id] = {}
+            
+            batch.status = "queued" if self._batch_has_pending_items(batch) else "completed"
+            batch.last_updated_at = utc_now()
+            self._persist_state_locked()
+            self._record_event_locked("batch.updated", {"batchId": batch_id})
+
+        if self._batch_has_pending_items(batch):
+            self._start_batch_worker(batch_id)
+            
         return self.get_batch(batch_id) or {}
 
     def retry_failed(self, batch_id: str) -> dict:
@@ -355,6 +404,7 @@ class DownloadManager:
                 item.completed_at = None
 
             self._cancel_events[batch_id] = threading.Event()
+            self._pause_events[batch_id] = threading.Event()
             self._active_processes[batch_id] = {}
             batch.status = "queued" if self._batch_has_pending_items(batch) else "completed"
             batch.last_updated_at = utc_now()
@@ -533,6 +583,7 @@ class DownloadManager:
             batch.status = "running"
             batch.last_updated_at = utc_now()
             cancel_event = self._cancel_events.setdefault(batch_id, threading.Event())
+            pause_event = self._pause_events.setdefault(batch_id, threading.Event())
             queue: Queue[str] = Queue()
             for item in batch.items:
                 if item.supported and item.status == "queued":
@@ -566,10 +617,17 @@ class DownloadManager:
                         return
 
                     try:
-                        self._process_item(batch_id, item_id, cancel_event)
+                        self._process_item(batch_id, item_id, cancel_event, pause_event)
                     except Exception as exc:
-                        if cancel_event.is_set():
+                        if cancel_event.is_set() and not pause_event.is_set():
                             self._mark_item_cancelled(batch_id, item_id)
+                        elif pause_event.is_set():
+                            self._update_item(
+                                batch_id,
+                                item_id,
+                                status="queued",
+                                error="Tạm dừng."
+                            )
                         else:
                             self._update_item(
                                 batch_id,
@@ -606,12 +664,13 @@ class DownloadManager:
                                 item.status = "failed"
                                 item.error = f"Batch worker crashed before processing item: {processing_error}"
                                 item.completed_at = utc_now()
-                    elif cancel_event.is_set():
+                    elif cancel_event.is_set() and not pause_event.is_set():
                         for item in batch.items:
                             if item.supported and item.status == "queued":
                                 item.status = "cancelled"
                                 item.error = "Batch stopped by user."
                                 item.completed_at = utc_now()
+                    # If paused, we just leave them as 'queued' so they can resume later.
 
                     self._refresh_batch_status_locked(batch_id)
                     self._persist_state_locked()
@@ -622,6 +681,7 @@ class DownloadManager:
         batch_id: str,
         item_id: str,
         cancel_event: threading.Event,
+        pause_event: threading.Event,
     ) -> None:
         with self._lock:
             batch = self._require_batch(batch_id)
@@ -630,6 +690,10 @@ class DownloadManager:
             retry_count = batch.retry_count
 
         for attempt in range(1, retry_count + 2):
+            if pause_event.is_set():
+                self._update_item(batch_id, item_id, status="queued", error="Tạm dừng.")
+                return
+
             if cancel_event.is_set():
                 self._mark_item_cancelled(batch_id, item_id)
                 return
@@ -651,6 +715,9 @@ class DownloadManager:
             try:
                 output_path = self._download_item(batch_id, item_id, cancel_event)
             except BatchCancelledError:
+                if pause_event.is_set():
+                    self._update_item(batch_id, item_id, status="queued", error="Tạm dừng.")
+                    return
                 self._mark_item_cancelled(batch_id, item_id)
                 return
             except Exception as exc:  # pragma: no cover - depends on runtime binaries/network

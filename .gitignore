@@ -12,6 +12,7 @@ downloads-test/
 google_oauth_client.json
 app_state.json
 voices_cache.json
+cache/
 
 # Vendor binaries (too large for git — downloaded by auto_build.py)
 vendor/windows/bin/*.exe
@@ -24,7 +25,7 @@ packaging/windows/dist/
 dist/*.exe
 dist/
 
-# TTS runtime & browser profiles (all of tts_profiles is local/runtime data)
+# TTS runtime & browser profiles (legacy paths kept for older local runs)
 tts_profiles/
 tts_batches/
 tts_state.json
@@ -39,3 +40,9 @@ tests/
 # Scratch test videos
 scratch/*.mp4
 scratch/*.webm
+scratch/
+scratch.py
+patch.py
+test_shared_browser.py
+.test_profile/
+browser_config.json

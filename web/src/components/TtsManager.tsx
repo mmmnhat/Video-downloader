@@ -1,4 +1,5 @@
 import { startTransition, useEffect, useMemo, useRef, useState } from "react";
+import { RefreshCw, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -7,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
+  CardFooter,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
@@ -48,6 +50,8 @@ import {
   createTtsBatch,
   exportTtsBatch,
   cancelTtsBatch,
+  pauseTtsBatch,
+  resumeTtsBatch,
   retryTtsItem,
   type TtsBatchDetail,
   type TtsBatchSummary,
@@ -189,10 +193,10 @@ export default function TtsManager() {
   const selectedBatchActive = selectedBatch ? ACTIVE_BATCH_STATUSES.has(selectedBatch.status) : false;
   const voiceFieldLoading = sessionChecking || voicesLoading;
   const voiceFieldPlaceholder = voiceFieldLoading
-    ? "Đang tải danh sách My Voice..."
+    ? "Đang tải danh sách giọng My Voice..."
     : myVoices.length > 0
       ? "Chọn giọng từ My Voice..."
-      : "Không có My Voice trong phiên hiện tại.";
+      : "Không có giọng My Voice trong phiên hiện tại.";
 
   useEffect(() => {
     void bootstrap();
@@ -226,7 +230,7 @@ export default function TtsManager() {
       setVoicesLoading(false);
       return;
     }
-    void loadVoices({ silent: true, refresh: true });
+    void loadVoices({ silent: true, refresh: false });
   }, [sessionStatus?.authenticated, sessionStatus?.dependencies_ready]);
 
   useEffect(() => {
@@ -235,7 +239,7 @@ export default function TtsManager() {
     }
 
     const intervalId = window.setInterval(() => {
-      void loadVoices({ silent: true, refresh: true });
+      void loadVoices({ silent: true, refresh: false });
     }, 45_000);
 
     return () => window.clearInterval(intervalId);
@@ -247,11 +251,11 @@ export default function TtsManager() {
     }
 
     const handleFocus = () => {
-      void loadVoices({ silent: true, refresh: true });
+      void loadVoices({ silent: true, refresh: false });
     };
     const handleVisibilityChange = () => {
       if (!document.hidden) {
-        void loadVoices({ silent: true, refresh: true });
+        void loadVoices({ silent: true, refresh: false });
       }
     };
 
@@ -267,17 +271,18 @@ export default function TtsManager() {
     if (!sessionStatus?.dependencies_ready) {
       return;
     }
-    if (sessionStatus.authenticated && myVoices.length > 0) {
+    // Only poll session status if we are NOT authenticated yet.
+    // Stop polling once authenticated.
+    if (sessionStatus.authenticated) {
       return;
     }
 
-    void refreshSessionStatus({ silent: true, loadVoices: true });
     const intervalId = window.setInterval(() => {
-      void refreshSessionStatus({ silent: true, loadVoices: true });
+      void refreshSessionStatus({ silent: true, loadVoices: false });
     }, 4000);
 
     return () => window.clearInterval(intervalId);
-  }, [myVoices.length, sessionStatus?.authenticated, sessionStatus?.dependencies_ready]);
+  }, [sessionStatus?.authenticated, sessionStatus?.dependencies_ready]);
 
   async function bootstrap() {
     setBootLoading(true);
@@ -370,7 +375,7 @@ export default function TtsManager() {
       const status = await getTtsSessionStatus(true);
       startTransition(() => setSessionStatus(status));
       if (status.authenticated && shouldLoadVoices) {
-        await loadVoices({ silent: true, refresh: true });
+        await loadVoices({ silent: true, refresh: false });
       }
       if (!silent && status.authenticated) {
         toast.success("Phiên ElevenLabs đã sẵn sàng.");
@@ -484,7 +489,7 @@ export default function TtsManager() {
       return;
     }
     if (!selectedVoice) {
-      setErrorMessage("Hay chon 1 voice trong My Voice truoc khi bat dau.");
+      setErrorMessage("Hãy chọn một giọng trong My Voice trước khi bắt đầu.");
       return;
     }
 
@@ -561,6 +566,32 @@ export default function TtsManager() {
     }
     try {
       const detail = await cancelTtsBatch(selectedBatch.id);
+      startTransition(() => setSelectedBatch(detail));
+      await refreshSummaries(true);
+    } catch (error) {
+      toast.error(getErrorMessage(error));
+    }
+  }
+
+  async function handlePauseBatch() {
+    if (!selectedBatch) {
+      return;
+    }
+    try {
+      const detail = await pauseTtsBatch(selectedBatch.id);
+      startTransition(() => setSelectedBatch(detail));
+      await refreshSummaries(true);
+    } catch (error) {
+      toast.error(getErrorMessage(error));
+    }
+  }
+
+  async function handleResumeBatch() {
+    if (!selectedBatch) {
+      return;
+    }
+    try {
+      const detail = await resumeTtsBatch(selectedBatch.id);
       startTransition(() => setSelectedBatch(detail));
       await refreshSummaries(true);
     } catch (error) {
@@ -648,7 +679,7 @@ export default function TtsManager() {
   }
 
   return (
-    <div className={cn("grid lg:grid-cols-[minmax(22rem,28rem)_minmax(0,1fr)]", TAB_CARD_GAP_CLASS)}>
+    <div className={cn("min-w-0 grid lg:grid-cols-[minmax(22rem,28rem)_minmax(0,1fr)]", TAB_CARD_GAP_CLASS)}>
       {errorMessage ? (
         <Alert className="lg:col-span-2" variant="destructive">
           <AlertTitle>Lỗi luồng TTS</AlertTitle>
@@ -656,27 +687,45 @@ export default function TtsManager() {
         </Alert>
       ) : null}
 
-      <Card className={`border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)] lg:sticky ${TAB_STICKY_TOP_CLASS} ${TAB_VIEWPORT_CARD_HEIGHT_CLASS} lg:overflow-hidden`}>
-        <CardContent className="flex min-h-0 flex-1 flex-col gap-6 lg:overflow-auto">
+      <Card className={`relative min-w-0 border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)] lg:sticky ${TAB_STICKY_TOP_CLASS} ${TAB_VIEWPORT_CARD_HEIGHT_CLASS} lg:overflow-hidden flex flex-col`}>
+        <div className="absolute top-4 right-4 flex items-center gap-2 z-10">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="flex-1 h-8 text-xs font-semibold"
+            onClick={() => void handleOpenLogin()}
+          >
+            Đăng nhập
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            className="size-8"
+            onClick={() => void handleRefreshSession()}
+            disabled={sessionRefreshing}
+            title="Làm mới phiên"
+          >
+            {sessionRefreshing ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <RefreshCw className="size-3.5" />
+            )}
+          </Button>
+          {Boolean(sessionStatus?.authenticated) && (
+            <div 
+              className="absolute -right-1 -top-1 size-2.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" 
+              title="Đã kết nối ElevenLabs" 
+            />
+          )}
+        </div>
+        <CardContent className="flex min-h-0 min-w-0 flex-1 flex-col gap-6 lg:overflow-x-hidden lg:overflow-y-auto pt-14">
           <SessionStatusAlert
             authenticated={Boolean(sessionStatus?.authenticated)}
             notReadyTitle={"Phiên ElevenLabs chưa sẵn sàng"}
             message={sessionStatus?.message ?? "Mở ElevenLabs trên trình duyệt cục bộ, đăng nhập rồi quay lại làm mới phiên."}
           />
-
-          <div className="flex flex-wrap gap-2">
-            <Button type="button" variant="outline" onClick={() => void handleOpenLogin()}>
-              {"Mở đăng nhập ElevenLabs"}
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => void handleRefreshSession()}
-              disabled={sessionRefreshing}
-            >
-              {sessionRefreshing ? "Đang làm mới..." : "Làm mới phiên"}
-            </Button>
-          </div>
 
           <FieldGroup>
             <Field>
@@ -760,23 +809,35 @@ export default function TtsManager() {
             <Field>
               <TooltipFieldLabel
                 htmlFor="tts-voice-query"
-                tooltip="Chi nhan voice thuoc My Voice trong phien ElevenLabs hien tai."
+                tooltip="Chỉ hiển thị các giọng thuộc My Voice trong phiên ElevenLabs hiện tại."
               >
-                My Voice
+                Giọng My Voice
               </TooltipFieldLabel>
-              <VoicePicker
-                voices={myVoices}
-                value={voiceQuery || undefined}
-                onValueChange={(value) => setVoiceQuery(value)}
-                disabled={voiceFieldLoading || myVoices.length === 0}
-                placeholder={voiceFieldPlaceholder}
-              />
+              <div className="flex items-center gap-2">
+                <VoicePicker
+                  voices={myVoices}
+                  value={voiceQuery || undefined}
+                  onValueChange={(value) => setVoiceQuery(value)}
+                  disabled={voiceFieldLoading || myVoices.length === 0}
+                  placeholder={voiceFieldPlaceholder}
+                  className="flex-1"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  onClick={() => void loadVoices({ refresh: true })}
+                  disabled={voicesLoading}
+                  title="Quét lại danh sách giọng"
+                >
+                  <RefreshCw className={cn("size-4", voicesLoading && "animate-spin")} />
+                </Button>
+              </div>
             </Field>
 
             <div className="grid items-start gap-4 md:grid-cols-4">
               <Field>
                 <TooltipFieldLabel
-                  className="min-h-10 items-start"
                   htmlFor="tts-model-family"
                   tooltip="Chọn dòng model của ElevenLabs. v3 tạo hai kết quả cho mỗi lượt tạo."
                 >
@@ -798,11 +859,10 @@ export default function TtsManager() {
 
               <Field>
                 <TooltipFieldLabel
-                  className="min-h-10 items-start"
                   htmlFor="tts-take-count"
                   tooltip="Số lượt tạo cho mỗi dòng. Với v3, mỗi lượt tạo sẽ sinh hai tệp như 1.1 và 1.2."
                 >
-                  Lượt tạo mỗi dòng
+                  Lượt tạo
                 </TooltipFieldLabel>
                 <Input
                   id="tts-take-count"
@@ -819,11 +879,10 @@ export default function TtsManager() {
 
               <Field>
                 <TooltipFieldLabel
-                  className="min-h-10 items-start"
                   htmlFor="tts-retry-count"
                   tooltip="Số lần thử lại tự động sau khi tạo thất bại."
                 >
-                  Số lần tự thử lại
+                  Thử lại
                 </TooltipFieldLabel>
                 <Input
                   id="tts-retry-count"
@@ -840,11 +899,10 @@ export default function TtsManager() {
 
               <Field>
                 <TooltipFieldLabel
-                  className="min-h-10 items-start"
                   htmlFor="tts-worker-count"
                   tooltip="Số worker trình duyệt chạy cùng lúc. Giá trị cao sẽ dùng nhiều cửa sổ và tài nguyên hơn."
                 >
-                  Tab song song
+                  Số luồng
                 </TooltipFieldLabel>
                 <Input
                   id="tts-worker-count"
@@ -964,39 +1022,40 @@ export default function TtsManager() {
               </Field>
             </FieldGroup>
             <Field>
-              <div className="flex items-center justify-between gap-4 rounded-xl border border-border/70 px-4 py-3">
-                <div className="space-y-1">
-                  <TooltipFieldLabel
-                    htmlFor="tts-headless"
-                    tooltip="Chạy trình duyệt nền mà không hiển thị cửa sổ."
-                  >
-                    Chế độ headless
-                  </TooltipFieldLabel>
-                </div>
+              <div className="flex items-center justify-between gap-4 rounded-lg border border-border/50 px-3 py-1.5 bg-muted/20">
+                <TooltipFieldLabel
+                  htmlFor="tts-headless"
+                  tooltip="Chạy trình duyệt nền mà không hiển thị cửa sổ."
+                  className="mb-0 text-xs font-semibold"
+                >
+                  Chạy nền (headless)
+                </TooltipFieldLabel>
                 <Switch
                   id="tts-headless"
                   checked={headless}
                   onCheckedChange={setHeadless}
                   aria-label="Bật tắt chế độ headless"
+                  className="scale-90"
                 />
               </div>
             </Field>
           </FieldGroup>
 
+        </CardContent>
+        <CardFooter className="border-t border-border/70 pt-4">
           <div className="flex flex-wrap gap-2">
             <Button type="button" variant="outline" onClick={() => void handlePreview()} disabled={previewLoading || startLoading}>
-              {previewLoading ? "Đang kiểm tra..." : "Xem trước dòng"}
+              {previewLoading ? "Đang kiểm tra..." : "Xem trước"}
             </Button>
             <Button
               type="button"
               onClick={() => void handleStart()}
               disabled={startLoading || previewLoading || !sessionStatus?.dependencies_ready}
             >
-              {startLoading ? "Đang bắt đầu..." : "Bắt đầu TTS"}
+              {startLoading ? "Đang bắt đầu..." : "Bắt đầu"}
             </Button>
           </div>
-
-        </CardContent>
+        </CardFooter>
       </Card>
 
       <Card className={`border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)] ${TAB_VIEWPORT_CARD_HEIGHT_CLASS} lg:overflow-hidden`}>
@@ -1027,9 +1086,19 @@ export default function TtsManager() {
                 >
                   {exporting ? "Đang xuất..." : `Xuất mục đã chọn (${selectedItemIds.length})`}
                 </Button>
-                {ACTIVE_BATCH_STATUSES.has(selectedBatch.status) ? (
+                {selectedBatch.status === "running" || selectedBatch.status === "queued" ? (
+                  <Button type="button" variant="secondary" onClick={() => void handlePauseBatch()}>
+                    Tạm dừng
+                  </Button>
+                ) : null}
+                {selectedBatch.status === "paused" ? (
+                  <Button type="button" variant="default" onClick={() => void handleResumeBatch()}>
+                    Tiếp tục
+                  </Button>
+                ) : null}
+                {ACTIVE_BATCH_STATUSES.has(selectedBatch.status) || selectedBatch.status === "paused" ? (
                   <Button type="button" variant="destructive" onClick={() => void handleCancelBatch()}>
-                    Dừng batch
+                    Dừng
                   </Button>
                 ) : null}
               </>

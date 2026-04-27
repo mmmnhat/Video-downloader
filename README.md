@@ -25,6 +25,7 @@ Ung dung gom backend Python, frontend React build san trong `web/dist`, va shell
 - Chay worker pool theo video, giu thu tu tung marker/step
 - Ho tro `accept`, `regenerate`, `refine`, `skip`
 - Ho tro `chain` va `from_source`
+- Luu anh gen vao cache, chi export nhung anh user da chon
 - Dong bo realtime qua `/api/story/events`
 
 ### 3. TTS Studio
@@ -34,6 +35,12 @@ Ung dung gom backend Python, frontend React build san trong `web/dist`, va shell
 - Loc theo khoang STT
 - Doc danh sach `My Voice` cua phien hien tai
 - Theo doi batch, nghe lai audio, mo output
+
+### 4. Cache Manager
+
+- Theo doi cache rieng cho Story Pipeline va TTS
+- Mo nhanh thu muc cache
+- Don dep cache theo nhom hoac toan bo khi khong con dung
 
 ## Kien truc tong quan
 
@@ -124,6 +131,7 @@ Sau do mo:
 2. Chon video trong queue
 3. Run video
 4. Review tung step voi `Accept / Regenerate / Refine / Skip`
+5. Export cac anh da duoc chon sang thu muc export
 
 ### TTS Studio
 
@@ -150,6 +158,7 @@ Sau do mo:
 - `POST /api/story/videos/import`
 - `POST /api/story/videos/{videoId}/run`
 - `POST /api/story/videos/{videoId}/pause`
+- `POST /api/story/videos/{videoId}/export`
 - `POST /api/story/actions`
 - `GET /api/story/events`
 
@@ -161,13 +170,20 @@ Sau do mo:
 - `GET /api/tts/batches`
 - `GET /api/tts/batches/{batchId}`
 
+### Cache
+
+- `GET /api/cache/bootstrap`
+- `POST /api/cache/clear`
+
 ## Thu muc runtime
 
 Mot so thu muc se duoc tao va cap nhat trong qua trinh chay:
 
-- `story_pipeline/`
-- `tts_batches/`
-- `tts_profiles/`
+- `cache/`
+  - `cache/story_pipeline/...`
+  - `cache/tts/batches/...`
+  - `cache/tts/profiles/...`
+- `story_exports/`
 
 Khong nen dua du lieu runtime lon vao commit neu khong that su can thiet.
 

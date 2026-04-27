@@ -3,8 +3,16 @@ from __future__ import annotations
 import http.cookiejar
 import webbrowser
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import HTTPCookieProcessor, Request, build_opener
+
+from downloader_app.browser_config import (
+    BrowserConfigError,
+    browser_config_manager,
+    detect_profiles_for_browser_path,
+    launch_browser_with_profile,
+)
 
 
 GOOGLE_LOGIN_URL = "https://docs.google.com/spreadsheets/u/0/"
@@ -41,6 +49,7 @@ class BrowserSessionManager:
         # Cached full cookiejar so export and has_session reuse without re-scanning
         self._cookiejar_cache: http.cookiejar.CookieJar | None = None
         self._cookiejar_cache_time: float = 0.0
+        self._active_profile_dir: str = ""
 
     _SESSION_CACHE_TTL = 60  # seconds – applies to both status and cookiejar cache
 
@@ -78,6 +87,7 @@ class BrowserSessionManager:
             "authenticated": False,
             "cookie_count": 0,
             "browser": None,
+            "profileDir": "",
             "message": "",
         }
 
@@ -91,6 +101,7 @@ class BrowserSessionManager:
         except BrowserSessionError as exc:
             if self._active_candidate is not None:
                 status["browser"] = self._active_candidate.name
+                status["profileDir"] = self._active_profile_dir
             elif self._candidates:
                 status["browser"] = self._candidates[0].name
             message = str(exc)
@@ -125,6 +136,7 @@ class BrowserSessionManager:
         status["authenticated"] = True
         status["cookie_count"] = result["cookie_count"]
         status["browser"] = result["browser"]
+        status["profileDir"] = result.get("profile_dir", "")
         status["message"] = f"Da xac nhan session Google tu {result['browser']}."
         self._set_cached_status(status)
         return status
@@ -368,8 +380,31 @@ class BrowserSessionManager:
         return None, []
 
     def open_login(self, target_url: str = GOOGLE_LOGIN_URL) -> dict:
+        configured = browser_config_manager.get_feature("downloader")
+        if configured.browser_path:
+            try:
+                return launch_browser_with_profile(
+                    feature="downloader",
+                    target_url=target_url,
+                )
+            except BrowserConfigError as exc:
+                raise BrowserSessionError(str(exc)) from exc
         opened = webbrowser.open(target_url, new=2)
         return {"opened": bool(opened), "url": target_url}
+
+    def _configured_candidate(self) -> BrowserCandidate | None:
+        configured = browser_config_manager.get_feature("downloader")
+        if not configured.browser_path:
+            return None
+        detected = detect_profiles_for_browser_path(
+            feature="downloader",
+            browser_path=configured.browser_path,
+            profile_name=configured.profile_name,
+        )
+        return BrowserCandidate(
+            name=str(detected["browserName"]),
+            loader_name=self._loader_name_for_browser(str(detected["browserName"])),
+        )
 
     def _find_working_browser(self) -> dict:
         import time
@@ -392,6 +427,44 @@ class BrowserSessionManager:
             }
 
         last_error: Exception | None = None
+        configured = browser_config_manager.get_feature("downloader")
+
+        if configured.browser_path:
+            try:
+                detected = detect_profiles_for_browser_path(
+                    feature="downloader",
+                    browser_path=configured.browser_path,
+                    profile_name=configured.profile_name,
+                )
+                candidate = BrowserCandidate(
+                    name=str(detected["browserName"]),
+                    loader_name=self._loader_name_for_browser(str(detected["browserName"])),
+                )
+                cookiejar = self._load_manual_cookiejar(
+                    candidate,
+                    profile_dir=Path(str(detected["selectedProfileDir"])),
+                    user_data_dir=Path(str(detected["userDataDir"])),
+                    domain_name="",
+                )
+                google_cookie_count = sum(
+                    1 for cookie in cookiejar if "google.com" in cookie.domain
+                )
+                if google_cookie_count <= 0:
+                    raise BrowserSessionError(
+                        f"Chua tim thay Google session hop le trong {candidate.name}. "
+                        f"Hay mo Google Sheets trong {candidate.name} co quyen xem roi bam Lam moi phien."
+                    )
+                self._active_candidate = candidate
+                self._active_profile_dir = str(detected["selectedProfileDir"])
+                self._cookiejar_cache = cookiejar
+                self._cookiejar_cache_time = time.monotonic()
+                return {
+                    "browser": candidate.name,
+                    "cookie_count": len(list(cookiejar)),
+                    "profile_dir": str(detected["selectedProfileDir"]),
+                }
+            except (BrowserConfigError, BrowserSessionError) as exc:
+                raise BrowserSessionError(str(exc)) from exc
 
         for candidate in self._candidates:
             try:
@@ -407,11 +480,13 @@ class BrowserSessionManager:
                 continue
 
             self._active_candidate = candidate
+            self._active_profile_dir = ""
             self._cookiejar_cache = cookiejar
             self._cookiejar_cache_time = time.monotonic()
             return {
                 "browser": candidate.name,
                 "cookie_count": len(list(cookiejar)),
+                "profile_dir": "",
             }
 
         raise BrowserSessionError(
@@ -427,6 +502,24 @@ class BrowserSessionManager:
                 "Thieu thu vien browser-cookie3. Hay chay pip3 install -r requirements.txt."
             ) from exc
 
+        configured = browser_config_manager.get_feature("downloader")
+        if configured.browser_path:
+            try:
+                detected = detect_profiles_for_browser_path(
+                    feature="downloader",
+                    browser_path=configured.browser_path,
+                    profile_name=configured.profile_name,
+                )
+                if str(detected["browserName"]).strip().lower() == candidate.name.strip().lower():
+                    return self._load_manual_cookiejar(
+                        candidate,
+                        profile_dir=Path(str(detected["selectedProfileDir"])),
+                        user_data_dir=Path(str(detected["userDataDir"])),
+                        domain_name=domain_name,
+                    )
+            except (BrowserConfigError, BrowserSessionError) as exc:
+                raise BrowserSessionError(str(exc)) from exc
+
         try:
             if candidate.loader_name == "coccoc":
                 loader = self._coccoc_cookie_loader(browser_cookie3)
@@ -438,6 +531,76 @@ class BrowserSessionManager:
                 f"Khong doc duoc cookie tu {candidate.name}. "
                 "Neu dung macOS, co the can cap quyen cho Terminal/Codex de doc browser profile."
             ) from exc
+
+    def _load_manual_cookiejar(
+        self,
+        candidate: BrowserCandidate,
+        *,
+        profile_dir: Path,
+        user_data_dir: Path,
+        domain_name: str,
+    ):
+        try:
+            import browser_cookie3
+        except ImportError as exc:
+            raise BrowserSessionError(
+                "Thieu thu vien browser-cookie3. Hay chay pip3 install -r requirements.txt."
+            ) from exc
+
+        cookie_paths = [
+            profile_dir / "Network" / "Cookies",
+            profile_dir / "Cookies",
+        ]
+        cookie_path = next((path for path in cookie_paths if path.exists()), None)
+        if cookie_path is None:
+            raise BrowserSessionError(f"Khong tim thay cookie db trong {profile_dir}.")
+
+        key_file = user_data_dir / "Local State"
+        if not key_file.exists():
+            raise BrowserSessionError(f"Khong tim thay Local State trong {user_data_dir}.")
+
+        try:
+            if candidate.loader_name == "coccoc":
+                class CocCoc(browser_cookie3.ChromiumBased):
+                    def __init__(self, c_file, k_file, d_name):
+                        super().__init__(
+                            browser="CocCoc",
+                            cookie_file=c_file,
+                            domain_name=d_name,
+                            key_file=k_file,
+                            os_crypt_name="coccoc",
+                            osx_key_service="CocCoc Safe Storage",
+                            osx_key_user="CocCoc",
+                        )
+
+                return CocCoc(
+                    c_file=str(cookie_path),
+                    k_file=str(key_file),
+                    d_name=domain_name,
+                ).load()
+
+            loader = getattr(browser_cookie3, candidate.loader_name, None)
+            if loader is None:
+                raise BrowserSessionError(f"Khong ho tro loader cho {candidate.name}.")
+            return loader(
+                cookie_file=str(cookie_path),
+                key_file=str(key_file),
+                domain_name=domain_name,
+            )
+        except Exception as exc:
+            raise BrowserSessionError(
+                f"Khong doc duoc cookie tu {candidate.name}. "
+                "Neu dung macOS, co the can cap quyen cho Terminal/Codex de doc browser profile."
+            ) from exc
+
+    def _loader_name_for_browser(self, browser_name: str) -> str:
+        normalized = browser_name.strip().lower()
+        for candidate in self._candidates:
+            if candidate.name.strip().lower() == normalized:
+                return candidate.loader_name
+        if normalized == "coccoc":
+            return "coccoc"
+        raise BrowserSessionError(f"Khong ho tro browser `{browser_name}`.")
 
     def _coccoc_cookie_loader(self, browser_cookie3_module):
         import glob
@@ -513,6 +676,13 @@ class BrowserSessionManager:
         return any(marker in payload for marker in sign_in_markers)
 
     def _ordered_candidates(self) -> list[BrowserCandidate]:
+        configured = browser_config_manager.get_feature("downloader")
+        if configured.browser_path:
+            try:
+                return [self._configured_candidate()]
+            except BrowserConfigError as exc:
+                raise BrowserSessionError(str(exc)) from exc
+
         if self._active_candidate is None:
             return list(self._candidates)
 

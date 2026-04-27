@@ -54,17 +54,18 @@ Hàm thực thi: `_merge_prompt(video, marker, step)` trong `downloader_app/stor
 
 Quy tắc resolve input nằm trong `_resolve_step_input_locked(...)`.
 
-## 5. Output Strategy (Preview-first + Normalize)
-Mỗi attempt ghi vào:
+## 5. Output Strategy (Flat filenames)
+Mỗi attempt ghi thẳng vào `output_root` với tên file phẳng:
 
 ```text
-<output_root>/<video_name>/marker_<idx>/step_<idx>/attempt_<idx>/
-  preview.jpg
-  normalized.jpg
+<output_root>/<video_name>.mark<idx>.step<idx>.jpg
+<output_root>/<video_name>.mark<idx>.step<idx>.a2.jpg
+<output_root>/<video_name>.mark<idx>.step<idx>.a3.jpg
 ```
 
-- `preview.jpg`: ảnh hiển thị ngay cho user review
-- `normalized.jpg`: bản chuẩn hóa để dùng cho refine/chain
+- Attempt đầu tiên không có hậu tố attempt để tên ngắn và dễ đọc.
+- Attempt sau dùng hậu tố `.a2`, `.a3`, ... để giữ history mà không cần tạo folder con.
+- `preview_path` và `normalized_path` có thể cùng trỏ vào một file ảnh chuẩn duy nhất để dùng cho cả review lẫn refine/chain.
 
 Adapter mặc định (`LocalPreviewAdapter`) copy input -> preview -> normalized để mock behavior.
 

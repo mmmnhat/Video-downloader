@@ -1,20 +1,34 @@
 from __future__ import annotations
 
+import asyncio
+import base64
+import hashlib
+import http.cookiejar
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
 import sys
 import tempfile
 import time
+import threading
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
+from downloader_app.browser_config import (
+    BrowserConfigError,
+    browser_config_manager,
+    detect_profiles_for_browser_path,
+    launch_browser_with_profile,
+)
 from downloader_app.browser_session import browser_session
+from downloader_app.runtime import resolve_binary
 
 
 GEMINI_DEFAULT_URL = "https://gemini.google.com/app"
@@ -23,16 +37,299 @@ GEMINI_GEMS_VIEW_URL = "https://gemini.google.com/gems/view"
 GEMINI_AUTH_DOMAINS = ("gemini.google.com", "google.com", "accounts.google.com")
 GEMINI_GEM_URL_MARKERS = ("/gem/", "/gems/", "/app/gems/")
 GEMINI_GEM_URL_IGNORED_SUFFIXES = ("/view", "/list", "/manage", "/discover")
+GEMINI_APP_GEM_RESERVED_IDS = {"download", "gems"}
+GEMINI_MODEL_MODE_LABELS = {
+    "gemini-1.5-flash": "Nhanh",
+    "gemini-2.5-flash": "Nhanh",
+    "gemini-2.5-flash-thinking": "Tư duy",
+    "gemini-2.5-pro": "Pro",
+    "gemini-1.5-pro": "Pro",
+    "nhanh": "Nhanh",
+    "tu-duy": "Tư duy",
+    "tu duy": "Tư duy",
+    "pro": "Pro",
+}
 
 PROFILE_ROOT_ITEMS = ("Local State",)
 PROFILE_ITEMS = (
     "Cookies",
+    "Network",
     "Local Storage",
     "Session Storage",
     "Preferences",
     "Secure Preferences",
     "Network Persistent State",
 )
+PROFILE_DIR_COOKIE_RELATIVE_PATHS = (
+    Path("Cookies"),
+    Path("Network") / "Cookies",
+)
+GEMINI_GEMS_ROOT_EXTRA_ITEMS = (
+    "first_party_sets.db",
+    "Variations",
+    "Last Version",
+)
+GEMINI_GEMS_PROFILE_EXTRA_ITEMS = (
+    "Account Web Data",
+    "IndexedDB",
+    "Sessions",
+    "Service Worker",
+    "SharedStorage",
+    "Web Data",
+    "WebStorage",
+    "shared_proto_db",
+)
+GEMINI_GEMS_INDEXEDDB_KEYWORDS = (
+    "gemini.google",
+    "gemini_google",
+    "opal.google",
+    "gds.google",
+    "accounts.google",
+    "labs.google",
+    "antigravity.google",
+    "www.google.com",
+)
+GEMINI_STARTER_GEM_LABEL_MARKERS = (
+    "bắt đầu cuộc trò chuyện mới với gem:",
+    "start a new conversation with gem:",
+)
+VISIBLE_GEMINI_CLOSE_DELAY_MS = 0
+
+
+class SharedBrowserContext:
+    """
+    Quản lý MỘT cửa sổ trình duyệt (một persistent context) với N tabs song song.
+
+    Khi max_tabs=8 và 8 worker threads cùng gọi acquire_page(), mỗi thread
+    nhận một tab riêng trong cùng một cửa sổ browser — 8 tabs xử lý đồng thời.
+    acquire_page() sẽ block nếu tất cả tabs đang bận, đến khi có tab rảnh.
+    """
+
+    def __init__(
+        self,
+        *,
+        max_tabs: int,
+        profile: "GeminiBrowserProfile",
+        runtime_root: Path,
+        headless: bool,
+        base_url: str,
+    ) -> None:
+        self._max_tabs = max(1, int(max_tabs))
+        self._profile = profile
+        self._runtime_root = runtime_root
+        self._headless = headless
+        self._base_url = base_url
+
+        self._lock = threading.Lock()
+        # Semaphore giới hạn số tab đồng thời = max_tabs
+        self._semaphore = threading.Semaphore(self._max_tabs)
+
+        self._playwright = None
+        self._context = None
+        self._runtime_profile_path: Path | None = None
+        self._pages: list[dict] = []  # [{id, page, in_use: bool}]
+        self._started = False
+        self._closed = False
+        self._idle_timer: threading.Timer | None = None
+
+    # ------------------------------------------------------------------ #
+    # Public API                                                           #
+    # ------------------------------------------------------------------ #
+
+    def acquire_page(self) -> tuple[str, object]:
+        """
+        Lấy một tab sẵn sàng. Block tối đa 10 phút nếu tất cả tabs đang bận.
+        Luôn gọi release_page() hoặc close_page() sau khi dùng xong.
+        Trả về (page_id, page).
+        """
+        current_thread_id = threading.get_ident()
+        acquired = self._semaphore.acquire(timeout=600)
+        if not acquired:
+            raise GeminiWebError("Timeout 10 phút chờ tab trình duyệt rảnh.")
+
+        self._ensure_started()
+
+        with self._lock:
+            if self._idle_timer:
+                self._idle_timer.cancel()
+                self._idle_timer = None
+            # Playwright sync objects bị ràng buộc với thread đã tạo ra chúng.
+            # Chỉ tái sử dụng tab thuộc cùng worker thread để tránh lỗi greenlet.
+            for item in self._pages:
+                if (
+                    not item["in_use"]
+                    and item.get("owner_thread_id") == current_thread_id
+                ):
+                    item["in_use"] = True
+                    return item["id"], item["page"]
+
+            for item in self._pages:
+                if not item["in_use"] and item.get("owner_thread_id") is None:
+                    item["in_use"] = True
+                    item["owner_thread_id"] = current_thread_id
+                    return item["id"], item["page"]
+
+            # Tạo tab mới
+            if len(self._pages) >= self._max_tabs:
+                self._semaphore.release()
+                raise GeminiWebError(
+                    "Khong co browser tab nao gan voi worker hien tai. "
+                    "Hay giam so luong worker hoac khoi dong lai tien trinh Gemini."
+                )
+            if self._context is None:
+                self._semaphore.release()
+                raise GeminiWebError("Browser context đã bị đóng.")
+            page = self._context.new_page()
+            page.set_default_timeout(20_000)
+            page_id = f"page-{uuid.uuid4().hex[:8]}"
+            self._pages.append(
+                {
+                    "id": page_id,
+                    "page": page,
+                    "in_use": True,
+                    "owner_thread_id": current_thread_id,
+                }
+            )
+            return page_id, page
+
+    def release_page(self, page_id: str) -> None:
+        """Trả tab về pool, tab vẫn mở để user review."""
+        with self._lock:
+            for item in self._pages:
+                if item["id"] == page_id:
+                    item["in_use"] = False
+                    break
+        self._semaphore.release()
+
+    def close_page(self, page_id: str) -> None:
+        """Đóng và xóa một tab (dùng khi tab bị lỗi nặng)."""
+        with self._lock:
+            was_in_use = False
+            for i, item in enumerate(self._pages):
+                if item["id"] == page_id:
+                    was_in_use = item["in_use"]
+                    try:
+                        item["page"].close()
+                    except Exception:
+                        pass
+                    self._pages.pop(i)
+                    break
+            
+            if was_in_use:
+                self._semaphore.release()
+
+            # Nếu không còn tab nào, đóng browser ngay lập tức (theo yêu cầu user: "tắt của sở")
+            if not self._pages and not self._closed:
+                self._shutdown_locked()
+
+    def shutdown(self) -> None:
+        """Đóng tất cả tabs, context và Playwright."""
+        with self._lock:
+            self._shutdown_locked()
+
+    def _shutdown_locked(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if self._idle_timer:
+            self._idle_timer.cancel()
+            self._idle_timer = None
+        for item in self._pages:
+            try:
+                item["page"].close()
+            except Exception:
+                pass
+        self._pages.clear()
+        if self._context is not None:
+            try:
+                self._context.close()
+            except Exception:
+                pass
+            self._context = None
+        if self._playwright is not None:
+            try:
+                self._playwright.stop()
+            except Exception:
+                pass
+            self._playwright = None
+        if self._runtime_profile_path is not None:
+            shutil.rmtree(self._runtime_profile_path, ignore_errors=True)
+            self._runtime_profile_path = None
+
+    @property
+    def is_closed(self) -> bool:
+        return self._closed
+
+    # ------------------------------------------------------------------ #
+    # Internal                                                             #
+    # ------------------------------------------------------------------ #
+
+    def _ensure_started(self) -> None:
+        with self._lock:
+            if self._started:
+                return
+            if self._closed:
+                raise GeminiWebError("SharedBrowserContext đã bị đóng.")
+            self._start_locked()
+            self._started = True
+
+    def _start_locked(self) -> None:
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError as exc:
+            raise GeminiWebError(
+                "Chưa cài Playwright. Hãy chạy `./.venv/bin/pip install playwright` "
+                "và `./.venv/bin/python -m playwright install chromium`."
+            ) from exc
+
+        runtime_id = f"gemini-shared-{uuid.uuid4().hex[:10]}"
+        self._runtime_profile_path = build_gemini_runtime_profile(
+            self._profile, self._runtime_root, runtime_id
+        )
+
+        # Đảm bảo không có asyncio loop đang chạy trong thread này.
+        # Playwright Sync API yêu cầu thread "sạch" không có running loop.
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                print(f"[GeminiWebAdapter] Thread {threading.get_ident()} has a RUNNING loop. Attempting to clear.")
+                # Nếu loop đang chạy, Playwright Sync API CHẮC CHẮN sẽ lỗi.
+                # Tuy nhiên set_event_loop(None) chỉ ảnh hưởng get_event_loop() tiếp theo,
+                # nó không dừng được loop đang chạy. Nhưng đây là nỗ lực tốt nhất.
+                asyncio.set_event_loop(None)
+        except RuntimeError:
+            pass
+
+        self._playwright = sync_playwright().start()
+        self._context = self._playwright.chromium.launch_persistent_context(
+            str(self._runtime_profile_path),
+            headless=self._headless,
+            accept_downloads=True,
+            executable_path=str(self._profile.executable_path),
+            args=[
+                f"--profile-directory={self._profile.profile_name}",
+                "--disable-blink-features=AutomationControlled",
+            ],
+        )
+        try:
+            self._context.grant_permissions(
+                ["clipboard-read", "clipboard-write"], origin=self._base_url
+            )
+        except Exception:
+            pass
+        _sync_browser_cookies_to_context(self._context, self._profile)
+        # Dùng page mặc định làm tab đầu tiên
+        first_page = self._context.pages[0] if self._context.pages else self._context.new_page()
+        first_page.set_default_timeout(20_000)
+        page_id = f"page-{uuid.uuid4().hex[:8]}"
+        self._pages.append(
+            {
+                "id": page_id,
+                "page": first_page,
+                "in_use": False,
+                "owner_thread_id": None,
+            }
+        )
 
 
 class GeminiWebError(RuntimeError):
@@ -77,6 +374,7 @@ class GeminiSessionStatus:
 class GeminiGenerationResult:
     preview_path: str
     normalized_path: str
+    thread_url: str | None = None
 
 
 @dataclass
@@ -154,6 +452,11 @@ def _normalize_gem_url(raw_url: str) -> str | None:
     lower_path = path.lower()
     if not any(marker in lower_path for marker in GEMINI_GEM_URL_MARKERS):
         return None
+
+    if lower_path.startswith("/app/"):
+        app_target = lower_path[len("/app/"):].strip("/")
+        if not app_target or "/" in app_target or app_target in GEMINI_APP_GEM_RESERVED_IDS:
+            return None
     if lower_path in {"/gems", "/app/gems"}:
         return None
     if any(lower_path.endswith(suffix) for suffix in GEMINI_GEM_URL_IGNORED_SUFFIXES):
@@ -168,6 +471,26 @@ def _fallback_gem_name(url: str) -> str:
     gem_id = url.rstrip("/").split("/")[-1].split("?")[0]
     short_id = gem_id[:10] if gem_id else "shared"
     return f"Gem {short_id}"
+
+
+def _derive_custom_gem_name(raw_text: str, *, aria_label: str = "", title: str = "") -> str:
+    for candidate in (str(aria_label or "").strip(), str(title or "").strip()):
+        if candidate:
+            return candidate
+
+    lines = [part.strip() for part in str(raw_text or "").splitlines() if part.strip()]
+    if not lines:
+        return ""
+
+    meaningful: list[str] = []
+    for index, line in enumerate(lines):
+        if index == 0 and len(line) <= 2 and len(lines) > 1:
+            continue
+        if re.fullmatch(r"(share|edit|more options)", line, flags=re.IGNORECASE):
+            continue
+        meaningful.append(line)
+
+    return meaningful[0] if meaningful else lines[0]
 
 
 def _normalize_gem_entries(raw_entries: list[dict] | None) -> list[dict]:
@@ -341,6 +664,10 @@ def _cookie_count_for_domains(cookie_path: Path, domains: tuple[str, ...]) -> in
     return int(row[0]) if row else 0
 
 
+def _cookie_paths_for_profile(profile_dir: Path) -> list[Path]:
+    return [profile_dir / relative_path for relative_path in PROFILE_DIR_COOKIE_RELATIVE_PATHS]
+
+
 def _choose_profile_dir(user_data_dir: Path, domains: tuple[str, ...]) -> Path | None:
     profile_dirs = _iter_profile_dirs(user_data_dir)
     if not profile_dirs:
@@ -348,7 +675,10 @@ def _choose_profile_dir(user_data_dir: Path, domains: tuple[str, ...]) -> Path |
 
     ranked: list[tuple[int, Path]] = []
     for profile_dir in profile_dirs:
-        count = _cookie_count_for_domains(profile_dir / "Cookies", domains)
+        count = max(
+            (_cookie_count_for_domains(cookie_path, domains) for cookie_path in _cookie_paths_for_profile(profile_dir)),
+            default=0,
+        )
         ranked.append((count, profile_dir))
 
     ranked.sort(key=lambda item: item[0], reverse=True)
@@ -362,6 +692,24 @@ def _choose_profile_dir(user_data_dir: Path, domains: tuple[str, ...]) -> Path |
 
 
 def detect_gemini_browser_profile(domains: tuple[str, ...] = GEMINI_AUTH_DOMAINS) -> GeminiBrowserProfile:
+    configured = browser_config_manager.get_feature("story")
+    if configured.browser_path:
+        try:
+            detected = detect_profiles_for_browser_path(
+                feature="story",
+                browser_path=configured.browser_path,
+                profile_name=configured.profile_name,
+            )
+        except BrowserConfigError as exc:
+            raise GeminiWebError(str(exc)) from exc
+        return GeminiBrowserProfile(
+            name=str(detected["browserName"]),
+            app_path=Path(str(detected.get("appPath") or Path(str(detected["executablePath"])).parent)),
+            executable_path=Path(str(detected["executablePath"])),
+            user_data_dir=Path(str(detected["userDataDir"])),
+            profile_dir=Path(str(detected["selectedProfileDir"])),
+        )
+
     for candidate in _available_browser_candidates():
         profile_dir = _choose_profile_dir(candidate.user_data_dir, domains)
         if profile_dir is None:
@@ -393,7 +741,74 @@ def _copy_profile_item(source: Path, destination: Path) -> None:
     shutil.copy2(source, destination)
 
 
-def build_gemini_runtime_profile(profile: GeminiBrowserProfile, runtime_root: Path, runtime_id: str) -> Path:
+def _copy_filtered_directory(
+    source: Path,
+    destination: Path,
+    *,
+    include_predicate,
+) -> None:
+    if not source.exists() or not source.is_dir():
+        return
+
+    destination.mkdir(parents=True, exist_ok=True)
+    for child in source.iterdir():
+        if include_predicate(child):
+            _copy_profile_item(child, destination / child.name)
+
+
+def _copy_gems_runtime_profile(profile: GeminiBrowserProfile, runtime_root: Path) -> None:
+    for item in GEMINI_GEMS_ROOT_EXTRA_ITEMS:
+        source = profile.user_data_dir / item
+        if source.exists():
+            _copy_profile_item(source, runtime_root / item)
+
+    runtime_profile_dir = runtime_root / profile.profile_name
+    for item in GEMINI_GEMS_PROFILE_EXTRA_ITEMS:
+        source = profile.profile_dir / item
+        destination = runtime_profile_dir / item
+        if not source.exists():
+            continue
+        if item == "IndexedDB":
+            _copy_filtered_directory(
+                source,
+                destination,
+                include_predicate=lambda child: any(
+                    keyword in child.name.lower() for keyword in GEMINI_GEMS_INDEXEDDB_KEYWORDS
+                ),
+            )
+            continue
+        if item == "Service Worker":
+            _copy_filtered_directory(
+                source,
+                destination,
+                include_predicate=lambda child: child.name in {"Database"},
+            )
+            continue
+        _copy_profile_item(source, destination)
+
+
+def _is_custom_gem_link(link: dict) -> bool:
+    normalized_url = _normalize_gem_url(str(link.get("url", "")))
+    if not normalized_url:
+        return False
+
+    combined = " ".join(
+        [
+            str(link.get("ariaLabel", "")).strip(),
+            str(link.get("title", "")).strip(),
+            str(link.get("text", "")).strip(),
+        ]
+    ).lower()
+    return not any(marker in combined for marker in GEMINI_STARTER_GEM_LABEL_MARKERS)
+
+
+def build_gemini_runtime_profile(
+    profile: GeminiBrowserProfile,
+    runtime_root: Path,
+    runtime_id: str,
+    *,
+    copy_full_profile: bool = False,
+) -> Path:
     path = runtime_root / runtime_id
     if path.exists():
         shutil.rmtree(path, ignore_errors=True)
@@ -406,6 +821,10 @@ def build_gemini_runtime_profile(profile: GeminiBrowserProfile, runtime_root: Pa
 
     runtime_profile_dir = path / profile.profile_name
     runtime_profile_dir.mkdir(parents=True, exist_ok=True)
+    if copy_full_profile:
+        _copy_gems_runtime_profile(profile, path)
+        return path
+
     for item in PROFILE_ITEMS:
         source = profile.profile_dir / item
         if source.exists():
@@ -414,22 +833,132 @@ def build_gemini_runtime_profile(profile: GeminiBrowserProfile, runtime_root: Pa
     return path
 
 
+def _cookie_matches_domain(cookie_domain: str, domains: tuple[str, ...]) -> bool:
+    normalized = cookie_domain.lstrip(".").lower()
+    return any(normalized == domain or normalized.endswith(f".{domain}") for domain in domains)
+
+
+def _load_browser_cookiejar(profile: GeminiBrowserProfile):
+    try:
+        import browser_cookie3
+    except Exception as exc:  # noqa: BLE001
+        raise GeminiWebError(
+            f"Khong dong bo duoc cookie {profile.name} vao Gemini runtime: {exc}"
+        ) from exc
+
+    key_file = profile.user_data_dir / "Local State"
+    if not key_file.exists():
+        raise GeminiWebError(f"Khong tim thay Local State cho profile {profile.profile_name}.")
+
+    combined = http.cookiejar.CookieJar()
+    cookie_paths = [path for path in _cookie_paths_for_profile(profile.profile_dir) if path.exists()]
+    if not cookie_paths:
+        raise GeminiWebError(f"Khong tim thay cookie db cho profile {profile.profile_name}.")
+
+    for cookie_path in cookie_paths:
+        try:
+            if profile.name.lower() == "coccoc":
+                class CocCocProfile(browser_cookie3.ChromiumBased):
+                    def __init__(self, c_file, k_file, d_name):
+                        super().__init__(
+                            browser="CocCoc",
+                            cookie_file=str(c_file),
+                            domain_name=d_name,
+                            key_file=str(k_file),
+                            os_crypt_name="coccoc",
+                            osx_key_service="CocCoc Safe Storage",
+                            osx_key_user="CocCoc",
+                        )
+
+                extracted = CocCocProfile(cookie_path, key_file, "").load()
+            else:
+                loader_name = profile.name.lower()
+                if loader_name == "chrome":
+                    loader = browser_cookie3.chrome
+                elif loader_name == "edge":
+                    loader = browser_cookie3.edge
+                else:
+                    raise GeminiWebError(f"Khong ho tro dong bo cookie tu {profile.name}.")
+                extracted = loader(cookie_file=str(cookie_path), key_file=str(key_file), domain_name="")
+
+            for cookie in extracted:
+                combined.set_cookie(cookie)
+        except Exception:
+            continue
+
+    return combined
+
+
+def _build_playwright_cookies(profile: GeminiBrowserProfile, domains: tuple[str, ...]) -> list[dict]:
+    cookiejar = _load_browser_cookiejar(profile)
+    deduped: dict[tuple[str, str, str], dict] = {}
+    for cookie in cookiejar:
+        if not _cookie_matches_domain(cookie.domain or "", domains):
+            continue
+
+        payload = {
+            "name": cookie.name,
+            "value": cookie.value,
+            "domain": cookie.domain,
+            "path": cookie.path or "/",
+            "httpOnly": bool(
+                getattr(cookie, "has_nonstandard_attr", lambda *_: False)("HttpOnly")
+            ),
+            "secure": bool(cookie.secure),
+        }
+        if cookie.expires:
+            payload["expires"] = float(cookie.expires)
+
+        deduped[(payload["domain"], payload["path"], payload["name"])] = payload
+
+    return list(deduped.values())
+
+
+def _sync_browser_cookies_to_context(context, profile: GeminiBrowserProfile) -> int:
+    cookies = _build_playwright_cookies(profile, GEMINI_AUTH_DOMAINS)
+    if not cookies:
+        return 0
+    context.add_cookies(cookies)
+    return len(cookies)
+
+
 def open_gemini_login_window() -> dict:
     browser_name = "browser local"
-    candidates = _available_browser_candidates()
-    if candidates:
-        browser_name = candidates[0].name
+    profile_dir = ""
+    warning_message: str | None = None
+    opened = False
+
     try:
-        opened_payload = browser_session.open_login(GEMINI_LOGIN_URL)
-    except Exception as exc:  # noqa: BLE001
-        raise GeminiWebError(f"Khong mo duoc cua so Gemini login: {exc}") from exc
+        opened_payload = launch_browser_with_profile(
+            feature="story",
+            target_url=GEMINI_LOGIN_URL,
+        )
+        opened = bool(opened_payload.get("opened", True))
+        browser_name = str(opened_payload.get("browser", browser_name))
+        profile_dir = str(opened_payload.get("profileDir", profile_dir))
+    except Exception as exc:
+        warning_message = str(exc).strip() or exc.__class__.__name__
+        try:
+            opened_payload = browser_session.open_login(GEMINI_LOGIN_URL)
+            opened = bool(opened_payload.get("opened", True))
+        except Exception as fallback_exc:  # noqa: BLE001
+            raise GeminiWebError(
+                f"Khong mo duoc cua so Gemini login: {fallback_exc}"
+            ) from fallback_exc
+
+    message = (
+        f"Da mo Gemini tren {browser_name}. Dang nhap trong {browser_name}, "
+        "roi quay lai app bam Lam moi phien."
+    )
+    if warning_message:
+        message += f" (Fallback default browser: {warning_message})"
 
     return {
-        "opened": bool(opened_payload.get("opened", True)),
+        "opened": opened,
         "url": GEMINI_LOGIN_URL,
-        "message": (
-            f"Da mo Gemini tren {browser_name}. Dang nhap xong quay lai app de tiep tuc."
-        ),
+        "browser": browser_name,
+        "profileDir": profile_dir,
+        "message": message,
     }
 
 
@@ -462,8 +991,10 @@ def check_gemini_session(*, headless: bool, base_url: str, runtime_root: Path) -
             message=str(exc),
         )
 
-    cookie_path = profile.profile_dir / "Network" / "Cookies"
-    cookie_count = _cookie_count_for_domains(cookie_path, GEMINI_AUTH_DOMAINS)
+    cookie_count = max(
+        (_cookie_count_for_domains(cookie_path, GEMINI_AUTH_DOMAINS) for cookie_path in _cookie_paths_for_profile(profile.profile_dir)),
+        default=0,
+    )
     if cookie_count > 0:
         return GeminiSessionStatus(
             dependencies_ready=True,
@@ -505,8 +1036,9 @@ def _looks_like_login_page(url: str) -> bool:
 class GeminiWebAdapter:
     """Playwright adapter for Gemini web image generation.
 
-    This adapter intentionally treats preview capture as source-of-truth and then
-    normalizes it to a local file before handing control back to the pipeline.
+    This adapter prefers downloading the underlying generated image bytes and
+    only falls back to screenshot capture when Gemini does not expose a usable
+    image source.
     """
 
     def __init__(
@@ -516,15 +1048,23 @@ class GeminiWebAdapter:
         headless: bool = False,
         base_url: str = GEMINI_DEFAULT_URL,
         response_timeout_ms: int = 120_000,
+        model_name: str = "gemini-2.5-flash",
         debug_selector: bool = False,
         debug_root: Path | None = None,
+        max_tabs: int = 1,
     ) -> None:
         self._runtime_root = runtime_root
         self._headless = headless
         self._base_url = base_url
         self._response_timeout_ms = max(20_000, int(response_timeout_ms))
+        self._model_name = str(model_name or "").strip() or "gemini-2.5-flash"
         self._debug_selector = bool(debug_selector)
         self._debug_root = Path(debug_root) if debug_root is not None else runtime_root / "_selector_debug"
+        self._ffmpeg_path = resolve_binary("ffmpeg")
+        self._ffprobe_path = resolve_binary("ffprobe")
+        self._max_tabs = max(1, int(max_tabs))
+        self._context_lock = threading.Lock()
+        self._thread_contexts: dict[int, SharedBrowserContext] = {}
 
     def generate(
         self,
@@ -535,59 +1075,38 @@ class GeminiWebAdapter:
         normalized_path: Path,
         context: dict,
     ):
+        action_mode = self._normalize_ui_text(str(context.get("mode", "auto")))
+        target_thread_url = self._sanitize_thread_url(context.get("threadUrl"))
+        is_refine_followup = action_mode == "refine" and bool(target_thread_url)
+        is_retry_followup = action_mode in {"regenerate", "retry"} and bool(target_thread_url)
+
         if not input_image_path.exists():
             raise GeminiWebError(f"Khong tim thay input image: {input_image_path}")
 
         try:
-            from playwright.sync_api import Error as PlaywrightError, TimeoutError as PlaywrightTimeoutError, sync_playwright
+            from playwright.sync_api import Error as PlaywrightError, TimeoutError as PlaywrightTimeoutError
         except ImportError as exc:  # pragma: no cover
             raise GeminiWebError(
                 "Chua cai Playwright. Hay chay `./.venv/bin/pip install -r requirements.txt` "
                 "va `./.venv/bin/python -m playwright install chromium`."
             ) from exc
 
-        profile = detect_gemini_browser_profile()
-        runtime_id = f"gemini-{uuid.uuid4().hex[:10]}"
-        runtime_profile = build_gemini_runtime_profile(profile, self._runtime_root, runtime_id)
+        shared = self._get_or_create_thread_context()
+        page_id, page = shared.acquire_page()
         debug_run_dir = self._prepare_debug_run(context) if self._debug_selector else None
 
-        playwright = None
-        browser_context = None
-        page = None
         stage = "init"
         baseline_keys: set[str] = set()
+        page_had_error = False
         try:
-            playwright = sync_playwright().start()
-            stage = "launch_context"
-            browser_context = playwright.chromium.launch_persistent_context(
-                str(runtime_profile),
-                headless=self._headless,
-                accept_downloads=False,
-                executable_path=str(profile.executable_path),
-                args=[
-                    f"--profile-directory={profile.profile_name}",
-                    "--disable-blink-features=AutomationControlled",
-                ],
-            )
-            page = browser_context.pages[0] if browser_context.pages else browser_context.new_page()
-            page.set_default_timeout(20_000)
-
             stage = "workspace_ready"
-            self._ensure_workspace_ready(page)
+            self._ensure_workspace_ready(page, target_url=target_thread_url)
+            stage = "select_mode"
+            self._apply_generation_mode(page)
             self._dump_debug_state(
                 page,
                 debug_run_dir=debug_run_dir,
                 stage="workspace_ready",
-                context=context,
-                prompt=prompt,
-                baseline_keys=None,
-            )
-            stage = "upload_input"
-            self._upload_input_image(page, input_image_path)
-            self._dump_debug_state(
-                page,
-                debug_run_dir=debug_run_dir,
-                stage="upload_input",
                 context=context,
                 prompt=prompt,
                 baseline_keys=None,
@@ -602,16 +1121,44 @@ class GeminiWebAdapter:
                 prompt=prompt,
                 baseline_keys=baseline_keys,
             )
-            stage = "submit_prompt"
-            self._submit_prompt(page, prompt)
-            self._dump_debug_state(
-                page,
-                debug_run_dir=debug_run_dir,
-                stage="submit_prompt",
-                context=context,
-                prompt=prompt,
-                baseline_keys=baseline_keys,
-            )
+
+            if is_retry_followup:
+                stage = "retry_response"
+                if not self._click_retry_action_for_latest_response(page):
+                    raise GeminiWebError("Khong tim thay nut retry/regenerate trong thread Gemini hien tai.")
+                self._dump_debug_state(
+                    page,
+                    debug_run_dir=debug_run_dir,
+                    stage="retry_response",
+                    context=context,
+                    prompt=prompt,
+                    baseline_keys=baseline_keys,
+                )
+            else:
+                stage = "upload_input"
+                self._upload_input_image(page, input_image_path)
+                self._dump_debug_state(
+                    page,
+                    debug_run_dir=debug_run_dir,
+                    stage="upload_input",
+                    context=context,
+                    prompt=prompt,
+                    baseline_keys=None,
+                )
+                stage = "collect_baseline_after_upload"
+                baseline_keys = self._collect_candidate_keys(page)
+
+                stage = "submit_prompt"
+                self._submit_prompt(page, prompt)
+                self._dump_debug_state(
+                    page,
+                    debug_run_dir=debug_run_dir,
+                    stage="submit_prompt",
+                    context=context,
+                    prompt=prompt,
+                    baseline_keys=baseline_keys,
+                )
+
             stage = "wait_preview"
             candidate = self._wait_for_new_preview(page, baseline_keys)
             self._dump_debug_state(
@@ -626,8 +1173,8 @@ class GeminiWebAdapter:
 
             preview_path.parent.mkdir(parents=True, exist_ok=True)
             stage = "capture_preview"
-            self._capture_preview(page, candidate, preview_path)
-            self._normalize_preview(preview_path, normalized_path)
+            resolved_preview_path = self._capture_preview(page, candidate, preview_path)
+            resolved_normalized_path = self._normalize_preview(resolved_preview_path, normalized_path)
             self._dump_debug_state(
                 page,
                 debug_run_dir=debug_run_dir,
@@ -639,10 +1186,12 @@ class GeminiWebAdapter:
             )
 
             return GeminiGenerationResult(
-                preview_path=str(preview_path),
-                normalized_path=str(normalized_path),
+                preview_path=str(resolved_preview_path),
+                normalized_path=str(resolved_normalized_path),
+                thread_url=self._sanitize_thread_url(page.url),
             )
         except Exception as exc:
+            page_had_error = True
             self._dump_debug_failure(
                 page,
                 debug_run_dir=debug_run_dir,
@@ -660,17 +1209,35 @@ class GeminiWebAdapter:
                 raise
             raise GeminiWebError(str(exc)) from exc
         finally:
-            if browser_context is not None:
+            # Luôn đóng tab sau khi hoàn thành để giải phóng tài nguyên
+            shared.close_page(page_id)
+
+    def shutdown(self) -> None:
+        """Hủy bỏ browser contexts của mọi worker thread."""
+        with self._context_lock:
+            for shared in self._thread_contexts.values():
                 try:
-                    browser_context.close()
+                    shared.shutdown()
                 except Exception:
                     pass
-            if playwright is not None:
-                try:
-                    playwright.stop()
-                except Exception:
-                    pass
-            shutil.rmtree(runtime_profile, ignore_errors=True)
+            self._thread_contexts.clear()
+
+    def _get_or_create_thread_context(self) -> SharedBrowserContext:
+        """Mỗi worker thread dùng context Playwright riêng để tránh lỗi greenlet/thread affinity."""
+        current_thread_id = threading.get_ident()
+        with self._context_lock:
+            shared = self._thread_contexts.get(current_thread_id)
+            if shared is None or shared.is_closed:
+                profile = detect_gemini_browser_profile()
+                shared = SharedBrowserContext(
+                    max_tabs=1,
+                    profile=profile,
+                    runtime_root=self._runtime_root,
+                    headless=self._headless,
+                    base_url=self._base_url,
+                )
+                self._thread_contexts[current_thread_id] = shared
+            return shared
 
     def _prepare_debug_run(self, context: dict) -> Path:
         self._debug_root.mkdir(parents=True, exist_ok=True)
@@ -737,6 +1304,8 @@ class GeminiWebAdapter:
                 "promptLength": len(prompt),
                 "baselineKeyCount": len(baseline_keys) if baseline_keys is not None else None,
                 "error": error,
+                "configuredGeminiModel": self._model_name,
+                "configuredGeminiMode": self._resolve_generation_mode_label(),
             }
 
             if page is None:
@@ -791,13 +1360,8 @@ class GeminiWebAdapter:
             if snippet:
                 state["domSnippet"] = snippet
 
-            screenshot_file = debug_run_dir / f"{stage}.jpg"
             html_file = debug_run_dir / f"{stage}.html"
-            try:
-                page.screenshot(path=str(screenshot_file), type="jpeg", quality=80, full_page=True)
-                state["screenshotPath"] = str(screenshot_file)
-            except Exception:
-                state["screenshotPath"] = None
+            state["screenshotPath"] = None
             try:
                 html_file.write_text(page.content(), encoding="utf-8")
                 state["htmlPath"] = str(html_file)
@@ -920,8 +1484,42 @@ class GeminiWebAdapter:
         except Exception:
             return None
 
-    def _ensure_workspace_ready(self, page) -> None:
-        page.goto(self._base_url, wait_until="domcontentloaded", timeout=35_000)
+    def _sanitize_thread_url(self, raw_url: object) -> str | None:
+        url = str(raw_url or "").strip()
+        if not url:
+            return None
+        if _looks_like_login_page(url):
+            return None
+        parsed = urlparse(url)
+        if (parsed.netloc or "gemini.google.com").lower() != "gemini.google.com":
+            return None
+        if parsed.path.rstrip("/") in {"", "/"}:
+            return None
+        return url
+
+    def _urls_match_loosely(self, left: str | None, right: str | None) -> bool:
+        if not left or not right:
+            return False
+        left_parsed = urlparse(left)
+        right_parsed = urlparse(right)
+        left_query = urlencode(sorted(parse_qsl(left_parsed.query, keep_blank_values=True)))
+        right_query = urlencode(sorted(parse_qsl(right_parsed.query, keep_blank_values=True)))
+        left_key = ((left_parsed.netloc or "").lower(), left_parsed.path.rstrip("/"), left_query)
+        right_key = ((right_parsed.netloc or "").lower(), right_parsed.path.rstrip("/"), right_query)
+        return left_key == right_key
+
+    def _ensure_workspace_ready(self, page, *, target_url: str | None = None) -> None:
+        desired_url = target_url or self._base_url
+        try:
+            current_url = page.url
+        except Exception:
+            current_url = ""
+
+        if self._urls_match_loosely(current_url, desired_url):
+            if self._find_prompt_target(page) is not None:
+                return
+
+        page.goto(desired_url, wait_until="domcontentloaded", timeout=35_000)
         if _looks_like_login_page(page.url):
             raise GeminiWebAuthError(
                 "Chua tim thay session Gemini trong browser local. Hay dang nhap Gemini roi thu lai."
@@ -941,6 +1539,172 @@ class GeminiWebAdapter:
 
         raise GeminiWebError("Khong tim thay khung nhap prompt tren Gemini.")
 
+    def _resolve_generation_mode_label(self) -> str | None:
+        raw_model = str(self._model_name or "").strip()
+        if not raw_model:
+            return None
+        normalized = self._normalize_ui_text(raw_model).replace("_", " ").replace("-", " ").strip()
+        return GEMINI_MODEL_MODE_LABELS.get(raw_model.lower()) or GEMINI_MODEL_MODE_LABELS.get(normalized)
+
+    def _apply_generation_mode(self, page) -> None:
+        desired_label = self._resolve_generation_mode_label()
+        if not desired_label:
+            return
+
+        current_label = self._read_mode_picker_label(page)
+        if self._mode_label_matches(current_label, desired_label):
+            self._dismiss_transient_overlays(page)
+            return
+
+        picker_button = self._find_mode_picker_button(page)
+        if picker_button is None:
+            print(
+                f"[DEBUG] Gemini mode picker not found; continue with current default mode while targeting `{desired_label}`.",
+                flush=True,
+            )
+            return
+
+        try:
+            picker_button.click()
+        except Exception:
+            try:
+                picker_button.click(force=True)
+            except Exception as exc:
+                print(
+                    f"[DEBUG] Gemini mode picker click failed; continue with current default mode while targeting `{desired_label}`: {exc}",
+                    flush=True,
+                )
+                return
+        page.wait_for_timeout(250)
+
+        option = self._find_mode_menu_option(page, desired_label)
+        if option is None:
+            try:
+                page.keyboard.press("Escape")
+            except Exception:
+                pass
+            print(
+                f"[DEBUG] Gemini mode option `{desired_label}` not found; continue with current default mode.",
+                flush=True,
+            )
+            return
+
+        try:
+            option.click()
+        except Exception:
+            try:
+                option.click(force=True)
+            except Exception as exc:
+                print(
+                    f"[DEBUG] Gemini mode option `{desired_label}` click failed; continue with current default mode: {exc}",
+                    flush=True,
+                )
+                return
+        page.wait_for_timeout(200)
+        self._dismiss_transient_overlays(page)
+
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            page.wait_for_timeout(200)
+            current_label = self._read_mode_picker_label(page)
+            if self._mode_label_matches(current_label, desired_label):
+                self._dismiss_transient_overlays(page)
+                return
+
+        print(
+            f"[DEBUG] Gemini mode `{desired_label}` was not confirmed after selection; continue with current default mode.",
+            flush=True,
+        )
+        self._dismiss_transient_overlays(page)
+
+    def _find_mode_picker_button(self, page):
+        selectors = [
+            'button[data-test-id="bard-mode-menu-button"]',
+            'button[aria-label*="bộ chọn chế độ" i]',
+            'button[aria-label*="mode" i]',
+        ]
+        for selector in selectors:
+            locator = page.locator(selector)
+            try:
+                count = locator.count()
+            except Exception:
+                count = 0
+            for index in range(count):
+                candidate = locator.nth(index)
+                try:
+                    if candidate.is_visible():
+                        return candidate
+                except Exception:
+                    continue
+        return None
+
+    def _read_mode_picker_label(self, page) -> str:
+        picker_button = self._find_mode_picker_button(page)
+        if picker_button is None:
+            return ""
+        try:
+            return (picker_button.inner_text() or "").strip()
+        except Exception:
+            return ""
+
+    def _find_mode_menu_option(self, page, desired_label: str):
+        desired_key = self._normalize_ui_text(desired_label)
+        selectors = [
+            "[role='menuitem']",
+            "button",
+            "[role='button']",
+            ".mat-mdc-menu-item",
+            ".mat-mdc-list-item",
+        ]
+        best = None
+        best_score = float("-inf")
+
+        for selector in selectors:
+            locator = page.locator(selector)
+            try:
+                count = locator.count()
+            except Exception:
+                count = 0
+            for index in range(min(count, 120)):
+                candidate = locator.nth(index)
+                try:
+                    if not candidate.is_visible():
+                        continue
+                    text_blob = self._button_text_blob(candidate)
+                    normalized_text = self._normalize_ui_text(text_blob)
+                    if desired_key not in normalized_text:
+                        continue
+                    box = candidate.bounding_box()
+                    if not box or box["width"] < 120 or box["height"] < 24:
+                        continue
+
+                    score = 0.0
+                    if normalized_text.startswith(desired_key):
+                        score += 140.0
+                    if "gemini 3" in normalized_text:
+                        score -= 80.0
+                    if "nang cap" in normalized_text or "ultra" in normalized_text:
+                        score -= 120.0
+                    score += min(box["width"], 420) * 0.02
+                    score += min(box["height"], 120) * 0.3
+                    if score > best_score:
+                        best = candidate
+                        best_score = score
+                except Exception:
+                    continue
+
+        return best
+
+    def _mode_label_matches(self, current_label: str, desired_label: str) -> bool:
+        current_key = self._normalize_ui_text(current_label)
+        desired_key = self._normalize_ui_text(desired_label)
+        return bool(current_key and desired_key and desired_key in current_key)
+
+    def _normalize_ui_text(self, value: str) -> str:
+        text = unicodedata.normalize("NFKD", str(value or ""))
+        text = "".join(char for char in text if not unicodedata.combining(char))
+        return re.sub(r"\s+", " ", text).strip().lower()
+
     def _upload_input_image(self, page, input_image_path: Path) -> None:
         if self._set_file_via_existing_inputs(page, input_image_path):
             return
@@ -949,16 +1713,31 @@ class GeminiWebAdapter:
         attach_buttons = self._find_attachment_buttons(page, composer)
         for button in attach_buttons:
             try:
-                with page.expect_file_chooser(timeout=1_500) as chooser_info:
-                    button.click()
-                chooser = chooser_info.value
-                chooser.set_files(str(input_image_path))
-                page.wait_for_timeout(500)
-                return
-            except Exception:
-                if self._set_file_via_existing_inputs(page, input_image_path):
+                if self._set_file_via_file_chooser_click(page, button, input_image_path):
                     return
-                continue
+            except Exception:
+                pass
+
+            try:
+                button.click(force=True)
+            except Exception:
+                try:
+                    button.evaluate("(el) => el.click()")
+                except Exception:
+                    pass
+            page.wait_for_timeout(250)
+
+            if self._set_file_via_existing_inputs(page, input_image_path):
+                return
+            if self._set_file_via_upload_menu_items(page, input_image_path):
+                return
+            if self._set_file_via_hidden_upload_triggers(page, input_image_path):
+                return
+
+        if self._set_file_via_upload_menu_items(page, input_image_path):
+            return
+        if self._set_file_via_hidden_upload_triggers(page, input_image_path):
+            return
 
         raise GeminiWebError("Khong tim thay file input de upload anh vao Gemini.")
 
@@ -971,7 +1750,16 @@ class GeminiWebAdapter:
         if target is None:
             raise GeminiWebError("Khong tim thay o nhap prompt tren Gemini.")
 
-        target.click()
+        # Dam bao focus truoc khi thuc hien bat ky thao tac nao
+        try:
+            target.scroll_into_view_if_needed()
+            target.focus()
+            page.wait_for_timeout(100)
+            target.click()
+            page.wait_for_timeout(100)
+        except Exception:
+            pass
+
         is_textarea = False
         try:
             tag_name = (target.evaluate("(el) => el.tagName") or "").lower()
@@ -982,22 +1770,220 @@ class GeminiWebAdapter:
         if is_textarea:
             target.fill(clean_prompt)
         else:
-            modifier = "Meta+A" if sys.platform == "darwin" else "Control+A"
-            page.keyboard.press(modifier)
-            page.keyboard.press("Backspace")
-            page.keyboard.insert_text(clean_prompt)
+            # Clear existing content via JS for contenteditable for reliability
+            try:
+                target.evaluate("(el) => { if (el.innerText) { el.innerText = ''; } else if (el.textContent) { el.textContent = ''; } el.dispatchEvent(new Event('input', { bubbles: true })); }")
+                page.wait_for_timeout(100)
+            except Exception:
+                pass
 
+            # Fallback clear using keyboard if JS failed
+            modifier = "Meta+A" if sys.platform == "darwin" else "Control+A"
+            try:
+                page.keyboard.press(modifier)
+                page.keyboard.press("Backspace")
+                page.wait_for_timeout(50)
+            except Exception:
+                pass
+
+            self._type_rich_text_prompt(page, target, clean_prompt)
+
+        page.wait_for_timeout(400)
+        self._ensure_prompt_submission_ready(page, target, clean_prompt)
+        self._dismiss_transient_overlays(page)
         sent = self._click_send_button(page, target)
         if not sent:
+            page.wait_for_timeout(300)
+            self._ensure_prompt_submission_ready(page, target, clean_prompt)
+            self._dismiss_transient_overlays(page)
+            sent = self._click_send_button(page, target)
+        if not sent:
             page.keyboard.press("Enter")
+
+    def _type_rich_text_prompt(self, page, target, prompt: str) -> None:
+        # Try JS injection first for speed and reliability in headless/background
+        if self._set_rich_text_prompt(target, prompt):
+            # Still trigger one keyboard event to ensure the "Send" button notices the change
+            try:
+                target.focus()
+                page.keyboard.press("End")
+                page.keyboard.type(" ")
+                page.keyboard.press("Backspace")
+            except Exception:
+                pass
+            
+            if self._prompt_text_matches(target, prompt):
+                return
+
+        # Fallback to standard typing
+        try:
+            target.focus()
+            page.keyboard.type(prompt, delay=15)
+        except Exception:
+            try:
+                page.keyboard.insert_text(prompt)
+            except Exception:
+                pass
+
+        if self._prompt_text_matches(target, prompt):
+            return
+
+        # Final attempt via JS if typing failed
+        self._set_rich_text_prompt(target, prompt)
+
+    def _normalize_prompt_text(self, value: str | None) -> str:
+        if not value:
+            return ""
+        normalized = unicodedata.normalize("NFKC", str(value))
+        normalized = normalized.replace("\r\n", "\n").replace("\r", "\n")
+        normalized = normalized.replace("\u00a0", " ")
+        normalized = re.sub(r"[\u200b-\u200d\ufeff]", "", normalized)
+        lines = [re.sub(r"[ \t]+", " ", line).strip() for line in normalized.split("\n")]
+        while lines and not lines[-1]:
+            lines.pop()
+        return "\n".join(lines)
+
+    def _read_prompt_text(self, target) -> str:
+        try:
+            value = target.evaluate(
+                """
+                (el) => {
+                  if (!el) return '';
+                  return el.innerText || el.textContent || '';
+                }
+                """
+            )
+        except Exception:
+            try:
+                value = target.inner_text() or ""
+            except Exception:
+                value = ""
+        return self._normalize_prompt_text(value)
+
+    def _prompt_text_matches(self, target, prompt: str) -> bool:
+        current_text = self._read_prompt_text(target)
+        expected_text = self._normalize_prompt_text(prompt)
+        return current_text == expected_text
+
+    def _set_rich_text_prompt(self, target, prompt: str) -> bool:
+        try:
+            target.evaluate(
+                "(el, val) => { if (el.innerText !== undefined) { el.innerText = val; } else { el.textContent = val; } el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); }",
+                prompt
+            )
+            return True
+        except Exception:
+            return False
+
+    def _ensure_prompt_submission_ready(self, page, target, prompt: str) -> None:
+        deadline = time.monotonic() + 12
+        while time.monotonic() < deadline:
+            self._dismiss_transient_overlays(page)
+            if self._is_send_button_enabled(page):
+                return
+            try:
+                target.click()
+            except Exception:
+                pass
+            page.wait_for_timeout(250)
+
+        try:
+            target.click()
+            page.keyboard.press(" ")
+            page.keyboard.press("Backspace")
+        except Exception:
+            pass
+        page.wait_for_timeout(250)
+        self._dismiss_transient_overlays(page)
+        if self._is_send_button_enabled(page):
+            return
+        raise GeminiWebError("Nut gui Gemini van bi khoa sau khi nhap prompt.")
+
+    def _is_send_button_enabled(self, page) -> bool:
+        send_selectors = [
+            ".send-button-container button",
+            "button.send-button",
+            'button[aria-label*="Gửi tin nhắn" i]',
+            'button[aria-label*="send" i]',
+            'button[aria-label*="message" i]',
+            'button[aria-label*="gui" i]',
+            'button[data-testid*="send" i]',
+            'button:has-text("Gửi")',
+            'button:has-text("Send")',
+        ]
+        for selector in send_selectors:
+            locator = page.locator(selector)
+            try:
+                count = locator.count()
+            except Exception:
+                count = 0
+            for index in range(min(count, 6)):
+                candidate = locator.nth(index)
+                try:
+                    if not candidate.is_visible():
+                        continue
+                    aria_disabled = (candidate.get_attribute("aria-disabled") or "").strip().lower()
+                    disabled_attr = candidate.get_attribute("disabled")
+                    if aria_disabled == "true" or disabled_attr is not None or candidate.is_disabled():
+                        continue
+                    return True
+                except Exception:
+                    continue
+        return False
+
+    def _dismiss_transient_overlays(self, page) -> None:
+        overlay_selectors = [
+            "[role='menu']",
+            "[role='listbox']",
+            ".mat-mdc-menu-panel",
+            ".cdk-overlay-pane",
+        ]
+
+        for _ in range(2):
+            overlay_visible = False
+            for selector in overlay_selectors:
+                locator = page.locator(selector)
+                try:
+                    count = locator.count()
+                except Exception:
+                    count = 0
+                for index in range(min(count, 8)):
+                    candidate = locator.nth(index)
+                    try:
+                        if candidate.is_visible():
+                            overlay_visible = True
+                            break
+                    except Exception:
+                        continue
+                if overlay_visible:
+                    break
+
+            if not overlay_visible:
+                return
+
+            try:
+                page.keyboard.press("Escape")
+            except Exception:
+                pass
+            try:
+                picker = page.locator('button[data-test-id="bard-mode-menu-button"][aria-expanded="true"]').first
+                if picker.count() > 0:
+                    picker.click(force=True)
+            except Exception:
+                pass
+            page.wait_for_timeout(180)
 
     def _find_prompt_target(self, page):
         selectors = [
             "textarea",
-            '[contenteditable="true"][role="textbox"]',
-            '[contenteditable="true"]',
-            '[role="textbox"][contenteditable="true"]',
-            '[role="textbox"]',
+            ".ql-editor",
+            "div[contenteditable='true']",
+            "[role='textbox'][contenteditable='true']",
+            "[contenteditable='true'][role='textbox']",
+            "div[aria-label*='Nhập' i]",
+            "div[aria-label*='Prompt' i]",
+            "div[aria-label*='tin nhắn' i]",
+            "[role='textbox']",
         ]
 
         best = None
@@ -1059,6 +2045,211 @@ class GeminiWebAdapter:
                 continue
         return False
 
+    def _set_file_via_hidden_upload_triggers(self, page, input_image_path: Path) -> bool:
+        selectors = [
+            'button[data-test-id="hidden-local-image-upload-button"]',
+            'button[data-test-id="hidden-local-file-upload-button"]',
+            'button[xapfileselectortrigger][data-test-id*="upload" i]',
+            'button[xapfileselectortrigger]',
+        ]
+
+        for selector in selectors:
+            locator = page.locator(selector)
+            try:
+                count = locator.count()
+            except Exception:
+                count = 0
+
+            for index in reversed(range(count)):
+                if self._set_file_via_file_chooser_click(page, locator.nth(index), input_image_path, timeout_ms=1_000):
+                    return True
+
+        return False
+
+    def _set_file_via_upload_menu_items(self, page, input_image_path: Path) -> bool:
+        candidates: list[tuple[float, object]] = []
+        selectors = [
+            "[role='menuitem']",
+            "button",
+            "[role='button']",
+            ".mat-mdc-menu-item",
+            ".mat-mdc-list-item",
+        ]
+        preferred_patterns = [
+            r"tải\s*tệp\s*lên",
+            r"thêm\s*tệp",
+            r"upload",
+            r"from\s+computer",
+            r"local\s+file",
+            r"ảnh",
+            r"image",
+            r"photo",
+        ]
+        reject_patterns = [
+            r"drive",
+            r"notebooklm",
+            r"nhập\s*mã",
+            r"code",
+        ]
+
+        seen: set[str] = set()
+        for selector in selectors:
+            locator = page.locator(selector)
+            try:
+                count = locator.count()
+            except Exception:
+                count = 0
+
+            for index in range(min(count, 80)):
+                item = locator.nth(index)
+                try:
+                    if not item.is_visible():
+                        continue
+                    box = item.bounding_box()
+                    if not box or box["width"] < 60 or box["height"] < 24:
+                        continue
+                    text_blob = self._button_text_blob(item)
+                    if not text_blob or text_blob in seen:
+                        continue
+                    seen.add(text_blob)
+                    if any(re.search(pattern, text_blob, flags=re.IGNORECASE) for pattern in reject_patterns):
+                        continue
+
+                    score = 0.0
+                    for pattern in preferred_patterns:
+                        if re.search(pattern, text_blob, flags=re.IGNORECASE):
+                            score += 120.0
+                    if "ảnh" in text_blob or "image" in text_blob or "photo" in text_blob:
+                        score += 30.0
+                    if score <= 0:
+                        continue
+
+                    candidates.append((score, item))
+                except Exception:
+                    continue
+
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        for _, item in candidates[:8]:
+            if self._set_file_via_file_chooser_click(page, item, input_image_path, timeout_ms=1_500):
+                return True
+            if self._set_file_via_existing_inputs(page, input_image_path):
+                return True
+
+        return False
+
+    def _set_file_via_file_chooser_click(self, page, target, input_image_path: Path, *, timeout_ms: int = 1_500) -> bool:
+        clickers = [
+            lambda: target.click(),
+            lambda: target.click(force=True),
+            lambda: target.evaluate("(el) => el.click()"),
+        ]
+        for clicker in clickers:
+            try:
+                with page.expect_file_chooser(timeout=timeout_ms) as chooser_info:
+                    clicker()
+                chooser = chooser_info.value
+                chooser.set_files(str(input_image_path))
+                page.wait_for_timeout(500)
+                return True
+            except Exception:
+                if self._set_file_via_existing_inputs(page, input_image_path):
+                    return True
+                continue
+        return False
+
+    def _button_text_blob(self, candidate) -> str:
+        try:
+            aria_label = candidate.get_attribute("aria-label") or ""
+        except Exception:
+            aria_label = ""
+        try:
+            inner_text = candidate.inner_text() or ""
+        except Exception:
+            inner_text = ""
+        try:
+            title = candidate.get_attribute("title") or ""
+        except Exception:
+            title = ""
+        return " ".join([aria_label, inner_text, title]).strip().lower()
+
+    def _collect_locator_source_urls(self, locator) -> list[str]:
+        try:
+            raw_urls = locator.evaluate(
+                """(el) => {
+                    const collected = [];
+                    const seen = new Set();
+                    const push = (value) => {
+                        if (typeof value !== 'string') return;
+                        const normalized = value.trim();
+                        if (!normalized || seen.has(normalized)) return;
+                        if (
+                            normalized.startsWith('blob:') ||
+                            normalized.startsWith('data:') ||
+                            normalized.startsWith('http://') ||
+                            normalized.startsWith('https://') ||
+                            normalized.startsWith('/')
+                        ) {
+                            seen.add(normalized);
+                            collected.push(normalized);
+                        }
+                    };
+
+                    const pushSrcSet = (value) => {
+                        if (typeof value !== 'string') return;
+                        for (const part of value.split(',')) {
+                            const candidateUrl = part.trim().split(/\\s+/)[0];
+                            push(candidateUrl);
+                        }
+                    };
+
+                    const attrNames = [
+                        'data-full-src',
+                        'data-full-image-src',
+                        'data-image-src',
+                        'data-image-url',
+                        'data-download-url',
+                        'data-large-src',
+                        'data-src',
+                    ];
+
+                    push(el.currentSrc || '');
+                    push(el.src || '');
+                    push(el.getAttribute('src') || '');
+                    pushSrcSet(el.currentSrc ? '' : el.getAttribute('srcset') || '');
+                    pushSrcSet(el.getAttribute('srcset') || '');
+                    pushSrcSet(el.getAttribute('data-srcset') || '');
+                    for (const name of attrNames) {
+                        push(el.getAttribute?.(name) || '');
+                    }
+
+                    let node = el;
+                    while (node) {
+                        if (node instanceof HTMLAnchorElement) {
+                            push(node.href || node.getAttribute('href') || '');
+                        }
+                        for (const name of attrNames) {
+                            push(node.getAttribute?.(name) || '');
+                        }
+                        node = node.parentElement;
+                    }
+
+                    return collected;
+                }"""
+            )
+        except Exception:
+            return []
+
+        if not isinstance(raw_urls, list):
+            return []
+        return [str(item).strip() for item in raw_urls if str(item).strip()]
+
+    def _is_probable_attachment_button(self, text_blob: str) -> bool:
+        attach_tokens = ["upload", "attach", "image", "photo", "file", "tải", "anh", "ảnh", "hình", "đính", "tệp"]
+        reject_tokens = ["bỏ chọn", "deselect", "công cụ", "toolbox", "tools", "micrô", "microphone", "gửi", "send"]
+        if any(token in text_blob for token in reject_tokens):
+            return False
+        return any(token in text_blob for token in attach_tokens)
+
     def _find_attachment_buttons(self, page, composer) -> list[object]:
         """
         Locates buttons used for attaching files/images.
@@ -1083,7 +2274,7 @@ class GeminiWebAdapter:
                 count = locators.count()
                 for i in range(count):
                     btn = locators.nth(i)
-                    if btn.is_visible():
+                    if btn.is_visible() and self._is_probable_attachment_button(self._button_text_blob(btn)):
                         candidates.append(btn)
             except Exception:
                 continue
@@ -1091,7 +2282,6 @@ class GeminiWebAdapter:
         if candidates:
             return candidates
 
-        attach_tokens = ["upload", "attach", "image", "photo", "file", "tải", "anh", "ảnh", "hình", "đính", "tệp"]
         send_tokens = ["send", "run", "generate", "gửi", "gui", "tạo", "tao", "chạy", "chay"]
         
         composer_box = None
@@ -1111,17 +2301,14 @@ class GeminiWebAdapter:
                 btn = buttons.nth(i)
                 if not btn.is_visible():
                     continue
-                
-                label = (btn.get_attribute("aria-label") or "").lower()
-                text = (btn.inner_text() or "").lower()
-                title = (btn.get_attribute("title") or "").lower()
-                combined = f"{label} {text} {title}"
+
+                combined = self._button_text_blob(btn)
                 
                 if any(token in combined for token in send_tokens):
                     continue
                 
                 score = 0.0
-                if any(token in combined for token in attach_tokens):
+                if self._is_probable_attachment_button(combined):
                     score += 200.0
                 
                 if composer_box:
@@ -1140,10 +2327,7 @@ class GeminiWebAdapter:
 
         return []
 
-    def list_gems(self) -> list[dict]:
-        """
-        Navigates to the Gems view page and extracts available Gems.
-        """
+    def _list_gems_with_playwright(self) -> list[dict]:
         try:
             from playwright.sync_api import sync_playwright
         except ImportError:
@@ -1151,7 +2335,15 @@ class GeminiWebAdapter:
 
         profile = detect_gemini_browser_profile()
         runtime_id = f"list-gems-{uuid.uuid4().hex[:8]}"
-        runtime_profile = build_gemini_runtime_profile(profile, self._runtime_root, runtime_id)
+        # The minimal generation runtime does not always expose the Gemini "My Gems"
+        # state. Use a broader but still filtered profile snapshot so gem scanning
+        # stays fast even when the source browser profile is very large.
+        runtime_profile = build_gemini_runtime_profile(
+            profile,
+            self._runtime_root,
+            runtime_id,
+            copy_full_profile=True,
+        )
 
         playwright = None
         context = None
@@ -1163,41 +2355,90 @@ class GeminiWebAdapter:
                 executable_path=str(profile.executable_path),
                 args=[f"--profile-directory={profile.profile_name}"],
             )
+            _sync_browser_cookies_to_context(context, profile)
             page = context.pages[0] if context.pages else context.new_page()
             page.set_default_timeout(30_000)
 
-            page.goto(GEMINI_GEMS_VIEW_URL, wait_until="networkidle", timeout=25_000)
+            page.goto(GEMINI_GEMS_VIEW_URL, wait_until="domcontentloaded", timeout=25_000)
+            page.wait_for_timeout(3_000)
 
+            dismiss_button = page.get_by_role("button", name="Dismiss")
             try:
-                page.wait_for_selector('a[href*="/gem/"], a[href*="/gems/"], a[href*="/app/gems/"]', timeout=8_000)
+                if dismiss_button.count():
+                    dismiss_button.first.click()
             except Exception:
                 pass
 
-            raw_gems = page.evaluate("""() => {
-                const results = [];
-                const links = Array.from(document.querySelectorAll('a[href]'));
-                for (const link of links) {
-                    const href = link.href;
-                    if (!href) continue;
-
-                    const heading = link.querySelector('[role="heading"], h1, h2, h3, h4, strong, b');
-                    let name = (heading?.textContent || link.innerText || link.textContent || '')
-                        .trim()
-                        .split('\\n')
-                        .map((part) => part.trim())
-                        .find(Boolean) || '';
-
-                    if (!name || name.length < 2) {
-                        name = (link.getAttribute('title') || link.getAttribute('aria-label') || '').trim();
+            def read_all_gems_state() -> dict:
+                return page.evaluate("""() => {
+                    const containers = Array.from(document.querySelectorAll('[data-test-id$="-gems-list"]'));
+                    if (containers.length === 0) {
+                        return { hasContainer: false, text: '', links: [] };
                     }
 
-                    results.push({ name, url: href });
-                }
-                return results;
+                    let allLinks = [];
+                    containers.forEach(container => {
+                        const links = Array.from(container.querySelectorAll('a[href]')).map((link) => ({
+                            url: link.href || link.getAttribute('href') || '',
+                            text: (link.innerText || link.textContent || '').trim(),
+                            ariaLabel: (link.getAttribute('aria-label') || '').trim(),
+                            title: (link.getAttribute('title') || '').trim(),
+                        }));
+                        allLinks = allLinks.concat(links);
+                    });
+
+                    return {
+                        hasContainer: true,
+                        links: allLinks,
+                    };
             }""")
 
-            if _normalize_gem_url(self._base_url):
-                raw_gems.append({"name": "Gem dang chon", "url": self._base_url})
+            def read_fallback_gem_links() -> list[dict]:
+                return page.evaluate("""() => {
+                    const links = Array.from(document.querySelectorAll('a[href]')).map((link) => ({
+                        url: link.href || link.getAttribute('href') || '',
+                        text: (link.innerText || link.textContent || '').trim(),
+                        ariaLabel: (link.getAttribute('aria-label') || '').trim(),
+                        title: (link.getAttribute('title') || '').trim(),
+                    }));
+                    return links.filter((link) =>
+                        /gemini\\.google\\.com\\/(gem|gems|app\\/gems)/i.test(link.url) ||
+                        /^\\/(gem|gems|app\\/gems)/i.test(link.url)
+                    );
+                }""")
+
+            raw_gems: list[dict] = []
+            for i in range(15):
+                state = read_all_gems_state()
+                container_links = list(state.get("links") or [])
+                fallback_links = [l for l in read_fallback_gem_links() if _is_custom_gem_link(l)]
+                
+                # Combine both sources
+                combined_links = container_links + fallback_links
+                
+                if combined_links:
+                    # If this is the first time we find something, wait a bit for potential more gems to load
+                    if i < 3:
+                        page.wait_for_timeout(1500)
+                        state = read_all_gems_state()
+                        container_links = list(state.get("links") or [])
+                        fallback_links = [l for l in read_fallback_gem_links() if _is_custom_gem_link(l)]
+                        combined_links = container_links + fallback_links
+
+                    raw_gems = [
+                        {
+                            "name": _derive_custom_gem_name(
+                                str(link.get("text", "")),
+                                aria_label=str(link.get("ariaLabel", "")),
+                                title=str(link.get("title", "")),
+                            ),
+                            "url": str(link.get("url", "")),
+                        }
+                        for link in combined_links
+                    ]
+                    raw_gems = [entry for entry in raw_gems if entry["name"] and entry["url"]]
+                    break
+                page.wait_for_timeout(1000)
 
             return _normalize_gem_entries(raw_gems)
         except Exception as e:
@@ -1208,29 +2449,65 @@ class GeminiWebAdapter:
             if playwright: playwright.stop()
             shutil.rmtree(runtime_profile, ignore_errors=True)
 
+    def list_gems(self) -> list[dict]:
+        """
+        Runs gem scanning in a subprocess to avoid GUI/runtime conflicts with
+        the desktop app process.
+        """
+        if os.environ.get("FLOWGEN_GEM_SCAN_MODE") == "child":
+            return self._list_gems_with_playwright()
+
+        script = (
+            "import json, os, sys\n"
+            "from pathlib import Path\n"
+            "from downloader_app.gemini_web_adapter import GeminiWebAdapter\n"
+            "os.environ['FLOWGEN_GEM_SCAN_MODE'] = 'child'\n"
+            "adapter = GeminiWebAdapter(runtime_root=Path(sys.argv[1]))\n"
+            "print(json.dumps(adapter._list_gems_with_playwright(), ensure_ascii=False))\n"
+        )
+        try:
+            completed = subprocess.run(
+                [sys.executable, "-c", script, str(self._runtime_root)],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=60,
+                cwd=str(Path(__file__).resolve().parent.parent),
+            )
+        except Exception as exc:
+            print(f"[DEBUG] Gem scan subprocess launch failed: {exc}")
+            return []
+
+        stdout = str(completed.stdout or "").strip()
+        if completed.returncode == 0 and stdout:
+            try:
+                return _normalize_gem_entries(json.loads(stdout.splitlines()[-1]))
+            except Exception:
+                print("[DEBUG] Gem scan subprocess returned unparsable JSON.")
+                return []
+
+        stderr = str(completed.stderr or "").strip()
+        if completed.returncode != 0:
+            print(f"[DEBUG] Gem scan subprocess exited with code {completed.returncode}: {stderr}")
+        return []
+
     def _click_send_button(self, page, composer) -> bool:
         send_selectors = [
+            ".send-button-container button",
+            "button.send-button",
             'button[aria-label*="send" i]',
+            'button[aria-label*="message" i]',
+            'button[aria-label*="gửi" i]',
+            'button[aria-label*="gui" i]',
             'button[aria-label*="run" i]',
             '[role="button"][aria-label*="send" i]',
+            '[role="button"][aria-label*="gửi" i]',
             'button[data-testid*="send" i]',
             'button[data-testid*="submit" i]',
         ]
-        for selector in send_selectors:
-            try:
-                locator = page.locator(selector)
-                count = locator.count()
-                for index in reversed(range(min(count, 8))):
-                    candidate = locator.nth(index)
-                    if not candidate.is_visible() or candidate.is_disabled():
-                        continue
-                    candidate.click()
-                    return True
-            except Exception:
-                continue
-
         send_tokens = [
             "send",
+            "message",
             "run",
             "generate",
             "submit",
@@ -1260,69 +2537,87 @@ class GeminiWebAdapter:
             except Exception:
                 composer_box = None
 
-        best = None
-        best_score = float("-inf")
-        buttons = page.locator("button, [role='button']")
-        try:
-            count = buttons.count()
-        except Exception:
-            count = 0
-        for index in range(min(count, 140)):
-            candidate = buttons.nth(index)
+        for _ in range(8):
+            for selector in send_selectors:
+                try:
+                    locator = page.locator(selector)
+                    count = locator.count()
+                    for index in reversed(range(min(count, 8))):
+                        candidate = locator.nth(index)
+                        if not candidate.is_visible() or candidate.is_disabled():
+                            continue
+                        candidate.click()
+                        return True
+                except Exception:
+                    continue
+
+            best = None
+            best_score = float("-inf")
+            buttons = page.locator("button, [role='button']")
             try:
-                if not candidate.is_visible() or candidate.is_disabled():
-                    continue
-                box = candidate.bounding_box()
-                if not box:
-                    continue
-                if box["width"] < 20 or box["height"] < 20:
-                    continue
-                if box["width"] > 220 or box["height"] > 140:
-                    continue
-                text_blob = " ".join(
-                    [
-                        (candidate.get_attribute("aria-label") or ""),
-                        (candidate.inner_text() or ""),
-                        (candidate.get_attribute("title") or ""),
-                    ]
-                ).strip().lower()
-                attach_hint = any(token in text_blob for token in attach_tokens)
-                if attach_hint:
-                    continue
-
-                send_hint = any(token in text_blob for token in send_tokens)
-                score = 0.0
-                if send_hint:
-                    score += 220.0
-
-                if composer_box:
-                    center_x = box["x"] + box["width"] / 2
-                    center_y = box["y"] + box["height"] / 2
-                    composer_x = composer_box["x"] + composer_box["width"] / 2
-                    composer_y = composer_box["y"] + composer_box["height"] / 2
-                    distance = abs(center_x - composer_x) + abs(center_y - composer_y)
-                    score += max(0.0, 420.0 - distance)
-
-                    if center_x > composer_x:
-                        score += 30.0
-                    if (
-                        box["y"] + box["height"] >= composer_box["y"] - 30
-                        and box["y"] <= composer_box["y"] + composer_box["height"] + 30
-                    ):
-                        score += 60.0
-                score += min(box["width"] * box["height"], 3_000) * 0.02
-                if score > best_score:
-                    best = candidate
-                    best_score = score
+                count = buttons.count()
             except Exception:
-                continue
+                count = 0
+            for index in range(min(count, 160)):
+                candidate = buttons.nth(index)
+                try:
+                    if not candidate.is_visible() or candidate.is_disabled():
+                        continue
+                    box = candidate.bounding_box()
+                    if not box:
+                        continue
+                    if box["width"] < 20 or box["height"] < 20:
+                        continue
+                    if box["width"] > 220 or box["height"] > 140:
+                        continue
+                    text_blob = " ".join(
+                        [
+                            (candidate.get_attribute("aria-label") or ""),
+                            (candidate.inner_text() or ""),
+                            (candidate.get_attribute("title") or ""),
+                            (candidate.get_attribute("class") or ""),
+                        ]
+                    ).strip().lower()
+                    attach_hint = any(token in text_blob for token in attach_tokens)
+                    if attach_hint:
+                        continue
 
-        if best is not None and best_score >= 120:
-            try:
-                best.click()
-                return True
-            except Exception:
-                pass
+                    send_hint = any(token in text_blob for token in send_tokens)
+                    score = 0.0
+                    if "send-button" in text_blob:
+                        score += 320.0
+                    if send_hint:
+                        score += 220.0
+
+                    if composer_box:
+                        center_x = box["x"] + box["width"] / 2
+                        center_y = box["y"] + box["height"] / 2
+                        composer_x = composer_box["x"] + composer_box["width"] / 2
+                        composer_y = composer_box["y"] + composer_box["height"] / 2
+                        distance = abs(center_x - composer_x) + abs(center_y - composer_y)
+                        score += max(0.0, 420.0 - distance)
+
+                        if center_x > composer_x:
+                            score += 30.0
+                        if (
+                            box["y"] + box["height"] >= composer_box["y"] - 30
+                            and box["y"] <= composer_box["y"] + composer_box["height"] + 30
+                        ):
+                            score += 60.0
+                    score += min(box["width"] * box["height"], 3_000) * 0.02
+                    if score > best_score:
+                        best = candidate
+                        best_score = score
+                except Exception:
+                    continue
+
+            if best is not None and best_score >= 120:
+                try:
+                    best.click()
+                    return True
+                except Exception:
+                    pass
+            page.wait_for_timeout(250)
         return False
 
     def _collect_preview_candidates(self, page) -> list[_PreviewCandidate]:
@@ -1353,6 +2648,8 @@ class GeminiWebAdapter:
                 if not src:
                     continue
                 alt = (candidate.get_attribute("alt") or "").strip()
+                if self._is_uploaded_input_preview(candidate, alt=alt):
+                    continue
 
                 source_score = 0.0
                 lowered_src = src.lower()
@@ -1396,6 +2693,197 @@ class GeminiWebAdapter:
 
         candidates.sort(key=lambda item: (item.score, item.y_bottom))
         return candidates
+
+    def _collect_uploaded_preview_candidates(self, page) -> list[_PreviewCandidate]:
+        candidates: list[_PreviewCandidate] = []
+        seen: set[str] = set()
+        locator = page.locator("img")
+        try:
+            count = locator.count()
+        except Exception:
+            count = 0
+
+        for index in range(min(count, 200)):
+            candidate = locator.nth(index)
+            try:
+                if not candidate.is_visible():
+                    continue
+                box = candidate.bounding_box()
+                if not box:
+                    continue
+                src = (candidate.get_attribute("src") or "").strip()
+                alt = (candidate.get_attribute("alt") or "").strip()
+                if not src or not self._is_uploaded_input_preview(candidate, alt=alt):
+                    continue
+
+                width = int(box.get("width", 0))
+                height = int(box.get("height", 0))
+                key = (
+                    f"{src}|{width}x{height}|"
+                    f"{int(box['x'])}:{int(box['y'])}|{alt[:80]}"
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                candidates.append(
+                    _PreviewCandidate(
+                        key=key,
+                        locator=candidate,
+                        score=float((width * height) + box["y"]),
+                        y_bottom=float(box["y"] + box["height"]),
+                        src=src[:260],
+                        width=width,
+                        height=height,
+                        x=int(box["x"]),
+                        y=int(box["y"]),
+                    )
+                )
+            except Exception:
+                continue
+
+        candidates.sort(key=lambda item: (item.y_bottom, item.score))
+        return candidates
+
+    def _collect_uploaded_preview_keys(self, page) -> set[str]:
+        return {candidate.key for candidate in self._collect_uploaded_preview_candidates(page)}
+
+    def _wait_for_new_uploaded_preview(self, page, baseline_keys: set[str]) -> _PreviewCandidate:
+        deadline = time.monotonic() + 12
+        stable_candidate: _PreviewCandidate | None = None
+        stable_count = 0
+
+        while time.monotonic() < deadline:
+            candidates = self._collect_uploaded_preview_candidates(page)
+            new_candidates = [candidate for candidate in candidates if candidate.key not in baseline_keys]
+            if new_candidates:
+                latest = new_candidates[-1]
+                if stable_candidate and latest.key == stable_candidate.key:
+                    stable_count += 1
+                else:
+                    stable_candidate = latest
+                    stable_count = 1
+                if stable_count >= 2:
+                    return latest
+            page.wait_for_timeout(300)
+
+        raise GeminiWebError("Khong phat hien uploaded preview moi sau khi paste anh vao Gemini.")
+
+    def _is_candidate_in_composer_area(self, page, candidate: _PreviewCandidate) -> bool:
+        composer = self._find_prompt_target(page)
+        if composer is None:
+            return False
+
+        try:
+            composer_box = composer.bounding_box()
+        except Exception:
+            composer_box = None
+        if not composer_box:
+            return False
+
+        candidate_center_x = candidate.x + (candidate.width / 2)
+        composer_left = composer_box["x"] - 120
+        composer_right = composer_box["x"] + composer_box["width"] + 120
+        if not (composer_left <= candidate_center_x <= composer_right):
+            return False
+
+        candidate_bottom = candidate.y + candidate.height
+        composer_top = composer_box["y"] - 120
+        composer_bottom = composer_box["y"] + composer_box["height"] + 160
+        return candidate_bottom >= composer_top and candidate.y <= composer_bottom
+
+    def _uploaded_candidates_match(self, page, left: _PreviewCandidate, right: _PreviewCandidate) -> bool:
+        left_urls = set(self._collect_candidate_source_urls(left))
+        right_urls = set(self._collect_candidate_source_urls(right))
+        if left_urls and right_urls and left_urls.intersection(right_urls):
+            return True
+
+        if abs(left.width - right.width) > 24 or abs(left.height - right.height) > 24:
+            return False
+
+        if self._is_candidate_in_composer_area(page, left) == self._is_candidate_in_composer_area(page, right):
+            return False
+
+        return True
+
+    def _wait_for_sent_uploaded_preview(
+        self,
+        page,
+        baseline_keys: set[str],
+        reference_candidate: _PreviewCandidate,
+        *,
+        minimum_y_bottom: float | None = None,
+        stable_samples: int = 2,
+    ) -> _PreviewCandidate | None:
+        deadline = time.monotonic() + 12
+        stable_candidate: _PreviewCandidate | None = None
+        stable_count = 0
+
+        while time.monotonic() < deadline:
+            candidates = [
+                candidate
+                for candidate in self._collect_uploaded_preview_candidates(page)
+                if not self._is_candidate_in_composer_area(page, candidate)
+            ]
+
+            preferred = []
+            for candidate in candidates:
+                if candidate.key in baseline_keys:
+                    continue
+                if minimum_y_bottom is not None and candidate.y_bottom <= (minimum_y_bottom + 24):
+                    continue
+                preferred.append(candidate)
+
+            if not preferred and minimum_y_bottom is None:
+                preferred = [
+                    candidate
+                    for candidate in candidates
+                    if candidate.key not in baseline_keys
+                    and self._uploaded_candidates_match(page, candidate, reference_candidate)
+                ]
+
+            if preferred:
+                latest = preferred[-1]
+                if stable_candidate and latest.key == stable_candidate.key:
+                    stable_count += 1
+                else:
+                    stable_candidate = latest
+                    stable_count = 1
+                if stable_count >= max(1, stable_samples):
+                    return latest
+
+            page.wait_for_timeout(300)
+
+        return None
+
+    def _is_uploaded_input_preview(self, candidate, *, alt: str) -> bool:
+        normalized_alt = self._normalize_ui_text(alt)
+        if normalized_alt and (
+            "ban xem truoc hinh anh da tai len" in normalized_alt
+            or "uploaded image preview" in normalized_alt
+            or "preview image" in normalized_alt
+        ):
+            return True
+
+        try:
+            is_uploaded = candidate.evaluate(
+                """(el) => {
+                    if (!el) return false;
+                    const dataTestId = (el.getAttribute('data-test-id') || '').toLowerCase();
+                    if (dataTestId.includes('uploaded-img')) return true;
+
+                    const uploadPreview = el.closest(
+                      'user-query, user-query-file-preview, user-query-file-carousel, .file-preview-container'
+                    );
+                    if (uploadPreview) return true;
+
+                    const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
+                    if (ariaLabel.includes('tải lên') || ariaLabel.includes('uploaded')) return true;
+                    return false;
+                }"""
+            )
+            return bool(is_uploaded)
+        except Exception:
+            return False
 
     def _collect_candidate_keys(self, page) -> set[str]:
         return {candidate.key for candidate in self._collect_preview_candidates(page)}
@@ -1469,18 +2957,1232 @@ class GeminiWebAdapter:
         text = str(message).strip()
         return text or None
 
-    def _capture_preview(self, page, candidate: _PreviewCandidate, preview_path: Path) -> None:
+    def _collect_candidate_source_urls(self, candidate: _PreviewCandidate) -> list[str]:
+        return self._collect_locator_source_urls(candidate.locator)
+
+    def _resolve_output_path(self, target_path: Path, *, source_url: str = "", content_type: str = "") -> Path:
+        suffix = ""
+        lowered_type = str(content_type or "").split(";", 1)[0].strip().lower()
+        if lowered_type == "image/jpeg":
+            suffix = ".jpg"
+        elif lowered_type == "image/png":
+            suffix = ".png"
+        elif lowered_type == "image/webp":
+            suffix = ".webp"
+        elif lowered_type == "image/gif":
+            suffix = ".gif"
+
+        if not suffix and source_url:
+            parsed = urlparse(source_url)
+            source_suffix = Path(parsed.path).suffix.lower()
+            if source_suffix in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
+                suffix = ".jpg" if source_suffix == ".jpeg" else source_suffix
+
+        if not suffix:
+            suffix = target_path.suffix or ".jpg"
+
+        return target_path.with_suffix(suffix)
+
+    def _fetch_image_bytes_from_page(self, page, source_url: str) -> tuple[bytes, str] | None:
         try:
-            candidate.locator.screenshot(path=str(preview_path), type="jpeg", quality=92)
+            payload = page.evaluate(
+                """async (url) => {
+                    const toBase64 = (buffer) => {
+                        const bytes = new Uint8Array(buffer);
+                        const chunkSize = 0x8000;
+                        let binary = '';
+                        for (let index = 0; index < bytes.length; index += chunkSize) {
+                            const slice = bytes.subarray(index, index + chunkSize);
+                            binary += String.fromCharCode(...slice);
+                        }
+                        return btoa(binary);
+                    };
+
+                    try {
+                        const response = await fetch(url, { credentials: 'include' });
+                        if (!response.ok) {
+                            return null;
+                        }
+                        const blob = await response.blob();
+                        if (!blob.type || !blob.type.startsWith('image/')) {
+                            return null;
+                        }
+                        const buffer = await blob.arrayBuffer();
+                        return {
+                            data: toBase64(buffer),
+                            contentType: blob.type,
+                        };
+                    } catch (_error) {
+                        return null;
+                    }
+                }""",
+                source_url,
+            )
         except Exception:
-            # Fallback: full page screenshot if element screenshot fails.
-            page.screenshot(path=str(preview_path), type="jpeg", quality=85, full_page=False)
+            return None
 
-        if not preview_path.exists() or preview_path.stat().st_size == 0:
-            raise GeminiWebError("Khong capture duoc preview image tu Gemini.")
+        if not isinstance(payload, dict):
+            return None
 
-    def _normalize_preview(self, preview_path: Path, normalized_path: Path) -> None:
-        normalized_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(preview_path, normalized_path)
-        if normalized_path.stat().st_size == 0:
+        encoded = str(payload.get("data") or "").strip()
+        content_type = str(payload.get("contentType") or "").strip()
+        if not encoded:
+            return None
+
+        try:
+            return base64.b64decode(encoded), content_type
+        except Exception:
+            return None
+
+    def _fetch_image_bytes(self, page, source_url: str) -> tuple[bytes, str] | None:
+        if not source_url:
+            return None
+
+        lowered = source_url.lower()
+        if lowered.startswith(("blob:", "data:")):
+            return self._fetch_image_bytes_from_page(page, source_url)
+
+        resolved_url = urljoin(page.url, source_url)
+        try:
+            response = page.context.request.get(resolved_url, fail_on_status_code=False, timeout=20_000)
+            if response.ok:
+                content_type = str(response.headers.get("content-type") or "").strip()
+                if content_type.startswith("image/"):
+                    body = response.body()
+                    if body:
+                        return body, content_type
+        except Exception:
+            pass
+
+        # Thử lấy ảnh bằng cách điều hướng trực tiếp bằng tab mới (giống user "Mở hình ảnh trong thẻ mới")
+        try:
+            new_page = page.context.new_page()
+            try:
+                response = new_page.goto(resolved_url, timeout=15_000)
+                if response and response.ok:
+                    content_type = str(response.headers.get("content-type") or "").strip()
+                    if content_type.startswith("image/"):
+                        body = response.body()
+                        if body:
+                            new_page.close()
+                            return body, content_type
+            finally:
+                if not new_page.is_closed():
+                    new_page.close()
+        except Exception:
+            pass
+
+        return self._fetch_image_bytes_from_page(page, resolved_url)
+
+    def _download_candidate_image(self, page, candidate: _PreviewCandidate, preview_path: Path) -> Path | None:
+        for source_url in self._collect_candidate_source_urls(candidate):
+            fetched = self._fetch_image_bytes(page, source_url)
+            if not fetched:
+                continue
+
+            image_bytes, content_type = fetched
+            if not image_bytes:
+                continue
+
+            resolved_path = self._resolve_output_path(
+                preview_path,
+                source_url=source_url,
+                content_type=content_type,
+            )
+            resolved_path.parent.mkdir(parents=True, exist_ok=True)
+            resolved_path.write_bytes(image_bytes)
+            if resolved_path.stat().st_size > 0:
+                return resolved_path
+
+        # Mô phỏng thao tác "Chuột phải -> Lưu hình ảnh dưới dạng..."
+        # bằng cách đọc data trực tiếp từ bộ nhớ render của trình duyệt (giữ nguyên độ phân giải gốc)
+        try:
+            payload = candidate.locator.evaluate(
+                """(img) => {
+                    try {
+                        const canvas = document.createElement('canvas');
+                        canvas.width = img.naturalWidth || img.width;
+                        canvas.height = img.naturalHeight || img.height;
+                        if (!canvas.width || !canvas.height) return null;
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(img, 0, 0);
+                        return canvas.toDataURL('image/jpeg', 1.0);
+                    } catch (e) {
+                        return null; // Lỗi CORS hoặc không vẽ được
+                    }
+                }"""
+            )
+            if payload and isinstance(payload, str) and payload.startswith("data:image/jpeg;base64,"):
+                b64_data = payload.split(",")[1]
+                image_bytes = base64.b64decode(b64_data)
+                resolved_path = preview_path.with_suffix(".jpg")
+                resolved_path.parent.mkdir(parents=True, exist_ok=True)
+                resolved_path.write_bytes(image_bytes)
+                if resolved_path.stat().st_size > 0:
+                    return resolved_path
+        except Exception:
+            pass
+
+        return None
+
+    def _write_image_payload_to_path(
+        self,
+        preview_path: Path,
+        payload: tuple[bytes, str],
+    ) -> Path | None:
+        image_bytes, content_type = payload
+        if not image_bytes:
+            return None
+
+        resolved_path = self._resolve_output_path(
+            preview_path,
+            content_type=content_type,
+        )
+        resolved_path.parent.mkdir(parents=True, exist_ok=True)
+        resolved_path.write_bytes(image_bytes)
+        if resolved_path.exists() and resolved_path.stat().st_size > 0:
+            return resolved_path
+        return None
+
+    def _fetch_candidate_image_payload(self, page, candidate: _PreviewCandidate) -> tuple[bytes, str] | None:
+        for source_url in self._collect_candidate_source_urls(candidate):
+            fetched = self._fetch_image_bytes(page, source_url)
+            if not fetched:
+                continue
+            image_bytes, content_type = fetched
+            if image_bytes:
+                return image_bytes, content_type
+        return None
+
+    def _find_response_actions_root(self, candidate: _PreviewCandidate):
+        roots = [
+            "xpath=ancestor::response-container[1]",
+            "xpath=ancestor::model-response[1]",
+            "xpath=ancestor::*[@data-test-id='image-response'][1]",
+        ]
+        for selector in roots:
+            try:
+                root = candidate.locator.locator(selector).first
+                if root.count() > 0:
+                    return root
+            except Exception:
+                continue
+        return None
+
+    def _click_retry_action_for_latest_response(self, page) -> bool:
+        candidates = self._collect_preview_candidates(page)
+        if candidates:
+            if self._click_retry_action_for_candidate(page, candidates[-1]):
+                return True
+        
+        # Fallback: Search for retry buttons globally if no images found
+        retry_selectors = [
+            'button[aria-label*="retry" i]',
+            'button[aria-label*="regenerate" i]',
+            'button[aria-label*="thử lại" i]',
+            'button[aria-label*="thu lai" i]',
+            'button[data-testid*="retry" i]',
+            'button[data-testid*="regenerate" i]',
+        ]
+        
+        for selector in retry_selectors:
+            try:
+                locator = page.locator(selector)
+                count = locator.count()
+                if count > 0:
+                    # Click the last one found (most likely the latest response)
+                    last_button = locator.nth(count - 1)
+                    if last_button.is_visible() and not last_button.is_disabled():
+                        last_button.scroll_into_view_if_needed()
+                        last_button.click()
+                        return True
+            except Exception:
+                continue
+        
+        return False
+
+    def _click_retry_action_for_candidate(self, page, candidate: _PreviewCandidate) -> bool:
+        try:
+            candidate.locator.scroll_into_view_if_needed(timeout=5_000)
+            page.wait_for_timeout(300)
+        except Exception:
+            pass
+
+        action_root = self._find_response_actions_root(candidate)
+        direct_selectors = [
+            'button[aria-label*="retry" i]',
+            'button[aria-label*="regenerate" i]',
+            'button[aria-label*="try again" i]',
+            'button[aria-label*="rerun" i]',
+            'button[aria-label*="thử lại" i]',
+            'button[aria-label*="thu lai" i]',
+            '[role="button"][aria-label*="retry" i]',
+            '[role="button"][aria-label*="regenerate" i]',
+            '[role="button"][aria-label*="try again" i]',
+            '[role="button"][aria-label*="thử lại" i]',
+            '[role="button"][aria-label*="thu lai" i]',
+        ]
+
+        if action_root is not None:
+            for selector in direct_selectors:
+                try:
+                    locator = action_root.locator(selector)
+                    count = locator.count()
+                except Exception:
+                    count = 0
+                for index in range(min(count, 8)):
+                    button = locator.nth(index)
+                    try:
+                        if not button.is_visible() or button.is_disabled():
+                            continue
+                        button.click()
+                        page.wait_for_timeout(350)
+                        return True
+                    except Exception:
+                        continue
+
+            action_buttons = action_root.locator("button, [role='button']")
+            try:
+                count = action_buttons.count()
+            except Exception:
+                count = 0
+            best = None
+            best_score = float("-inf")
+            for index in range(min(count, 24)):
+                button = action_buttons.nth(index)
+                try:
+                    if not button.is_visible() or button.is_disabled():
+                        continue
+                    text_blob = self._button_text_blob(button)
+                    if not text_blob:
+                        continue
+                    score = 0.0
+                    if "retry" in text_blob or "regenerate" in text_blob or "try again" in text_blob:
+                        score += 240.0
+                    if "thử lại" in text_blob or "thu lai" in text_blob:
+                        score += 220.0
+                    if "refresh" in text_blob or "reload" in text_blob or "rotate" in text_blob:
+                        score += 80.0
+                    if score > best_score:
+                        best = button
+                        best_score = score
+                except Exception:
+                    continue
+
+            if best is not None and best_score >= 120:
+                try:
+                    best.click()
+                    page.wait_for_timeout(350)
+                    return True
+                except Exception:
+                    pass
+
+        return False
+
+    def _resolve_download_output_path(self, target_path: Path, suggested_filename: str) -> Path:
+        suggested_suffix = Path(str(suggested_filename or "")).suffix.lower()
+        if suggested_suffix in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
+            normalized_suffix = ".jpg" if suggested_suffix == ".jpeg" else suggested_suffix
+            return target_path.with_suffix(normalized_suffix)
+        return target_path
+
+    def _download_via_button(self, page, button, preview_path: Path) -> Path | None:
+        try:
+            with page.expect_download(timeout=5_000) as download_info:
+                try:
+                    button.click()
+                except Exception:
+                    button.click(force=True)
+            download = download_info.value
+        except Exception:
+            return None
+
+        try:
+            resolved_path = self._resolve_download_output_path(
+                preview_path,
+                getattr(download, "suggested_filename", "") or "",
+            )
+            resolved_path.parent.mkdir(parents=True, exist_ok=True)
+            download.save_as(str(resolved_path))
+            if resolved_path.exists() and resolved_path.stat().st_size > 0:
+                return resolved_path
+        except Exception:
+            return None
+        return None
+
+    def _download_candidate_via_response_action(self, page, candidate: _PreviewCandidate, preview_path: Path) -> Path | None:
+        # Scroll ảnh vào viewport trước khi tìm nút — vì nút action nằm ngay cạnh ảnh
+        try:
+            candidate.locator.scroll_into_view_if_needed(timeout=5_000)
+            page.wait_for_timeout(400)
+        except Exception:
+            pass
+
+        action_root = self._find_response_actions_root(candidate)
+        direct_selectors = [
+            'button[aria-label*="Tải hình ảnh có kích thước đầy đủ xuống" i]',
+            'button[aria-label*="download" i]',
+            'button[aria-label*="tải" i]',
+            'button[aria-label*="lưu" i]',
+            'button[aria-label*="save" i]',
+            '[role="button"][aria-label*="Tải hình ảnh có kích thước đầy đủ xuống" i]',
+            '[role="button"][aria-label*="download" i]',
+            '[role="button"][aria-label*="tải" i]',
+            '[role="button"][aria-label*="lưu" i]',
+            '[role="button"][aria-label*="save" i]',
+            'a[download]',
+        ]
+        if action_root is not None:
+            for selector in direct_selectors:
+                try:
+                    locator = action_root.locator(selector)
+                    count = locator.count()
+                except Exception:
+                    count = 0
+                for index in range(min(count, 8)):
+                    button = locator.nth(index)
+                    try:
+                        # Scroll nút vào viewport thay vì bỏ qua khi không thấy
+                        button.scroll_into_view_if_needed(timeout=3_000)
+                        page.wait_for_timeout(200)
+                        if button.is_disabled():
+                            continue
+                    except Exception:
+                        continue
+                    downloaded_path = self._download_via_button(page, button, preview_path)
+                    if downloaded_path is not None:
+                        return downloaded_path
+
+        # Try to find download button inside or near the candidate locator (image overlay)
+        for selector in direct_selectors:
+            try:
+                locator = candidate.locator.locator(f"xpath=ancestor::*[1]//{selector}").first
+                if locator.count() > 0 and locator.is_visible() and not locator.is_disabled():
+                    downloaded_path = self._download_via_button(page, locator, preview_path)
+                    if downloaded_path is not None:
+                        return downloaded_path
+            except Exception:
+                pass
+            try:
+                # Also try looking broadly in the whole page if there's only 1 matching the candidate's block
+                # but it's safer to just check candidate's parent
+                parent_locator = candidate.locator.locator("xpath=ancestor::div[contains(@class, 'image') or contains(@class, 'preview')][1]")
+                if parent_locator.count() > 0:
+                    locator = parent_locator.locator(selector).first
+                    if locator.count() > 0 and locator.is_visible() and not locator.is_disabled():
+                        downloaded_path = self._download_via_button(page, locator, preview_path)
+                        if downloaded_path is not None:
+                            return downloaded_path
+            except Exception:
+                pass
+
+        menu_buttons = []
+        if action_root is not None:
+            menu_buttons.append(action_root.locator('button[data-test-id="more-menu-button"]').first)
+            menu_buttons.append(action_root.locator('button[aria-label*="tuỳ chọn" i]').first)
+            menu_buttons.append(action_root.locator('button[aria-label*="more" i]').first)
+
+        for menu_button in menu_buttons:
+            try:
+                if menu_button.count() <= 0 or not menu_button.is_visible():
+                    continue
+                menu_button.click()
+                page.wait_for_timeout(250)
+            except Exception:
+                continue
+
+            menu_selectors = [
+                "[role='menuitem']",
+                ".mat-mdc-menu-item",
+                "button",
+                "[role='button']",
+            ]
+            for selector in menu_selectors:
+                locator = page.locator(selector)
+                try:
+                    count = locator.count()
+                except Exception:
+                    count = 0
+                for index in range(min(count, 80)):
+                    item = locator.nth(index)
+                    try:
+                        if not item.is_visible() or item.is_disabled():
+                            continue
+                        text_blob = self._button_text_blob(item)
+                        if not text_blob or ("download" not in text_blob and "tải" not in text_blob and "tai" not in text_blob and "lưu" not in text_blob and "luu" not in text_blob and "save" not in text_blob):
+                            continue
+                    except Exception:
+                        continue
+                    downloaded_path = self._download_via_button(page, item, preview_path)
+                    if downloaded_path is not None:
+                        return downloaded_path
+            try:
+                page.keyboard.press("Escape")
+            except Exception:
+                pass
+
+        return None
+
+    def _click_copy_action_for_candidate(self, page, candidate: _PreviewCandidate) -> bool:
+        action_root = self._find_response_actions_root(candidate)
+        direct_selectors = [
+            'button[aria-label*="copy" i]',
+            'button[aria-label*="sao ch" i]',
+            '[role="button"][aria-label*="copy" i]',
+            '[role="button"][aria-label*="sao ch" i]',
+        ]
+        if action_root is not None:
+            for selector in direct_selectors:
+                try:
+                    locator = action_root.locator(selector)
+                    count = locator.count()
+                except Exception:
+                    count = 0
+                for index in range(min(count, 6)):
+                    button = locator.nth(index)
+                    try:
+                        if not button.is_visible() or button.is_disabled():
+                            continue
+                        button.click()
+                        page.wait_for_timeout(250)
+                        return True
+                    except Exception:
+                        continue
+
+        menu_buttons = []
+        if action_root is not None:
+            menu_buttons.append(action_root.locator('button[data-test-id="more-menu-button"]').first)
+            menu_buttons.append(action_root.locator('button[aria-label*="tuỳ chọn" i]').first)
+            menu_buttons.append(action_root.locator('button[aria-label*="more" i]').first)
+
+        for menu_button in menu_buttons:
+            try:
+                if menu_button.count() <= 0 or not menu_button.is_visible():
+                    continue
+                menu_button.click()
+                page.wait_for_timeout(250)
+                if self._click_visible_menu_action(page, ["copy", "sao ch", "copiar"]):
+                    return True
+            except Exception:
+                continue
+
+        return False
+
+    def _click_visible_menu_action(self, page, tokens: list[str]) -> bool:
+        selectors = [
+            "[role='menuitem']",
+            ".mat-mdc-menu-item",
+            "button",
+            "[role='button']",
+        ]
+        best = None
+        best_score = float("-inf")
+        for selector in selectors:
+            locator = page.locator(selector)
+            try:
+                count = locator.count()
+            except Exception:
+                count = 0
+            for index in range(min(count, 80)):
+                item = locator.nth(index)
+                try:
+                    if not item.is_visible() or item.is_disabled():
+                        continue
+                    text_blob = self._button_text_blob(item)
+                    if not text_blob:
+                        continue
+                    matched = [token for token in tokens if token in text_blob]
+                    if not matched:
+                        continue
+                    box = item.bounding_box()
+                    if not box or box["width"] < 60 or box["height"] < 24:
+                        continue
+                    score = len(matched) * 100.0 + min(box["width"], 260) * 0.05
+                    if score > best_score:
+                        best = item
+                        best_score = score
+                except Exception:
+                    continue
+
+        if best is None:
+            try:
+                page.keyboard.press("Escape")
+            except Exception:
+                pass
+            return False
+
+        try:
+            best.click()
+            page.wait_for_timeout(300)
+            return True
+        except Exception:
+            try:
+                page.keyboard.press("Escape")
+            except Exception:
+                pass
+            return False
+
+    def _read_copy_confirmation_message(self, page) -> str | None:
+        try:
+            message = page.evaluate(
+                """() => {
+                    const selectors = [
+                        '[role="status"]',
+                        '[role="alert"]',
+                        '[aria-live]',
+                        'snack-bar-container',
+                        '.mat-mdc-snack-bar-container',
+                        '.toast',
+                        '[data-testid*="toast" i]',
+                    ];
+                    const nodes = Array.from(document.querySelectorAll(selectors.join(',')));
+                    const isVisible = (el) => {
+                        const rect = el.getBoundingClientRect();
+                        const style = window.getComputedStyle(el);
+                        return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+                    };
+                    for (const el of nodes) {
+                        if (!isVisible(el)) continue;
+                        const text = (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
+                        if (text) return text;
+                    }
+                    return null;
+                }"""
+            )
+        except Exception:
+            return None
+
+        if message is None:
+            return None
+
+        text = str(message).strip()
+        if not text:
+            return None
+
+        normalized = self._normalize_ui_text(text)
+        copy_markers = (
+            "copied",
+            "copy to clipboard",
+            "copied to clipboard",
+            "sao chep",
+            "da sao chep",
+            "da duoc sao chep",
+            "hinh anh da duoc sao chep",
+        )
+        if any(marker in normalized for marker in copy_markers):
+            return text
+        return None
+
+    def _wait_for_copy_confirmation(
+        self,
+        page,
+        previous_signature: str | None,
+        *,
+        timeout_ms: int = 4_000,
+    ) -> tuple[bool, tuple[bytes, str] | None]:
+        deadline = time.monotonic() + (timeout_ms / 1000)
+        saw_confirmation = False
+        latest_payload: tuple[bytes, str] | None = None
+
+        while time.monotonic() < deadline:
+            latest_payload = self._read_image_from_clipboard(page)
+            signature = self._image_payload_signature(latest_payload)
+            if signature and signature != previous_signature:
+                page.wait_for_timeout(200)
+                return True, latest_payload
+
+            if self._read_copy_confirmation_message(page):
+                saw_confirmation = True
+                page.wait_for_timeout(350)
+                latest_payload = self._read_image_from_clipboard(page)
+                signature = self._image_payload_signature(latest_payload)
+                if signature and signature != previous_signature:
+                    return True, latest_payload
+                return True, latest_payload
+
+            page.wait_for_timeout(150)
+
+        return saw_confirmation, latest_payload
+
+    def _read_image_from_clipboard(self, page) -> tuple[bytes, str] | None:
+        try:
+            payload = page.evaluate(
+                """async () => {
+                    const toBase64 = (buffer) => {
+                        const bytes = new Uint8Array(buffer);
+                        const chunkSize = 0x8000;
+                        let binary = '';
+                        for (let index = 0; index < bytes.length; index += chunkSize) {
+                            const slice = bytes.subarray(index, index + chunkSize);
+                            binary += String.fromCharCode(...slice);
+                        }
+                        return btoa(binary);
+                    };
+
+                    if (!navigator.clipboard?.read) return null;
+                    try {
+                        const items = await navigator.clipboard.read();
+                        for (const item of items) {
+                            for (const type of item.types) {
+                                if (!type.startsWith('image/')) continue;
+                                const blob = await item.getType(type);
+                                const buffer = await blob.arrayBuffer();
+                                return {
+                                    data: toBase64(buffer),
+                                    contentType: blob.type,
+                                };
+                            }
+                        }
+                    } catch (_error) {
+                        return null;
+                    }
+                    return null;
+                }"""
+            )
+        except Exception:
+            return None
+
+        if not isinstance(payload, dict):
+            return None
+        encoded = str(payload.get("data") or "").strip()
+        content_type = str(payload.get("contentType") or "").strip()
+        if not encoded:
+            return None
+        try:
+            return base64.b64decode(encoded), content_type
+        except Exception:
+            return None
+
+    def _image_payload_signature(self, payload: tuple[bytes, str] | None) -> str | None:
+        if not payload:
+            return None
+        image_bytes, content_type = payload
+        if not image_bytes:
+            return None
+        digest = hashlib.sha256(image_bytes).hexdigest()
+        normalized_type = str(content_type or "").strip().lower()
+        return f"{normalized_type}:{len(image_bytes)}:{digest}"
+
+    def _wait_for_changed_clipboard_image(
+        self,
+        page,
+        previous_signature: str | None,
+        *,
+        timeout_ms: int = 2_500,
+    ) -> tuple[bytes, str] | None:
+        if previous_signature is None:
+            return None
+
+        deadline = time.monotonic() + (timeout_ms / 1000)
+        while time.monotonic() < deadline:
+            payload = self._read_image_from_clipboard(page)
+            signature = self._image_payload_signature(payload)
+            if signature and signature != previous_signature:
+                return payload
+            page.wait_for_timeout(150)
+        return None
+
+    def _upload_image_payload_into_prompt(
+        self,
+        page,
+        payload: tuple[bytes, str],
+        baseline_keys: set[str],
+    ) -> _PreviewCandidate:
+        image_bytes, content_type = payload
+        suffix = ".png"
+        lowered_type = str(content_type or "").lower()
+        if "jpeg" in lowered_type or "jpg" in lowered_type:
+            suffix = ".jpg"
+        elif "webp" in lowered_type:
+            suffix = ".webp"
+        elif "gif" in lowered_type:
+            suffix = ".gif"
+
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as handle:
+            temp_path = Path(handle.name)
+        try:
+            temp_path.write_bytes(image_bytes)
+            self._upload_input_image(page, temp_path)
+            return self._wait_for_new_uploaded_preview(page, baseline_keys)
+        finally:
+            temp_path.unlink(missing_ok=True)
+
+    def _paste_clipboard_image_into_prompt(
+        self,
+        page,
+        *,
+        previous_clipboard_signature: str | None = None,
+        fallback_payload: tuple[bytes, str] | None = None,
+        skip_clipboard_paste: bool = False,
+    ) -> _PreviewCandidate:
+        target = self._find_prompt_target(page)
+        if target is None:
+            raise GeminiWebError("Khong tim thay o nhap prompt de paste anh vao Gemini.")
+
+        baseline_keys = self._collect_uploaded_preview_keys(page)
+        try:
+            target.click()
+        except Exception:
+            pass
+
+        if skip_clipboard_paste:
+            if fallback_payload is not None:
+                return self._upload_image_payload_into_prompt(page, fallback_payload, baseline_keys)
+            raise GeminiWebError("Khong co fallback payload de upload vao Gemini.")
+
+        modifier = "Meta+V" if sys.platform == "darwin" else "Control+V"
+        try:
+            page.keyboard.press(modifier)
+            return self._wait_for_new_uploaded_preview(page, baseline_keys)
+        except Exception:
+            clipboard_image = self._wait_for_changed_clipboard_image(
+                page,
+                previous_clipboard_signature,
+            )
+            if clipboard_image is not None:
+                return self._upload_image_payload_into_prompt(page, clipboard_image, baseline_keys)
+            if fallback_payload is not None:
+                return self._upload_image_payload_into_prompt(page, fallback_payload, baseline_keys)
+            raise GeminiWebError("Khong doc duoc image moi tu clipboard sau khi bam copy.")
+
+    def _click_stop_button(self, page, composer) -> bool:
+        selectors = [
+            'button[aria-label*="dừng" i]',
+            'button[aria-label*="stop" i]',
+            '[role="button"][aria-label*="dừng" i]',
+            '[role="button"][aria-label*="stop" i]',
+            'button[data-testid*="stop" i]',
+            'button[class*="stop" i]',
+        ]
+        for _ in range(16):
+            for selector in selectors:
+                locator = page.locator(selector)
+                try:
+                    count = locator.count()
+                except Exception:
+                    count = 0
+                for index in range(min(count, 8)):
+                    button = locator.nth(index)
+                    try:
+                        if not button.is_visible() or button.is_disabled():
+                            continue
+                        button.click()
+                        return True
+                    except Exception:
+                        continue
+            page.wait_for_timeout(250)
+        return False
+
+    def _capture_via_copy_roundtrip(self, page, candidate: _PreviewCandidate, preview_path: Path) -> Path | None:
+        try:
+            clipboard_before = self._read_image_from_clipboard(page)
+            clipboard_before_signature = self._image_payload_signature(clipboard_before)
+            copied = self._click_copy_action_for_candidate(page, candidate)
+            if not copied:
+                return None
+            _, clipboard_after_copy = self._wait_for_copy_confirmation(
+                page,
+                clipboard_before_signature,
+            )
+            fallback_payload = clipboard_after_copy
+            if fallback_payload is None:
+                fallback_payload = self._fetch_candidate_image_payload(page, candidate)
+
+            uploaded_candidate = self._paste_clipboard_image_into_prompt(
+                page,
+                previous_clipboard_signature=clipboard_before_signature,
+                fallback_payload=fallback_payload,
+                skip_clipboard_paste=False,
+            )
+            send_baseline_candidates = self._collect_uploaded_preview_candidates(page)
+            send_baseline_keys = {item.key for item in send_baseline_candidates}
+            baseline_sent_y_bottom = max(
+                (
+                    item.y_bottom
+                    for item in send_baseline_candidates
+                    if not self._is_candidate_in_composer_area(page, item)
+                ),
+                default=None,
+            )
+            composer = self._find_prompt_target(page)
+            self._dismiss_transient_overlays(page)
+            sent = self._click_send_button(page, composer)
+            if not sent:
+                try:
+                    page.keyboard.press("Enter")
+                except Exception:
+                    pass
+
+            sent_candidate = self._wait_for_sent_uploaded_preview(
+                page,
+                send_baseline_keys,
+                uploaded_candidate,
+                minimum_y_bottom=baseline_sent_y_bottom,
+                stable_samples=1,
+            )
+            if sent_candidate is None:
+                return None
+
+            self._click_stop_button(page, composer)
+            page.wait_for_timeout(250)
+            capture_candidate = sent_candidate
+
+            downloaded_path = self._download_candidate_image(page, capture_candidate, preview_path)
+            if downloaded_path is not None:
+                return downloaded_path
+
+            downloaded_path = self._download_candidate_via_response_action(page, capture_candidate, preview_path)
+            if downloaded_path is not None:
+                return downloaded_path
+        except Exception:
+            try:
+                page.keyboard.press("Escape")
+            except Exception:
+                pass
+            return None
+        return None
+
+    def _capture_preview(self, page, candidate: _PreviewCandidate, preview_path: Path) -> Path:
+        # Bước 1: Thử tải trực tiếp từ ảnh gốc Gemini mới sinh (không cần roundtrip)
+        # Scroll ảnh vào màn hình, bấm nút "Tải hình ảnh có kích thước đầy đủ xuống"
+        direct_path = self._download_candidate_via_response_action(page, candidate, preview_path)
+        if direct_path is not None:
+            return direct_path
+
+        # Thử lấy bytes của ảnh gốc trực tiếp qua URL (blob / network)
+        direct_path = self._download_candidate_image(page, candidate, preview_path)
+        if direct_path is not None:
+            return direct_path
+
+        # Bước 2: Nếu không tải được trực tiếp, mới dùng flow copy → paste → gửi → tải lại
+        roundtrip_path = self._capture_via_copy_roundtrip(page, candidate, preview_path)
+        if roundtrip_path is not None:
+            return roundtrip_path
+
+        raise GeminiWebError("Khong the tai anh: da thu tai truc tiep va copy-roundtrip nhung deu that bai.")
+
+    def _probe_image_size(self, image_path: Path) -> tuple[int, int] | None:
+        if not self._ffprobe_path:
+            return None
+
+        try:
+            completed = subprocess.run(
+                [
+                    self._ffprobe_path,
+                    "-v",
+                    "error",
+                    "-select_streams",
+                    "v:0",
+                    "-show_entries",
+                    "stream=width,height",
+                    "-of",
+                    "json",
+                    str(image_path),
+                ],
+                capture_output=True,
+                check=True,
+                text=True,
+                timeout=20,
+            )
+            payload = json.loads(completed.stdout or "{}")
+            streams = payload.get("streams") or []
+            if not streams:
+                return None
+            width = int(streams[0].get("width") or 0)
+            height = int(streams[0].get("height") or 0)
+            if width <= 0 or height <= 0:
+                return None
+            return width, height
+        except Exception:
+            return None
+
+    def _read_rgb_frame(self, image_path: Path, width: int, height: int) -> bytes | None:
+        if not self._ffmpeg_path:
+            return None
+
+        try:
+            completed = subprocess.run(
+                [
+                    self._ffmpeg_path,
+                    "-v",
+                    "error",
+                    "-i",
+                    str(image_path),
+                    "-frames:v",
+                    "1",
+                    "-f",
+                    "rawvideo",
+                    "-pix_fmt",
+                    "rgb24",
+                    "-",
+                ],
+                capture_output=True,
+                check=True,
+                timeout=30,
+            )
+        except Exception:
+            return None
+
+        expected_size = width * height * 3
+        payload = completed.stdout or b""
+        if len(payload) != expected_size:
+            return None
+        return payload
+
+    def _estimate_background_color(self, rgb_bytes: bytes, width: int, height: int) -> tuple[int, int, int]:
+        sample_span = max(6, min(18, min(width, height) // 12 or 6))
+        points: list[tuple[int, int, int]] = []
+        x_ranges = (
+            range(0, min(sample_span, width)),
+            range(max(0, width - sample_span), width),
+        )
+        y_ranges = (
+            range(0, min(sample_span, height)),
+            range(max(0, height - sample_span), height),
+        )
+        for xs in x_ranges:
+            for ys in y_ranges:
+                for y in ys:
+                    row_offset = y * width * 3
+                    for x in xs:
+                        offset = row_offset + x * 3
+                        points.append(
+                            (
+                                rgb_bytes[offset],
+                                rgb_bytes[offset + 1],
+                                rgb_bytes[offset + 2],
+                            )
+                        )
+
+        if not points:
+            return 255, 255, 255
+
+        def _median(values: list[int]) -> int:
+            ordered = sorted(values)
+            return int(ordered[len(ordered) // 2])
+
+        return (
+            _median([item[0] for item in points]),
+            _median([item[1] for item in points]),
+            _median([item[2] for item in points]),
+        )
+
+    def _build_foreground_ratios(
+        self,
+        rgb_bytes: bytes,
+        width: int,
+        height: int,
+        background: tuple[int, int, int],
+    ) -> tuple[list[float], list[float]]:
+        delta_threshold = 22
+        sample_x_step = max(1, width // 480)
+        sample_y_step = max(1, height // 480)
+        bg_r, bg_g, bg_b = background
+
+        row_ratios: list[float] = []
+        for y in range(height):
+            changed = 0
+            total = 0
+            row_offset = y * width * 3
+            for x in range(0, width, sample_x_step):
+                offset = row_offset + x * 3
+                if max(
+                    abs(rgb_bytes[offset] - bg_r),
+                    abs(rgb_bytes[offset + 1] - bg_g),
+                    abs(rgb_bytes[offset + 2] - bg_b),
+                ) > delta_threshold:
+                    changed += 1
+                total += 1
+            row_ratios.append(changed / max(total, 1))
+
+        col_ratios: list[float] = []
+        for x in range(width):
+            changed = 0
+            total = 0
+            for y in range(0, height, sample_y_step):
+                offset = (y * width + x) * 3
+                if max(
+                    abs(rgb_bytes[offset] - bg_r),
+                    abs(rgb_bytes[offset + 1] - bg_g),
+                    abs(rgb_bytes[offset + 2] - bg_b),
+                ) > delta_threshold:
+                    changed += 1
+                total += 1
+            col_ratios.append(changed / max(total, 1))
+
+        return row_ratios, col_ratios
+
+    def _find_dominant_segment(
+        self,
+        ratios: list[float],
+        *,
+        threshold: float,
+        gap_tolerance: int,
+        min_coverage: float,
+    ) -> tuple[int, int] | None:
+        if not ratios:
+            return None
+
+        minimum_length = max(8, int(len(ratios) * min_coverage))
+        segments: list[tuple[int, int]] = []
+        start: int | None = None
+        gap_count = 0
+
+        for index, value in enumerate(ratios):
+            active = value >= threshold
+            if start is None:
+                if active:
+                    start = index
+                    gap_count = 0
+                continue
+
+            if active:
+                gap_count = 0
+                continue
+
+            gap_count += 1
+            if gap_count > gap_tolerance:
+                end = index - gap_count
+                if end >= start:
+                    segments.append((start, end))
+                start = None
+                gap_count = 0
+
+        if start is not None:
+            end = len(ratios) - 1 - gap_count
+            if end >= start:
+                segments.append((start, end))
+
+        best_segment: tuple[int, int] | None = None
+        best_score = -1.0
+        for segment_start, segment_end in segments:
+            length = segment_end - segment_start + 1
+            if length < minimum_length:
+                continue
+            average_density = sum(ratios[segment_start:segment_end + 1]) / length
+            score = length * max(average_density, threshold)
+            if score > best_score:
+                best_segment = (segment_start, segment_end)
+                best_score = score
+        return best_segment
+
+    def _detect_content_crop(self, image_path: Path) -> tuple[int, int, int, int] | None:
+        size = self._probe_image_size(image_path)
+        if not size:
+            return None
+        width, height = size
+        if width < 200 or height < 200:
+            return None
+
+        rgb_bytes = self._read_rgb_frame(image_path, width, height)
+        if not rgb_bytes:
+            return None
+
+        background = self._estimate_background_color(rgb_bytes, width, height)
+        row_ratios, col_ratios = self._build_foreground_ratios(rgb_bytes, width, height, background)
+        row_segment = self._find_dominant_segment(
+            row_ratios,
+            threshold=0.02,
+            gap_tolerance=max(6, height // 90),
+            min_coverage=0.45,
+        )
+        col_segment = self._find_dominant_segment(
+            col_ratios,
+            threshold=0.02,
+            gap_tolerance=max(4, width // 120),
+            min_coverage=0.45,
+        )
+        if not row_segment or not col_segment:
+            return None
+
+        top, bottom = row_segment
+        left, right = col_segment
+        padding = max(1, min(4, min(width, height) // 160 or 1))
+        left = max(0, left - padding)
+        top = max(0, top - padding)
+        right = min(width - 1, right + padding)
+        bottom = min(height - 1, bottom + padding)
+
+        cropped_width = right - left + 1
+        cropped_height = bottom - top + 1
+        if cropped_width <= 0 or cropped_height <= 0:
+            return None
+
+        trim_left = left
+        trim_top = top
+        trim_right = width - 1 - right
+        trim_bottom = height - 1 - bottom
+        min_trim = max(8, int(min(width, height) * 0.02))
+        if max(trim_left, trim_top, trim_right, trim_bottom) < min_trim:
+            return None
+
+        retained_area = cropped_width * cropped_height
+        if retained_area < int(width * height * 0.55):
+            return None
+
+        return left, top, cropped_width, cropped_height
+
+    def _write_cropped_image(
+        self,
+        source_path: Path,
+        target_path: Path,
+        crop_box: tuple[int, int, int, int],
+    ) -> bool:
+        if not self._ffmpeg_path:
+            return False
+
+        crop_x, crop_y, crop_width, crop_height = crop_box
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path = target_path
+        temp_path: Path | None = None
+
+        if source_path.resolve() == target_path.resolve():
+            temp_path = target_path.with_name(f"{target_path.stem}.cropped{target_path.suffix}")
+            output_path = temp_path
+
+        command = [
+            self._ffmpeg_path,
+            "-y",
+            "-v",
+            "error",
+            "-i",
+            str(source_path),
+            "-vf",
+            f"crop={crop_width}:{crop_height}:{crop_x}:{crop_y}",
+            "-frames:v",
+            "1",
+        ]
+        if output_path.suffix.lower() in {".jpg", ".jpeg"}:
+            command.extend(["-q:v", "2"])
+        command.append(str(output_path))
+
+        try:
+            subprocess.run(command, capture_output=True, check=True, timeout=30)
+            if not output_path.exists() or output_path.stat().st_size == 0:
+                return False
+            if temp_path is not None:
+                temp_path.replace(target_path)
+            return True
+        except Exception:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
+            return False
+
+    def _normalize_preview(self, preview_path: Path, normalized_path: Path) -> Path:
+        resolved_normalized_path = normalized_path.with_suffix(preview_path.suffix or normalized_path.suffix)
+        crop_box = self._detect_content_crop(preview_path)
+        if crop_box and self._write_cropped_image(preview_path, resolved_normalized_path, crop_box):
+            if resolved_normalized_path.stat().st_size == 0:
+                raise GeminiWebError("Normalize image that bai: file rong.")
+            return resolved_normalized_path
+
+        if preview_path.resolve() == resolved_normalized_path.resolve():
+            if preview_path.stat().st_size == 0:
+                raise GeminiWebError("Normalize image that bai: file rong.")
+            return preview_path
+
+        resolved_normalized_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(preview_path, resolved_normalized_path)
+        if resolved_normalized_path.stat().st_size == 0:
             raise GeminiWebError("Normalize image that bai: file rong.")
+        return resolved_normalized_path

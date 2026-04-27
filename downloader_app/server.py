@@ -13,7 +13,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from downloader_app.browser_config import (
+    BrowserConfigError,
+    browser_config_manager,
+    detect_profiles_for_browser_path,
+)
 from downloader_app.browser_session import browser_session
+from downloader_app.cache_manager import CacheManagerError, cache_manager
 from downloader_app.google_auth import GoogleAuthError, google_oauth
 from downloader_app.jobs import manager
 from downloader_app.runtime import bundled_path
@@ -60,6 +66,10 @@ class AppHandler(BaseHTTPRequestHandler):
 
         if path == "/api/story/bootstrap":
             self._send_json(story_pipeline.get_bootstrap())
+            return
+
+        if path == "/api/cache/bootstrap":
+            self._send_json(cache_manager.get_bootstrap())
             return
 
         if path == "/api/story/gems":
@@ -164,6 +174,10 @@ class AppHandler(BaseHTTPRequestHandler):
             self._send_json(browser_session.status())
             return
 
+        if path == "/api/browser-config":
+            self._send_json(browser_config_manager.get_all())
+            return
+
         if path == "/api/system/updater/check":
             try:
                 self._send_json(updater.check_for_updates())
@@ -213,6 +227,41 @@ class AppHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "Body must be valid JSON."}, status=HTTPStatus.BAD_REQUEST)
                 return
             self._send_json(manager.update_settings(payload))
+            return
+
+        if path == "/api/browser-config":
+            try:
+                payload = self._read_json_body()
+            except json.JSONDecodeError:
+                self._send_json({"error": "Body must be valid JSON."}, status=HTTPStatus.BAD_REQUEST)
+                return
+
+            try:
+                self._send_json(browser_config_manager.update(payload))
+            except BrowserConfigError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/browser-config/profiles":
+            try:
+                payload = self._read_json_body()
+            except json.JSONDecodeError:
+                self._send_json({"error": "Body must be valid JSON."}, status=HTTPStatus.BAD_REQUEST)
+                return
+
+            feature = str(payload.get("feature", "")).strip().lower()
+            browser_path = str(payload.get("browser_path", "")).strip()
+            profile_name = str(payload.get("profile_name", "")).strip()
+            try:
+                self._send_json(
+                    detect_profiles_for_browser_path(
+                        feature=feature,
+                        browser_path=browser_path,
+                        profile_name=profile_name,
+                    )
+                )
+            except BrowserConfigError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
 
         if path == "/api/story/settings":
@@ -275,7 +324,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
 
-        if path.startswith("/api/story/videos/") and (path.endswith("/run") or path.endswith("/pause") or path.endswith("/resume")):
+        if path.startswith("/api/story/videos/") and (path.endswith("/run") or path.endswith("/pause") or path.endswith("/resume") or path.endswith("/cancel")):
             parts = path.strip("/").split("/")
             if len(parts) != 5:
                 self._send_json({"error": "Story video not found."}, status=HTTPStatus.NOT_FOUND)
@@ -286,6 +335,8 @@ class AppHandler(BaseHTTPRequestHandler):
             try:
                 if action == "pause":
                     self._send_json(story_pipeline.pause_video(video_id))
+                elif action == "cancel":
+                    self._send_json(story_pipeline.cancel_video(video_id))
                 else:
                     self._send_json(story_pipeline.run_video(video_id))
             except StoryPipelineError as exc:
@@ -302,6 +353,46 @@ class AppHandler(BaseHTTPRequestHandler):
             try:
                 self._send_json(story_pipeline.apply_action(payload))
             except StoryPipelineError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path.startswith("/api/story/videos/") and path.endswith("/export"):
+            video_id = path.split("/")[-2]
+            try:
+                payload = self._read_json_body()
+            except json.JSONDecodeError:
+                self._send_json({"error": "Body must be valid JSON."}, status=HTTPStatus.BAD_REQUEST)
+                return
+            destination_dir = str(payload.get("destination_dir", "")).strip()
+            step_ids = payload.get("step_ids")
+            if not destination_dir:
+                self._send_json({"error": "destination_dir is required."}, status=HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                self._send_json(
+                    story_pipeline.export_selected(
+                        video_id=video_id,
+                        destination_dir=destination_dir,
+                        step_ids=step_ids,
+                    )
+                )
+            except StoryPipelineError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/cache/clear":
+            try:
+                payload = self._read_json_body()
+            except json.JSONDecodeError:
+                self._send_json({"error": "Body must be valid JSON."}, status=HTTPStatus.BAD_REQUEST)
+                return
+            cache_id = str(payload.get("cache_id", "")).strip()
+            if not cache_id:
+                self._send_json({"error": "cache_id is required."}, status=HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                self._send_json(cache_manager.clear(cache_id))
+            except CacheManagerError as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
 
@@ -402,6 +493,15 @@ class AppHandler(BaseHTTPRequestHandler):
             self._send_json({"path": folder_path})
             return
 
+        if path == "/api/system/choose-browser":
+            try:
+                browser_path = self._choose_browser()
+            except RuntimeError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                return
+            self._send_json({"path": browser_path})
+            return
+
         if path == "/api/system/updater/apply":
             try:
                 payload = self._read_json_body()
@@ -480,6 +580,22 @@ class AppHandler(BaseHTTPRequestHandler):
             self._send_json(batch, status=HTTPStatus.CREATED)
             return
 
+        if path.startswith("/api/tts/batches/") and (path.endswith("/pause") or path.endswith("/resume")):
+            parts = path.strip("/").split("/")
+            if len(parts) != 5:
+                self._send_json({"error": "TTS batch not found."}, status=HTTPStatus.NOT_FOUND)
+                return
+            batch_id = parts[3]
+            action = parts[4]
+            try:
+                if action == "pause":
+                    self._send_json(tts_manager.pause_batch(batch_id))
+                else:
+                    self._send_json(tts_manager.resume_batch(batch_id))
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
         if path.startswith("/api/tts/batches/") and path.endswith("/cancel"):
             batch_id = path.split("/")[-2]
             try:
@@ -548,6 +664,22 @@ class AppHandler(BaseHTTPRequestHandler):
                         destination_dir=destination_dir,
                     )
                 )
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path.startswith("/api/batches/") and (path.endswith("/pause") or path.endswith("/resume")):
+            parts = path.strip("/").split("/")
+            if len(parts) != 4:
+                self._send_json({"error": "Batch not found."}, status=HTTPStatus.NOT_FOUND)
+                return
+            batch_id = parts[2]
+            action = parts[3]
+            try:
+                if action == "pause":
+                    self._send_json(manager.pause_batch(batch_id))
+                else:
+                    self._send_json(manager.resume_batch(batch_id))
             except ValueError as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
@@ -935,6 +1067,65 @@ class AppHandler(BaseHTTPRequestHandler):
         if completed.returncode != 0:
             message = (completed.stderr or completed.stdout or "Khong the mo folder.").strip()
             raise RuntimeError(message)
+
+    def _choose_browser(self) -> str:
+        from downloader_app.runtime import get_ui_bridge
+
+        bridge = get_ui_bridge()
+        if bridge:
+            try:
+                browser_path = bridge.choose_browser()
+                if not browser_path:
+                    raise RuntimeError("Khong chon duoc browser.")
+                return browser_path
+            except Exception as exc:
+                print(f"Bridge choose_browser error: {exc}")
+
+        if sys.platform == "darwin":
+            completed = subprocess.run(
+                [
+                    "osascript",
+                    "-e",
+                    'POSIX path of (choose application with prompt "Chon trinh duyet")',
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if completed.returncode != 0:
+                message = (completed.stderr or completed.stdout or "Khong chon duoc browser.").strip()
+                raise RuntimeError(message)
+            browser_path = completed.stdout.strip()
+            if not browser_path:
+                raise RuntimeError("Khong nhan duoc duong dan browser.")
+            return browser_path
+
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+        except Exception as exc:
+            raise RuntimeError("Khong mo duoc browser picker.") from exc
+
+        root = tk.Tk()
+        root.withdraw()
+        root.update_idletasks()
+        try:
+            root.attributes("-topmost", True)
+        except Exception:
+            pass
+
+        try:
+            filetypes = [("Applications", "*.exe *.app"), ("All files", "*.*")]
+            browser_path = filedialog.askopenfilename(
+                title="Chon trinh duyet",
+                filetypes=filetypes,
+            )
+        finally:
+            root.destroy()
+
+        if not browser_path:
+            raise RuntimeError("Khong nhan duoc duong dan browser.")
+        return browser_path
 
 
 # Expected errors when a client disconnects mid-stream (Windows/Linux/Mac).

@@ -8,6 +8,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 BIN_DIR_ENV = "VIDEO_DOWNLOADER_BIN_DIR"
+CACHE_DIR_NAME = "cache"
 
 APP_VERSION = "1.0.1"
 GITHUB_REPO = "mmmnhat/Video-downloader"
@@ -37,6 +38,14 @@ def bundled_path(*parts: str) -> Path:
 
 def app_path(*parts: str) -> Path:
     return app_root().joinpath(*parts)
+
+
+def cache_root() -> Path:
+    return app_root() / CACHE_DIR_NAME
+
+
+def cache_path(*parts: str) -> Path:
+    return cache_root().joinpath(*parts)
 
 
 def resolve_binary(name: str, env_var: str | None = None) -> str | None:

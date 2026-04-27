@@ -105,10 +105,7 @@ export default function CookiesManager({
 
   return (
     <div className="mx-auto w-full max-w-6xl space-y-6">
-      <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-        <div className="space-y-2">
-          <h1 className="text-3xl font-bold tracking-tight">Quản lý Cookie</h1>
-        </div>
+      <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-end">
         <div className="flex flex-wrap gap-2">
           <Button variant="destructive" size="sm" onClick={handleClearAll}>
             <Trash2 className="mr-2 h-4 w-4" />
@@ -120,7 +117,7 @@ export default function CookiesManager({
       <div className="relative">
         <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
         <Input
-          placeholder="Lọc nền tảng theo tên hoặc mô tả..."
+          placeholder="Lọc nền tảng theo tên hoặc mô tả"
           className="pl-10"
           value={searchTerm}
           onChange={(e) => setSearchTerm(e.target.value)}
@@ -136,6 +133,7 @@ export default function CookiesManager({
           return (
             <Card
               key={platform.id}
+              title={platform.desc}
               className={[
                 "rounded-lg border py-0 transition-all hover:ring-1 hover:ring-primary/20",
                 hasCookies ? "border-emerald-500/30 bg-emerald-500/5" : "border-border/80",
@@ -144,7 +142,7 @@ export default function CookiesManager({
               <CardContent className="px-4 py-3">
                 <div className="flex min-h-[88px] flex-col justify-center gap-3">
                   <div className="flex items-center justify-between gap-3">
-                    <CardTitle className="text-sm">{platform.name}</CardTitle>
+                    <CardTitle className="text-sm" title={platform.desc}>{platform.name}</CardTitle>
                   {hasCookies ? (
                     <div className="flex items-center text-[10px] font-bold uppercase tracking-wider text-emerald-400">
                       <Check className="mr-1 h-3 w-3" /> Đã lưu
