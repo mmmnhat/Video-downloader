@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import socket
 import sys
 from pathlib import Path
 
@@ -39,6 +40,16 @@ def main(argv: list[str] | None = None) -> int:
         yt_dlp.main(args[1:])
         return 0
 
+    # QtWebEngine spawns helper processes with --type=...
+    # If we detect this, let QApplication handle it silently without creating a window.
+    if any(a.startswith("--type=") for a in args):
+        try:
+            from PyQt6.QtWidgets import QApplication
+            app = QApplication(full_argv)
+            return app.exec()
+        except ImportError:
+            return 0
+
     import threading
     from downloader_app.server import run
 
@@ -46,13 +57,36 @@ def main(argv: list[str] | None = None) -> int:
     port = 8765
     app_url = f"http://{host}:{port}"
 
+    # --- Singleton guard ---
+    # Probe the server port before starting. If it is already bound, another
+    # instance of the app is already running.  In that case, attach a new
+    # desktop window to the existing server instead of spawning a second
+    # Python + HTTP-server process (which would raise an OSError anyway).
+    _already_running = False
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as _probe:
+        _probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
+        try:
+            _probe.bind((host, port))
+        except OSError:
+            _already_running = True
+
+    if _already_running:
+        print(f"[launcher] Server already running at {app_url} — attaching new window.", flush=True)
+        try:
+            from downloader_app.desktop import run_desktop
+            return run_desktop(app_url)
+        except ImportError:
+            import webbrowser
+            webbrowser.open(app_url)
+            return 0
+
     # Start server in a background thread
     server_thread = threading.Thread(
         target=run,
         kwargs={"host": host, "port": port},
         daemon=True
     )
-    
+
     # Disable automatic browser opening by the server
     os.environ["VIDEO_DOWNLOADER_NO_BROWSER"] = "1"
     server_thread.start()

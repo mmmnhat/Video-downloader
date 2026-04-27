@@ -1854,6 +1854,8 @@ class DownloadManager:
             )
             command = [
                 self._require_ffmpeg(),
+                "-threads",
+                "2",
                 "-y",
                 "-ss",
                 self._format_ffmpeg_timestamp(clip_range.start_seconds),
@@ -1889,6 +1891,7 @@ class DownloadManager:
                 ]
             )
 
+            _proc_key = f"{item.id}:clip:{clip_index}"
             process = subprocess.Popen(
                 command,
                 stdout=subprocess.PIPE,
@@ -1897,13 +1900,13 @@ class DownloadManager:
                 **SUBPROCESS_KWARGS,
             )
             with self._lock:
-                self._active_processes.setdefault(batch_id, {})[item.id] = process
+                self._active_processes.setdefault(batch_id, {})[_proc_key] = process
 
             try:
                 stdout, stderr = process.communicate()
             finally:
                 with self._lock:
-                    self._active_processes.get(batch_id, {}).pop(item.id, None)
+                    self._active_processes.get(batch_id, {}).pop(_proc_key, None)
 
             if cancel_event.is_set():
                 clipped_path.unlink(missing_ok=True)
@@ -2057,6 +2060,8 @@ class DownloadManager:
 
         command = [
             self._require_ffmpeg(),
+            "-threads",
+            "2",
             "-v",
             "error",
             "-xerror",
@@ -2145,6 +2150,8 @@ class DownloadManager:
         normalized_path = source_path.with_name(f"{source_path.stem}.h264.mp4")
         command = [
             self._require_ffmpeg(),
+            "-threads",
+            "2",
             "-y",
             "-i",
             str(source_path),
