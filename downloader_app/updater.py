@@ -186,11 +186,14 @@ del "%~f0"
         try:
             if progress_callback:
                 progress_callback(100, "Đang khởi động lại ứng dụng...")
+            
+            # Use a simpler Popen for Windows to avoid WinError 87
             subprocess.Popen(
                 ["cmd", "/c", str(bat_path)],
-                creationflags=subprocess.CREATE_NEW_CONSOLE | getattr(subprocess, 'DETACHED_PROCESS', 0x00000008),
-                cwd=str(temp_dir)
+                creationflags=subprocess.CREATE_NEW_CONSOLE,
+                shell=False
             )
+            # Exit the current process so the .bat can replace the file
             os._exit(0)
         except Exception as e:
             raise UpdateError(f"Failed to launch update wrapper: {e}")
