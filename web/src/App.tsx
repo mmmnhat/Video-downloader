@@ -96,6 +96,7 @@ import {
   previewSheet,
   retryFailed,
   updateSettings,
+  checkUpdate,
   type AuthStatus,
   type BatchDetail,
   type BatchEvent,
@@ -299,6 +300,28 @@ function App() {
         setTableSource(fallbackBatchId ?? "");
         setTableCleared(false);
       });
+
+      // Auto check for updates
+      if (payload.authStatus) {
+         try {
+           const update = await checkUpdate();
+           if (update.updateAvailable && !update.isPlaceholder) {
+              toast("CÓ BẢN CẬP NHẬT MỚI!", {
+                description: `Phiên bản ${update.latestVersion} đã sẵn sàng. Hãy bấm vào biểu tượng "i" để cập nhật ngay.`,
+                duration: 10000,
+                action: {
+                  label: "Xem ngay",
+                  onClick: () => {
+                    // We can't easily open the dialog from here without more complex state sharing, 
+                    // but the toast tells the user where to look.
+                  }
+                }
+              });
+           }
+         } catch {
+           // Ignore silent check errors
+         }
+      }
     } catch (error) {
       setBootError(getErrorMessage(error));
     } finally {

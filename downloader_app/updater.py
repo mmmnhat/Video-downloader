@@ -85,13 +85,16 @@ class UpdateManager:
         except Exception as e:
             raise UpdateError(f"Failed to check for updates: {e}")
 
-    def apply_update(self, download_url: str) -> bool:
+    def apply_update(self, download_url: str, progress_callback=None) -> bool:
         """Downloads the update zip, extracts it, and triggers the bat replacement."""
         if not is_frozen():
             raise UpdateError("Automatic applying updates is only supported when running the compiled App (.exe). You are running in Dev Mode, please download source directly.")
 
         if not download_url:
             raise UpdateError("No download URL provided.")
+
+        if progress_callback:
+            progress_callback(0, "Khởi tạo thư mục tạm...")
 
         temp_dir = Path(tempfile.gettempdir()) / "VD_Update"
         temp_dir.mkdir(parents=True, exist_ok=True)
@@ -103,17 +106,33 @@ class UpdateManager:
         current_app_dir = current_exe.parent
 
         try:
-            # Download the file
+            # Download the file with progress
+            if progress_callback:
+                progress_callback(5, "Đang tải bản cập nhật...")
+            
             req = urllib.request.Request(
                 download_url,
                 headers={"User-Agent": "Video-Downloader-Updater/1.0"}
             )
-            with urllib.request.urlopen(req, timeout=120) as response, open(zip_path, 'wb') as out_file:
-                shutil.copyfileobj(response, out_file)
+            with urllib.request.urlopen(req, timeout=120) as response:
+                total_size = int(response.headers.get('content-length', 0))
+                downloaded = 0
+                with open(zip_path, 'wb') as out_file:
+                    while True:
+                        chunk = response.read(64 * 1024)
+                        if not chunk:
+                            break
+                        out_file.write(chunk)
+                        downloaded += len(chunk)
+                        if progress_callback and total_size > 0:
+                            percent = 5 + int((downloaded / total_size) * 75) # 5% to 80%
+                            progress_callback(percent, f"Đang tải: {downloaded/1024/1024:.1f}MB / {total_size/1024/1024:.1f}MB")
         except Exception as e:
             raise UpdateError(f"Failed to download update: {e}")
 
         try:
+            if progress_callback:
+                progress_callback(85, "Đang giải nén dữ liệu...")
             import zipfile
             if extract_dir.exists():
                 shutil.rmtree(extract_dir, ignore_errors=True)
@@ -165,6 +184,8 @@ del "%~f0"
 
         # Launch bat and exit immediately
         try:
+            if progress_callback:
+                progress_callback(100, "Đang khởi động lại ứng dụng...")
             subprocess.Popen(
                 ["cmd", "/c", str(bat_path)],
                 creationflags=subprocess.CREATE_NEW_CONSOLE | getattr(subprocess, 'DETACHED_PROCESS', 0x00000008),

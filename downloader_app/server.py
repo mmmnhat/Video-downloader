@@ -541,14 +541,23 @@ class AppHandler(BaseHTTPRequestHandler):
         if path == "/api/system/updater/apply":
             try:
                 payload = self._read_json_body()
-            except json.JSONDecodeError:
-                self._send_json({"error": "Body must be valid JSON."}, status=HTTPStatus.BAD_REQUEST)
-                return
-            try:
-                updater.apply_update(payload.get("downloadUrl", ""))
+                download_url = payload.get("downloadUrl", "")
+                
+                def run_update():
+                    try:
+                        def on_progress(percent: int, message: str):
+                            with manager._lock:
+                                manager._record_event_locked("update.progress", {
+                                    "percent": percent,
+                                    "message": message
+                                })
+                        updater.apply_update(download_url, progress_callback=on_progress)
+                    except Exception as e:
+                        with manager._lock:
+                            manager._record_event_locked("update.error", {"error": str(e)})
+
+                threading.Thread(target=run_update, daemon=True).start()
                 self._send_json({"status": "ok"})
-            except UpdateError as e:
-                self._send_json({"error": str(e)}, status=HTTPStatus.BAD_REQUEST)
             except Exception as e:
                 self._send_json({"error": str(e)}, status=HTTPStatus.BAD_REQUEST)
             return

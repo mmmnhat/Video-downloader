@@ -1,5 +1,5 @@
-import { useState, useCallback } from "react";
-import { Info, RefreshCw, Download, ServerCrash } from "lucide-react";
+import { useState, useCallback, useEffect } from "react";
+import { Info, RefreshCw, Download, ServerCrash, CheckCircle2, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { checkUpdate, applyUpdate, type UpdateStatus } from "@/lib/api";
 import {
@@ -13,6 +13,7 @@ import {
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
 
 export default function UpdaterDialog() {
   const [open, setOpen] = useState(false);
@@ -20,6 +21,10 @@ export default function UpdaterDialog() {
   const [loading, setLoading] = useState(false);
   const [applying, setApplying] = useState(false);
   const [error, setError] = useState("");
+  
+  // Progress states
+  const [progress, setProgress] = useState(0);
+  const [progressMsg, setProgressMsg] = useState("");
 
   const handleCheck = useCallback(async () => {
     setLoading(true);
@@ -40,17 +45,51 @@ export default function UpdaterDialog() {
     setOpen(true);
   }, [handleCheck]);
 
+  // Listen for progress events
+  useEffect(() => {
+    if (!applying) return;
+
+    const source = new EventSource("/api/events");
+    
+    source.addEventListener("update.progress", (e: any) => {
+      const data = JSON.parse(e.data);
+      setProgress(data.percent);
+      setProgressMsg(data.message);
+      
+      if (data.percent >= 100) {
+        setTimeout(() => source.close(), 1000);
+      }
+    });
+
+    source.addEventListener("update.error", (e: any) => {
+      const data = JSON.parse(e.data);
+      setError(data.error);
+      setApplying(false);
+      source.close();
+    });
+
+    source.onerror = () => {
+      // Don't show error immediately as it might be the server restarting
+      if (progress < 100) {
+         source.close();
+      }
+    };
+
+    return () => source.close();
+  }, [applying, progress]);
+
   const handleApply = useCallback(async () => {
     if (!status?.downloadUrl) return;
     setApplying(true);
     setError("");
+    setProgress(0);
+    setProgressMsg("Đang bắt đầu...");
+    
     try {
       await applyUpdate(status.downloadUrl);
-      toast.success("Đã tải bản cập nhật! Ứng dụng sẽ khởi động lại sau 5 giây...");
-      setOpen(false);
+      // Wait for events to show progress
     } catch (err: any) {
       setError(err.message || "Không thể cài đặt bản cập nhật");
-    } finally {
       setApplying(false);
     }
   }, [status]);
@@ -98,7 +137,7 @@ export default function UpdaterDialog() {
              </Alert>
           )}
 
-          {status && !status.isPlaceholder && status.updateAvailable && (
+          {status && !status.isPlaceholder && status.updateAvailable && !applying && (
              <div className="p-4 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-900 space-y-3">
                 <div className="flex items-center gap-2 font-bold">
                    <Download className="w-4 h-4" />
@@ -112,8 +151,23 @@ export default function UpdaterDialog() {
              </div>
           )}
 
+          {applying && (
+            <div className="space-y-4 p-4 border rounded-lg bg-slate-50">
+               <div className="flex justify-between items-center text-sm mb-1">
+                  <span className="font-medium text-slate-700 flex items-center gap-2">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    {progressMsg || "Đang xử lý..."}
+                  </span>
+                  <span className="text-slate-500">{progress}%</span>
+               </div>
+               <Progress value={progress} className="h-2" />
+               <p className="text-[10px] text-slate-400 italic">Vui lòng không đóng ứng dụng trong khi đang cập nhật.</p>
+            </div>
+          )}
+
           {status && !status.isPlaceholder && !status.updateAvailable && (
-             <div className="text-sm text-muted-foreground p-3 bg-muted rounded-md border">
+             <div className="text-sm text-muted-foreground p-3 bg-muted rounded-md border flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-500" />
                 Bạn đang dùng phiên bản mới nhất.
              </div>
           )}

@@ -1,13 +1,19 @@
-# Video Downloader & StoryStudio AI v1.2.3
+# Video Downloader & StoryStudio AI v1.2.4
 
 Ứng dụng hỗ trợ tải video đa nền tảng và sáng tạo nội dung AI (StoryStudio) tích hợp Gemini.
 
-## 🚀 Có gì mới trong bản v1.2.3?
+## 🚀 Có gì mới trong bản v1.2.4?
 
-### 🎨 StoryStudio - Nâng cấp Bộ sưu tập & Gallery
-- **Tab Bộ sưu tập hoàn toàn mới**: Chuyển đổi từ danh sách Video sang **Gallery ảnh**. Tất cả những tấm ảnh bạn đã bấm "Duyệt" sẽ xuất hiện tại đây như một kho lưu trữ thành phẩm.
-- **Quy tắc đặt tên Export mới**: Ảnh xuất ra sẽ tự động được đặt tên theo định dạng `[TênVideo].m[Cảnh]s[Bước]v[BiếnThể]`. Ví dụ: `KB1.m2s3v1.png`.
-- **Hỗ trợ Xuất hàng loạt**: Bạn có thể chọn nhiều ảnh trong Gallery và xuất tất cả vào thư mục đầu ra chỉ với một cú click.
+### 🔄 Nâng cấp Trình cập nhật hệ thống (Auto-Updater)
+- **Thông báo chủ động**: App sẽ tự động kiểm tra bản cập nhật mới ngay khi khởi động và gửi thông báo nếu có bản vá mới.
+- **Thanh tiến trình trực quan**: Bổ sung thanh % tiến độ khi đang tải bản cập nhật, giúp bạn biết chính xác tình trạng xử lý.
+- **Thông tin chi tiết**: Hiển thị các dòng trạng thái thời gian thực (Đang tải, Giải nén, Khởi động lại...) thay vì chỉ hiển thị biểu tượng chờ.
+- **Xử lý nền**: Quá trình cập nhật giờ đây không còn làm treo giao diện người dùng.
+
+### 🎨 StoryStudio - Nâng cấp Bộ sưu tập & Gallery (v1.2.3)
+- **Tab Bộ sưu tập hoàn toàn mới**: Chuyển đổi từ danh sách Video sang **Gallery ảnh**.
+- **Quy tắc đặt tên Export mới**: `[TênVideo].m[Cảnh]s[Bước]v[BiếnThể]`.
+- **Hỗ trợ Xuất hàng loạt**: Chọn nhiều ảnh và xuất cùng lúc.
 
 ### ⚡ Tự động hóa & Hiệu năng
 - **Chế độ Tự động chạy (Auto-run)**: 
