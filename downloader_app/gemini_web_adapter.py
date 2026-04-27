@@ -21,13 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
-from downloader_app.browser_config import (
-    BrowserConfigError,
-    browser_config_manager,
-    detect_profiles_for_browser_path,
-    launch_browser_with_profile,
-)
-from downloader_app.browser_session import browser_session
+from downloader_app.browser_config import browser_config_manager, resolve_feature_browser_profile
 from downloader_app.runtime import app_path, resolve_binary
 
 
@@ -44,7 +38,9 @@ GEMINI_MODEL_MODE_LABELS = {
     "gemini-2.5-flash-thinking": "Tư duy",
     "gemini-2.5-pro": "Pro",
     "gemini-1.5-pro": "Pro",
+    "flash": "Nhanh",
     "nhanh": "Nhanh",
+    "thinking": "Tư duy",
     "tu-duy": "Tư duy",
     "tu duy": "Tư duy",
     "pro": "Pro",
@@ -97,6 +93,7 @@ GEMINI_STARTER_GEM_LABEL_MARKERS = (
 )
 VISIBLE_GEMINI_CLOSE_DELAY_MS = 0
 GEMINI_SCAN_PROFILE_NAME = "Default"
+GEMINI_DEDICATED_PROFILE_PATH = app_path("cache", "story_pipeline", "gem_scan_profile")
 
 # Profile copy configuration
 PROFILE_SKIP_DIRS = {
@@ -269,7 +266,9 @@ class SharedBrowserContext:
                 pass
             self._playwright = None
         if self._runtime_profile_path is not None:
-            shutil.rmtree(self._runtime_profile_path, ignore_errors=True)
+            # Do NOT delete the selected dedicated profile to persist login
+            if self._runtime_profile_path != self._profile.user_data_dir:
+                shutil.rmtree(self._runtime_profile_path, ignore_errors=True)
             self._runtime_profile_path = None
 
     @property
@@ -298,10 +297,9 @@ class SharedBrowserContext:
                 "và `./.venv/bin/python -m playwright install chromium`."
             ) from exc
 
-        runtime_id = f"gemini-shared-{uuid.uuid4().hex[:10]}"
-        self._runtime_profile_path = build_gemini_runtime_profile(
-            self._profile, self._runtime_root, runtime_id
-        )
+        # Use the selected app-managed profile directly instead of copying from system browser
+        self._runtime_profile_path = self._profile.user_data_dir
+        self._runtime_profile_path.mkdir(parents=True, exist_ok=True)
 
         # Fix Playwright Asyncio conflict:
         # Playwright Sync API cannot run if an event loop is already active in the thread.
@@ -366,7 +364,7 @@ class SharedBrowserContext:
             )
         except Exception:
             pass
-        _sync_browser_cookies_to_context(self._context, self._profile)
+        # Cookies are persisted in dedicated profile
         # Dùng page mặc định làm tab đầu tiên
         first_page = self._context.pages[0] if self._context.pages else self._context.new_page()
         first_page.set_default_timeout(20_000)
@@ -662,6 +660,14 @@ def _available_browser_candidates() -> list[GeminiBrowserCandidate]:
     ]
 
 
+def _installed_browser_candidates() -> list[GeminiBrowserCandidate]:
+    return [
+        candidate
+        for candidate in GEMINI_BROWSER_CANDIDATES
+        if candidate.app_path.exists() and candidate.executable_path.exists()
+    ]
+
+
 def _profile_only_browser_candidates() -> list[GeminiBrowserCandidate]:
     return [
         candidate
@@ -669,6 +675,51 @@ def _profile_only_browser_candidates() -> list[GeminiBrowserCandidate]:
         if candidate.user_data_dir.exists()
         and (not candidate.app_path.exists() or not candidate.executable_path.exists())
     ]
+
+
+def _resolve_browser_executable_path(browser_path: Path) -> Path:
+    path = browser_path.expanduser()
+    if not path.exists():
+        raise GeminiWebError(f"Khong tim thay browser path: {path}")
+    if path.is_file():
+        return path
+
+    candidate_names = (
+        "chrome.exe",
+        "msedge.exe",
+        "browser.exe",
+        "Google Chrome",
+        "Microsoft Edge",
+        "CocCoc",
+    )
+    for candidate_name in candidate_names:
+        candidate = path / candidate_name
+        if candidate.exists() and candidate.is_file():
+            return candidate
+    raise GeminiWebError(f"Browser path khong tro den file thuc thi hop le: {path}")
+
+
+def _infer_browser_name(executable_path: Path) -> str:
+    lowered = str(executable_path).lower()
+    if "coccoc" in lowered:
+        return "CocCoc"
+    if "edge" in lowered or executable_path.stem.lower() == "msedge":
+        return "Edge"
+    if "chrome" in lowered:
+        return "Chrome"
+    stem = executable_path.stem.strip()
+    return stem or "Chromium"
+
+
+def _build_dedicated_profile(browser_name: str, executable_path: Path) -> GeminiBrowserProfile:
+    user_data_dir = _gem_scan_user_data_dir()
+    return GeminiBrowserProfile(
+        name=browser_name,
+        app_path=executable_path.parent,
+        executable_path=executable_path,
+        user_data_dir=user_data_dir,
+        profile_dir=user_data_dir / GEMINI_SCAN_PROFILE_NAME,
+    )
 
 
 def _iter_profile_dirs(user_data_dir: Path) -> list[Path]:
@@ -754,44 +805,18 @@ def _choose_profile_dir(user_data_dir: Path, domains: tuple[str, ...]) -> Path |
 
 
 def detect_gemini_browser_profile(domains: tuple[str, ...] = GEMINI_AUTH_DOMAINS) -> GeminiBrowserProfile:
-    configured = browser_config_manager.get_feature("story")
-    if configured.browser_path:
-        try:
-            detected = detect_profiles_for_browser_path(
-                feature="story",
-                browser_path=configured.browser_path,
-                profile_name=configured.profile_name,
-            )
-        except BrowserConfigError as exc:
-            raise GeminiWebError(str(exc)) from exc
-        return GeminiBrowserProfile(
-            name=str(detected["browserName"]),
-            app_path=Path(str(detected.get("appPath") or Path(str(detected["executablePath"])).parent)),
-            executable_path=Path(str(detected["executablePath"])),
-            user_data_dir=Path(str(detected["userDataDir"])),
-            profile_dir=Path(str(detected["selectedProfileDir"])),
-        )
-
-    for candidate in _available_browser_candidates():
-        profile_dir = _choose_profile_dir(candidate.user_data_dir, domains)
-        if profile_dir is None:
-            continue
-        return GeminiBrowserProfile(
-            name=candidate.name,
-            app_path=candidate.app_path,
-            executable_path=candidate.executable_path,
-            user_data_dir=candidate.user_data_dir,
-            profile_dir=profile_dir,
-        )
-
-    partial_candidates = _profile_only_browser_candidates()
-    if partial_candidates:
-        browser_names = "/".join(candidate.name for candidate in partial_candidates)
-        raise GeminiWebError(
-            "Da tim thay du lieu profile Gemini nhung khong tim duoc ung dung "
-            f"{browser_names} tren may nay."
-        )
-    raise GeminiWebError("Khong tim thay CocCoc/Chrome/Edge co profile Gemini tren may nay.")
+    _ = domains
+    try:
+        detected = resolve_feature_browser_profile("story")
+    except Exception as exc:  # noqa: BLE001
+        raise GeminiWebError(str(exc)) from exc
+    return GeminiBrowserProfile(
+        name=str(detected["browserName"]),
+        app_path=Path(str(detected.get("appPath") or Path(str(detected["executablePath"])).parent)),
+        executable_path=Path(str(detected["executablePath"])),
+        user_data_dir=Path(str(detected["userDataDir"])),
+        profile_dir=Path(str(detected["profileDir"])),
+    )
 
 def _robust_copy_file(source: Path, destination: Path) -> None:
     """Copies a file, retrying and using fallback streams, win32api, sqlite backup or cmd copy if locked on Windows."""
@@ -1213,9 +1238,9 @@ def _build_playwright_cookies_from_browser_session(domains: tuple[str, ...]) -> 
 
 
 def _gem_scan_user_data_dir() -> Path:
-    path = app_path("cache", "story_pipeline", "gem_scan_profile")
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    profile = detect_gemini_browser_profile()
+    profile.user_data_dir.mkdir(parents=True, exist_ok=True)
+    return profile.user_data_dir
 
 
 def _launch_browser_detached(executable: Path, args: list[str]) -> None:
@@ -1248,42 +1273,34 @@ def _sync_browser_cookies_to_context(context, profile: GeminiBrowserProfile) -> 
 
 
 def open_gemini_login_window() -> dict:
-    browser_name = "browser local"
-    profile_dir = ""
-    warning_message: str | None = None
-    opened = False
-
+    profile = detect_gemini_browser_profile()
+    user_data_dir = _gem_scan_user_data_dir()
     try:
-        opened_payload = launch_browser_with_profile(
-            feature="story",
-            target_url=GEMINI_LOGIN_URL,
+        _launch_browser_detached(
+            profile.executable_path,
+            [
+                f"--user-data-dir={user_data_dir}",
+                f"--profile-directory={profile.profile_name}",
+                "--new-window",
+                "--disable-blink-features=AutomationControlled",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-sync",
+                GEMINI_LOGIN_URL,
+            ],
         )
-        opened = bool(opened_payload.get("opened", True))
-        browser_name = str(opened_payload.get("browser", browser_name))
-        profile_dir = str(opened_payload.get("profileDir", profile_dir))
-    except Exception as exc:
-        warning_message = str(exc).strip() or exc.__class__.__name__
-        try:
-            opened_payload = browser_session.open_login(GEMINI_LOGIN_URL)
-            opened = bool(opened_payload.get("opened", True))
-        except Exception as fallback_exc:  # noqa: BLE001
-            raise GeminiWebError(
-                f"Khong mo duoc cua so Gemini login: {fallback_exc}"
-            ) from fallback_exc
-
-    message = (
-        f"Da mo Gemini tren {browser_name}. Dang nhap trong {browser_name}, "
-        "roi quay lai app bam Lam moi phien."
-    )
-    if warning_message:
-        message += f" (Fallback default browser: {warning_message})"
+    except Exception as exc:  # noqa: BLE001
+        raise GeminiWebError(f"Khong mo duoc cua so Gemini login: {exc}") from exc
 
     return {
-        "opened": opened,
+        "opened": True,
         "url": GEMINI_LOGIN_URL,
-        "browser": browser_name,
-        "profileDir": profile_dir,
-        "message": message,
+        "browser": profile.name,
+        "profileDir": str(profile.profile_dir),
+        "message": (
+            f"Da mo Gemini bang profile rieng cua app tren {profile.name}. "
+            "Dang nhap xong, dong cua so vua mo roi quay lai app bam Lam moi phien."
+        ),
     }
 
 
@@ -1317,7 +1334,10 @@ def check_gemini_session(*, headless: bool, base_url: str, runtime_root: Path) -
         )
 
     cookie_count = max(
-        (_cookie_count_for_domains(cookie_path, GEMINI_AUTH_DOMAINS) for cookie_path in _cookie_paths_for_profile(profile.profile_dir)),
+        (
+            _cookie_count_for_domains(cookie_path, GEMINI_AUTH_DOMAINS)
+            for cookie_path in _cookie_paths_for_profile(profile.profile_dir)
+        ),
         default=0,
     )
     if cookie_count > 0:
@@ -1326,25 +1346,17 @@ def check_gemini_session(*, headless: bool, base_url: str, runtime_root: Path) -
             authenticated=True,
             browser=profile.name,
             profile_dir=str(profile.profile_dir),
-            message=f"Đã kết nối qua phiên {profile.name}.",
-        )
-    if profile.name.lower() == "coccoc":
-        return GeminiSessionStatus(
-            dependencies_ready=True,
-            authenticated=True,
-            browser=profile.name,
-            profile_dir=str(profile.profile_dir),
-            message=(
-                "Đã kết nối qua phiên CocCoc. "
-                "Nếu gặp lỗi khi tạo ảnh, hãy mở Gemini trong CocCoc rồi bấm Làm mới phiên."
-            ),
+            message=f"Da san sang voi profile Gemini rieng cua app tren {profile.name}.",
         )
     return GeminiSessionStatus(
         dependencies_ready=True,
         authenticated=False,
         browser=profile.name,
         profile_dir=str(profile.profile_dir),
-        message=f"Chưa tìm thấy phiên Gemini trong {profile.name}. Hãy đăng nhập Gemini rồi bấm Làm mới phiên.",
+        message=(
+            "Chua tim thay session Gemini trong profile rieng cua app. "
+            "Hay bam Login, dang nhap 1 lan, roi quay lai app bam Lam moi phien."
+        ),
     )
 
 
@@ -1847,7 +1859,7 @@ class GeminiWebAdapter:
         page.goto(desired_url, wait_until="domcontentloaded", timeout=35_000)
         if _looks_like_login_page(page.url):
             raise GeminiWebAuthError(
-                "Chua tim thay session Gemini trong browser local. Hay dang nhap Gemini roi thu lai."
+                "Chua tim thay session Gemini trong profile rieng cua app. Hay dang nhap Gemini roi thu lai."
             )
 
         deadline = time.monotonic() + 20
@@ -2658,17 +2670,7 @@ class GeminiWebAdapter:
         except ImportError:
             return []
 
-        configured = browser_config_manager.get_feature("story")
-        strict_profile = bool(str(configured.profile_name or "").strip())
-        base_profile = detect_gemini_browser_profile()
-        if strict_profile:
-            candidate_dirs = [base_profile.profile_dir]
-        else:
-            candidate_dirs = [base_profile.profile_dir] + [
-                profile_dir
-                for profile_dir in _iter_profile_dirs(base_profile.user_data_dir)
-                if profile_dir != base_profile.profile_dir
-            ]
+        profile = detect_gemini_browser_profile()
 
         def _is_login_gate(page) -> bool:
             return bool(
@@ -2772,71 +2774,42 @@ class GeminiWebAdapter:
 
             return _normalize_gem_entries(raw_gems)
 
-        for candidate_dir in candidate_dirs:
-            profile = GeminiBrowserProfile(
-                name=base_profile.name,
-                app_path=base_profile.app_path,
-                executable_path=base_profile.executable_path,
-                user_data_dir=base_profile.user_data_dir,
-                profile_dir=candidate_dir,
+        playwright = None
+        context = None
+        try:
+            playwright = sync_playwright().start()
+            context = playwright.chromium.launch_persistent_context(
+                str(_gem_scan_user_data_dir()),
+                headless=True,
+                executable_path=str(profile.executable_path),
+                args=[
+                    f"--profile-directory={profile.profile_name}",
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                    "--disable-sync",
+                    "--disable-features=Translate,OptimizationHints",
+                    "--disable-background-networking",
+                    "--disable-component-update",
+                ],
             )
-            runtime_id = f"list-gems-{candidate_dir.name.replace(' ', '_')}-{uuid.uuid4().hex[:6]}"
-            runtime_profile = build_gemini_runtime_profile(
-                profile,
-                self._runtime_root,
-                runtime_id,
-                copy_full_profile=True,
-            )
+            page = context.pages[0] if context.pages else context.new_page()
+            page.set_default_timeout(30_000)
+            page.goto(GEMINI_GEMS_VIEW_URL, wait_until="domcontentloaded", timeout=45_000)
+            page.wait_for_timeout(4_000)
 
-            playwright = None
-            context = None
-            try:
-                playwright = sync_playwright().start()
-                context = playwright.chromium.launch_persistent_context(
-                    str(runtime_profile),
-                    headless=True,
-                    executable_path=str(profile.executable_path),
-                    args=[
-                        f"--profile-directory={profile.profile_name}",
-                        "--disable-blink-features=AutomationControlled",
-                        "--no-first-run",
-                        "--no-default-browser-check",
-                        "--disable-sync",
-                        "--disable-features=Translate,OptimizationHints",
-                        "--disable-background-networking",
-                        "--disable-component-update",
-                    ],
-                )
-                _sync_browser_cookies_to_context(context, profile)
-                if strict_profile:
-                    cookie_probe = context.cookies("https://gemini.google.com")
-                    if not cookie_probe:
-                        print(
-                            f"[GeminiWebAdapter] Profile `{profile.profile_name}` has no readable Gemini cookies in strict mode. "
-                            "Please login Gemini in this exact profile and keep only this profile active when refreshing session.",
-                            flush=True,
-                        )
-                page = context.pages[0] if context.pages else context.new_page()
-                page.set_default_timeout(30_000)
-                page.goto(GEMINI_GEMS_VIEW_URL, wait_until="domcontentloaded", timeout=45_000)
-                page.wait_for_timeout(4_000)
+            if _is_login_gate(page):
+                return []
 
-                if _is_login_gate(page):
-                    continue
-
-                normalized = _collect_gems_from_page(page)
-                if normalized:
-                    return normalized
-            except Exception as e:
-                print(f"[DEBUG] Failed to list gems for profile {profile.profile_name}: {e}")
-            finally:
-                if context:
-                    context.close()
-                if playwright:
-                    playwright.stop()
-                shutil.rmtree(runtime_profile, ignore_errors=True)
-
-        return []
+            return _collect_gems_from_page(page)
+        except Exception as exc:
+            print(f"[DEBUG] Failed to list gems from dedicated Gemini profile: {exc}")
+            return []
+        finally:
+            if context:
+                context.close()
+            if playwright:
+                playwright.stop()
 
     def list_gems(self) -> list[dict]:
         """
@@ -2852,13 +2825,13 @@ class GeminiWebAdapter:
             "from downloader_app.gemini_web_adapter import GeminiWebAdapter\n"
             "os.environ['FLOWGEN_GEM_SCAN_MODE'] = 'child'\n"
             "adapter = GeminiWebAdapter(runtime_root=Path(sys.argv[1]))\n"
-            "print(json.dumps(adapter._list_gems_with_playwright(), ensure_ascii=False))\n"
+            "gems = adapter._list_gems_with_playwright()\n"
+            "sys.stdout.buffer.write(json.dumps(gems, ensure_ascii=False).encode('utf-8'))\n"
         )
         try:
             completed = subprocess.run(
                 [sys.executable, "-c", script, str(self._runtime_root)],
                 capture_output=True,
-                text=True,
                 check=False,
                 timeout=60,
                 cwd=str(Path(__file__).resolve().parent.parent),
@@ -2867,10 +2840,10 @@ class GeminiWebAdapter:
             print(f"[DEBUG] Gem scan subprocess launch failed: {exc}")
             return []
 
-        stdout = str(completed.stdout or "").strip()
-        if completed.returncode == 0 and stdout:
+        if completed.returncode == 0 and completed.stdout:
             try:
-                return _normalize_gem_entries(json.loads(stdout.splitlines()[-1]))
+                stdout_str = completed.stdout.decode('utf-8').strip()
+                return _normalize_gem_entries(json.loads(stdout_str.splitlines()[-1]))
             except Exception:
                 print("[DEBUG] Gem scan subprocess returned unparsable JSON.")
                 return []
@@ -3570,8 +3543,15 @@ class GeminiWebAdapter:
             'button[aria-label*="regenerate" i]',
             'button[aria-label*="thử lại" i]',
             'button[aria-label*="thu lai" i]',
+            'button[aria-label*="tạo lại" i]',
+            'button[aria-label*="tao lai" i]',
+            'button[aria-label*="khôi phục" i]',
+            'button[aria-label*="khoi phuc" i]',
             'button[data-testid*="retry" i]',
             'button[data-testid*="regenerate" i]',
+            'button:has(mat-icon:has-text("refresh"))',
+            'button:has(mat-icon:has-text("rotate_right"))',
+            'button:has(.google-symbols:has-text("refresh"))',
         ]
         
         for selector in retry_selectors:
@@ -3605,6 +3585,10 @@ class GeminiWebAdapter:
             'button[aria-label*="rerun" i]',
             'button[aria-label*="thử lại" i]',
             'button[aria-label*="thu lai" i]',
+            'button[aria-label*="tạo lại" i]',
+            'button[aria-label*="tao lai" i]',
+            'button[aria-label*="khôi phục" i]',
+            'button[aria-label*="khoi phuc" i]',
             '[role="button"][aria-label*="retry" i]',
             '[role="button"][aria-label*="regenerate" i]',
             '[role="button"][aria-label*="try again" i]',

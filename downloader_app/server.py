@@ -16,6 +16,8 @@ from urllib.parse import parse_qs, urlparse
 from downloader_app.browser_config import (
     BrowserConfigError,
     browser_config_manager,
+    create_managed_profile,
+    delete_managed_profile,
     detect_profiles_for_browser_path,
 )
 from downloader_app.browser_session import browser_session
@@ -264,30 +266,50 @@ class AppHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
 
-        if path == "/api/story/settings":
+        if path == "/api/browser-config/profiles/create":
             try:
                 payload = self._read_json_body()
             except json.JSONDecodeError:
                 self._send_json({"error": "Body must be valid JSON."}, status=HTTPStatus.BAD_REQUEST)
                 return
 
+            feature = str(payload.get("feature", "")).strip().lower()
+            profile_name = str(payload.get("profile_name", "")).strip()
             try:
+                self._send_json(create_managed_profile(feature, profile_name))
+            except BrowserConfigError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/browser-config/profiles/delete":
+            try:
+                payload = self._read_json_body()
+            except json.JSONDecodeError:
+                self._send_json({"error": "Body must be valid JSON."}, status=HTTPStatus.BAD_REQUEST)
+                return
+
+            feature = str(payload.get("feature", "")).strip().lower()
+            profile_name = str(payload.get("profile_name", "")).strip()
+            try:
+                self._send_json(delete_managed_profile(feature, profile_name))
+            except BrowserConfigError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/story/settings":
+            try:
+                payload = self._read_json_body()
                 self._send_json(story_pipeline.update_settings(payload))
-            except StoryPipelineError as exc:
+            except (json.JSONDecodeError, StoryPipelineError) as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
 
         if path == "/api/story/global-prompt":
             try:
                 payload = self._read_json_body()
-            except json.JSONDecodeError:
-                self._send_json({"error": "Body must be valid JSON."}, status=HTTPStatus.BAD_REQUEST)
-                return
-
-            prompt = str(payload.get("prompt", ""))
-            try:
+                prompt = str(payload.get("prompt", ""))
                 self._send_json(story_pipeline.update_global_prompt(prompt))
-            except StoryPipelineError as exc:
+            except (json.JSONDecodeError, StoryPipelineError) as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
 
@@ -301,25 +323,22 @@ class AppHandler(BaseHTTPRequestHandler):
         if path == "/api/story/videos/import":
             try:
                 payload = self._read_json_body()
-            except json.JSONDecodeError:
-                self._send_json({"error": "Body must be valid JSON."}, status=HTTPStatus.BAD_REQUEST)
-                return
-
-            try:
                 self._send_json(story_pipeline.import_manifest(payload), status=HTTPStatus.CREATED)
-            except StoryPipelineError as exc:
+            except (json.JSONDecodeError, StoryPipelineError) as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
 
         if path == "/api/story/videos/scan-folder":
             try:
                 payload = self._read_json_body()
-            except json.JSONDecodeError:
-                self._send_json({"error": "Body must be valid JSON."}, status=HTTPStatus.BAD_REQUEST)
-                return
-
-            try:
                 self._send_json(story_pipeline.import_from_folder(payload), status=HTTPStatus.CREATED)
+            except (json.JSONDecodeError, StoryPipelineError) as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/story/videos/clear":
+            try:
+                self._send_json(story_pipeline.clear_videos())
             except StoryPipelineError as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
@@ -339,6 +358,23 @@ class AppHandler(BaseHTTPRequestHandler):
                     self._send_json(story_pipeline.cancel_video(video_id))
                 else:
                     self._send_json(story_pipeline.run_video(video_id))
+            except StoryPipelineError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path.startswith("/api/story/control/"):
+            action = path.split("/")[-1]
+            try:
+                if action == "run":
+                    self._send_json(story_pipeline.run_all_videos())
+                elif action == "pause":
+                    self._send_json(story_pipeline.pause_all_videos())
+                elif action == "resume":
+                    self._send_json(story_pipeline.resume_all_videos())
+                elif action == "cancel":
+                    self._send_json(story_pipeline.cancel_all_videos())
+                else:
+                    self._send_json({"error": "Story control not found."}, status=HTTPStatus.NOT_FOUND)
             except StoryPipelineError as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
@@ -1050,16 +1086,24 @@ class AppHandler(BaseHTTPRequestHandler):
         return folder
 
     def _open_folder(self, folder_path: str) -> None:
-        path = Path(folder_path).expanduser()
+        if not folder_path:
+            raise RuntimeError("Duong dan thu muc trong.")
+        
+        path = Path(folder_path).expanduser().resolve()
         if not path.exists():
-            raise RuntimeError("Folder khong ton tai.")
+            raise RuntimeError(f"Thu muc khong ton tai: {folder_path}")
+
+        if sys.platform == "win32":
+            try:
+                os.startfile(str(path))
+                return
+            except Exception as exc:
+                raise RuntimeError(f"Khong the mo thu muc: {exc}")
 
         if sys.platform == "darwin":
             command = ["open", str(path)]
         elif sys.platform.startswith("linux"):
             command = ["xdg-open", str(path)]
-        elif sys.platform == "win32":
-            command = ["explorer", str(path)]
         else:
             raise RuntimeError("Nen tang hien tai chua ho tro open folder.")
 
@@ -1067,6 +1111,7 @@ class AppHandler(BaseHTTPRequestHandler):
         if completed.returncode != 0:
             message = (completed.stderr or completed.stdout or "Khong the mo folder.").strip()
             raise RuntimeError(message)
+
 
     def _choose_browser(self) -> str:
         from downloader_app.runtime import get_ui_bridge

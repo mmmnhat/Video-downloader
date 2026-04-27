@@ -59,12 +59,6 @@ import {
   FieldLegend,
   FieldSet,
 } from "@/components/ui/field";
-import {
-  InputGroup,
-  InputGroupAddon,
-  InputGroupButton,
-  InputGroupInput,
-} from "@/components/ui/input-group";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -972,8 +966,8 @@ function App() {
                 variant={currentView === "story" ? "secondary" : "ghost"} 
                 className="w-full justify-center" 
                 onClick={() => setStoredView("story")}
-                title="Tạo ảnh AI"
-                aria-label="Tạo ảnh AI"
+                title="Tạo ảnh"
+                aria-label="Tạo ảnh"
              >
                 <Clapperboard className="h-4 w-4" />
              </Button>
@@ -981,8 +975,8 @@ function App() {
                 variant={currentView === "tts" ? "secondary" : "ghost"} 
                 className="w-full justify-center" 
                 onClick={() => setStoredView("tts")}
-                title="Studio TTS"
-                aria-label="Studio TTS"
+                title="Lồng tiếng"
+                aria-label="Lồng tiếng"
              >
                 <AudioLines className="h-4 w-4" />
              </Button>
@@ -1019,39 +1013,38 @@ function App() {
               ) : null}
 
           <Card className={`relative min-w-0 border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)] lg:sticky ${TAB_STICKY_TOP_CLASS} ${TAB_VIEWPORT_CARD_HEIGHT_CLASS} lg:overflow-hidden flex flex-col`}>
-            <div className="absolute top-4 right-4 flex items-center gap-2 z-10">
+            <div className="flex items-center justify-end px-4 pt-0 pb-2 shrink-0 gap-1.5">
+              <div className="relative">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 text-[10px] font-bold uppercase tracking-wider px-2.5 hover:bg-muted/80 rounded-full border border-border/40 flex items-center gap-2"
+                  onClick={() => void handleOpenGoogleLogin()}
+                >
+                  {authStatus?.authenticated && (
+                    <span className="size-1.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)]" />
+                  )}
+                  {authStatus?.authenticated ? "Đã đăng nhập" : "Đăng nhập"}
+                </Button>
+              </div>
               <Button
                 type="button"
-                variant="outline"
-                size="sm"
-                className="h-8 text-xs"
-                onClick={() => void handleOpenGoogleLogin()}
-              >
-                Đăng nhập
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
+                variant="ghost"
                 size="icon"
-                className="size-8"
+                className="size-7 hover:bg-muted/80 rounded-full border border-border/40"
                 onClick={() => void handleRefreshAuth()}
                 disabled={authRefreshing}
                 title="Làm mới phiên"
               >
                 {authRefreshing ? (
-                  <Loader2 className="size-3.5 animate-spin" />
+                  <Loader2 className="size-3 animate-spin" />
                 ) : (
-                  <RefreshCw className="size-3.5" />
+                  <RefreshCw className="size-3" />
                 )}
               </Button>
-              {Boolean(authStatus?.authenticated) && (
-                <div 
-                  className="h-2.5 w-2.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)] ml-1" 
-                  title="Đã kết nối Google" 
-                />
-              )}
             </div>
-            <CardContent className="flex min-h-0 min-w-0 flex-1 flex-col gap-6 lg:overflow-x-hidden lg:overflow-y-auto pt-14">
+            <CardContent className="flex min-h-0 min-w-0 flex-1 flex-col gap-6 lg:overflow-x-hidden lg:overflow-y-auto p-4 pt-5">
               <SessionStatusAlert
                 authenticated={Boolean(authStatus?.authenticated)}
                 notReadyTitle={"Phiên trình duyệt chưa sẵn sàng"}
@@ -1066,8 +1059,8 @@ function App() {
                   >
                     URL Google Sheets
                   </TooltipFieldLabel>
-                  <InputGroup>
-                    <InputGroupInput
+                  <div className="flex items-center gap-1 p-1 pl-3 rounded-full border border-border/70 bg-muted/20 focus-within:ring-1 focus-within:ring-primary/30 focus-within:border-primary/50 transition-all">
+                    <input
                       id="sheet-url"
                       value={sheetUrl}
                       onChange={(event) => {
@@ -1077,24 +1070,22 @@ function App() {
                       }}
                       type="url"
                       name="sheet_url"
-                      inputMode="url"
+                      className="flex-1 bg-transparent border-0 outline-none text-xs h-7 placeholder:text-muted-foreground/50"
                       spellCheck={false}
                       autoComplete="off"
-                      aria-invalid={Boolean(previewError)}
                       placeholder="https://docs.google.com/spreadsheets/d/..."
                     />
-                    <InputGroupAddon align="inline-end">
-                      <InputGroupButton
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        disabled={previewLoading || startLoading}
-                        onClick={() => void handlePasteSheetUrl()}
-                      >
-                        Dán
-                      </InputGroupButton>
-                    </InputGroupAddon>
-                  </InputGroup>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-3 text-xs hover:bg-background/50 rounded-full shrink-0"
+                      disabled={previewLoading || startLoading}
+                      onClick={() => void handlePasteSheetUrl()}
+                    >
+                      Dán
+                    </Button>
+                  </div>
                   <FieldError>{previewError}</FieldError>
                 </Field>
               </form>
@@ -1108,8 +1099,8 @@ function App() {
                   >
                     Thư mục đầu ra
                   </TooltipFieldLabel>
-                  <InputGroup>
-                    <InputGroupInput
+                  <div className="flex items-center gap-1 p-1 pl-3 rounded-full border border-border/70 bg-muted/20 focus-within:ring-1 focus-within:ring-primary/30 focus-within:border-primary/50 transition-all">
+                    <input
                       id="output-dir"
                       value={settingsDraft.output_dir}
                       onChange={(event) =>
@@ -1120,30 +1111,33 @@ function App() {
                       }
                       type="text"
                       name="output_dir"
+                      className="flex-1 bg-transparent border-0 outline-none text-xs h-7 placeholder:text-muted-foreground/50"
                       autoComplete="off"
                       placeholder="/Volumes/External/Video downloader/downloads"
                     />
-                    <InputGroupAddon align="inline-end">
-                      <InputGroupButton
+                    <div className="flex gap-1 shrink-0">
+                      <Button
                         type="button"
                         variant="ghost"
                         size="sm"
+                        className="h-7 px-3 text-xs hover:bg-background/50 rounded-full"
                         disabled={folderLoading}
                         onClick={() => void handleChooseFolder()}
                       >
                         {folderLoading ? "Đang chọn..." : "Chọn"}
-                      </InputGroupButton>
-                      <InputGroupButton
+                      </Button>
+                      <Button
                         type="button"
                         variant="ghost"
                         size="sm"
+                        className="h-7 px-3 text-xs hover:bg-background/50 rounded-full"
                         disabled={!settingsDraft.output_dir.trim()}
                         onClick={() => void handleOpenFolder(settingsDraft.output_dir)}
                       >
                         Mở
-                      </InputGroupButton>
-                    </InputGroupAddon>
-                  </InputGroup>
+                      </Button>
+                    </div>
+                  </div>
                 </Field>
 
                 <Field>
@@ -1156,6 +1150,7 @@ function App() {
                   <Input
                     id="channel-prefix"
                     value={settingsDraft.channel_prefix}
+                    className="h-8 rounded-lg bg-muted/20 border-border/70 text-xs"
                     onChange={(event) =>
                       setSettingsDraft((current) => ({
                         ...current,
@@ -1187,7 +1182,7 @@ function App() {
                           setPreviewError("");
                         }}
                       >
-                        <SelectTrigger id="sheet-range-mode" className="w-full">
+                        <SelectTrigger id="sheet-range-mode" className="h-8 rounded-lg bg-muted/20 border-border/70 text-xs">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
@@ -1209,6 +1204,7 @@ function App() {
                       <Input
                         id="sheet-range-start"
                         value={sequenceStart}
+                        className="h-8 rounded-lg bg-muted/20 border-border/70 text-xs"
                         onChange={(event) => {
                           setSequenceStart(event.target.value);
                           setPreview(null);
@@ -1232,6 +1228,7 @@ function App() {
                       <Input
                         id="sheet-range-end"
                         value={sequenceEnd}
+                        className="h-8 rounded-lg bg-muted/20 border-border/70 text-xs"
                         onChange={(event) => {
                           setSequenceEnd(event.target.value);
                           setPreview(null);
@@ -1381,7 +1378,7 @@ function App() {
                         onValueChange={handleTableSourceChange}
                         disabled={!preview && batchSummaries.length === 0}
                       >
-                        <SelectTrigger className="w-full">
+                        <SelectTrigger className="h-8 rounded-lg bg-muted/20 border-border/70 text-xs">
                           <SelectValue placeholder="Chọn bản xem trước hoặc batch đã lưu" />
                         </SelectTrigger>
                         <SelectContent>
@@ -1419,18 +1416,19 @@ function App() {
                   </div>
                 </CardHeader>
               ) : null}
-              <CardContent className="flex min-h-0 flex-1 flex-col gap-5">
-                <div className="flex justify-end">
+              <div className="flex justify-end pt-0 pb-2 px-4">
                   <Button
                     type="button"
                     variant="outline"
                     size="sm"
+                    className="h-7 text-xs rounded-full border-border/40 hover:bg-muted/50"
                     disabled={tableMode === "empty"}
                     onClick={handleRefreshTable}
                   >
                     Xóa bảng
                   </Button>
-                </div>
+              </div>
+              <CardContent className="flex min-h-0 flex-1 flex-col gap-5 p-4 pt-2">
                 {SHOW_TABLE_CONTEXT && tableMode === "queue" && currentBatch ? (
                   <div className="flex flex-col gap-4 rounded-xl border border-border bg-muted/35 p-4">
                     <div className="flex flex-wrap gap-2">

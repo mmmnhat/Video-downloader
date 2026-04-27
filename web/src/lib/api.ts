@@ -52,6 +52,13 @@ export type BrowserProfileProbeResult = {
   message: string;
 };
 
+export type BrowserProfileMutationResult = {
+  profiles: BrowserProfileOption[];
+  profileName?: string;
+  profileDir?: string;
+  config?: BrowserConfigPayload;
+};
+
 export type BatchStats = {
   queued: number;
   downloading: number;
@@ -369,6 +376,13 @@ export type StoryBootstrapPayload = {
   sessionStatus: StorySessionStatus;
 };
 
+export type StoryControlResult = {
+  ok: boolean;
+  action: "run" | "pause" | "resume" | "cancel";
+  affectedVideoIds: string[];
+  count: number;
+};
+
 export class ApiError extends Error {
   constructor(message: string) {
     super(message);
@@ -511,6 +525,34 @@ export async function probeBrowserProfiles(
     body: JSON.stringify({
       feature,
       browser_path: browserPath,
+      profile_name: profileName,
+    }),
+  });
+}
+
+export async function createBrowserProfile(
+  feature: "downloader" | "tts" | "story",
+  profileName = "",
+) {
+  return requestJson<BrowserProfileMutationResult>("/api/browser-config/profiles/create", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      feature,
+      profile_name: profileName,
+    }),
+  });
+}
+
+export async function deleteBrowserProfile(
+  feature: "downloader" | "tts" | "story",
+  profileName: string,
+) {
+  return requestJson<BrowserProfileMutationResult>("/api/browser-config/profiles/delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      feature,
       profile_name: profileName,
     }),
   });
@@ -758,36 +800,20 @@ export async function updateStorySettings(settings: Partial<StorySettings>) {
   });
 }
 
+export function getStoryAssetUrl(path: string) {
+  if (!path) return "";
+  const encoded = encodeURIComponent(path);
+  return `/api/story/file?path=${encoded}`;
+}
+
 export async function getStorySessionStatus(refresh = false) {
   const suffix = refresh ? "?refresh=1" : "";
   return requestJson<StorySessionStatus>(`/api/story/session/status${suffix}`);
 }
 
 export async function openStoryLogin() {
-  return requestJson<{ opened: boolean; url: string; message: string }>(
-    "/api/story/session/open-login",
-    {
-      method: "POST",
-    },
-  );
-}
-
-export async function updateStoryGlobalPrompt(prompt: string) {
-  return requestJson<{ globalPrompt: string }>("/api/story/global-prompt", {
+  return requestJson<{ opened: boolean; url: string; message: string }>("/api/story/session/open-login", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt }),
-  });
-}
-
-export async function importStoryManifest(payload: { manifest?: Record<string, unknown>; manifestPath?: string }) {
-  return requestJson<StoryVideoDetail[]>("/api/story/videos/import", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      ...(payload.manifest ? { manifest: payload.manifest } : {}),
-      ...(payload.manifestPath ? { manifest_path: payload.manifestPath } : {}),
-    }),
   });
 }
 
@@ -799,85 +825,55 @@ export async function scanStoryFolder(folderPath: string) {
   });
 }
 
-export async function runStoryVideo(videoId: string) {
-  return requestJson<StoryVideoDetail>(`/api/story/videos/${videoId}/run`, {
-    method: "POST",
-  });
-}
-
-export async function pauseStoryVideo(videoId: string) {
-  return requestJson<StoryVideoDetail>(`/api/story/videos/${videoId}/pause`, {
-    method: "POST",
-  });
-}
-
-export async function cancelStoryVideo(videoId: string) {
-  return requestJson<StoryVideoDetail>(`/api/story/videos/${videoId}/cancel`, {
-    method: "POST",
-  });
-}
-
-export async function exportStoryVideo(
-  videoId: string,
-  destinationDir: string,
-  stepIds?: string[]
-) {
-  return requestJson<{
-    exportedCount: number;
-    skippedCount: number;
-    destinationDir: string;
-    files: string[];
-  }>(`/api/story/videos/${videoId}/export`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ destination_dir: destinationDir, step_ids: stepIds }),
-  });
+export async function listStoryGems() {
+  return requestJson<{ name: string; url: string }[]>("/api/story/gems");
 }
 
 export async function applyStoryAction(payload: {
-  action:
-    | "run"
-    | "pause"
-    | "cancel"
-    | "accept"
-    | "regenerate"
-    | "refine"
-    | "skip"
-    | "retry"
-    | "update_video_prompt"
-    | "update_marker_seed"
-    | "update_step_prompt";
-  videoId: string;
-  markerId?: string;
-  stepId?: string;
-  attemptId?: string;
+  action: string;
+  video_id: string;
+  marker_id?: string;
+  step_id?: string;
+  attempt_id?: string;
   prompt?: string;
 }) {
   return requestJson<StoryVideoDetail>("/api/story/actions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      action: payload.action,
-      video_id: payload.videoId,
-      marker_id: payload.markerId,
-      step_id: payload.stepId,
-      attempt_id: payload.attemptId,
-      prompt: payload.prompt,
-    }),
+    body: JSON.stringify(payload),
   });
 }
 
-export function getStoryAssetUrl(path: string | null | undefined) {
-  if (!path) {
-    return "";
-  }
-  return `/api/story/file?path=${encodeURIComponent(path)}`;
+export async function updateStoryGlobalPrompt(prompt: string) {
+  return requestJson<{ globalPrompt: string }>("/api/story/global-prompt", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt }),
+  });
 }
 
-export async function listStoryGems(): Promise<{name: string, url: string}[]> {
-  const resp = await fetch('/api/story/gems');
-  if (!resp.ok) {
-    throw new Error('Failed to list gems');
-  }
-  return resp.json();
+export async function controlStoryQueue(action: "run" | "pause" | "resume" | "cancel") {
+  return requestJson<StoryControlResult>(`/api/story/control/${action}`, {
+    method: "POST",
+  });
+}
+
+export async function exportStorySelected(videoId: string, destinationDir: string, stepIds?: string[]) {
+  return requestJson<{ exportedCount: number; destinationDir: string; files: string[] }>(
+    `/api/story/videos/${videoId}/export`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        destination_dir: destinationDir,
+        step_ids: stepIds,
+      }),
+    },
+  );
+}
+
+export async function clearStoryVideos() {
+  return requestJson<{ ok: boolean }>("/api/story/videos/clear", {
+    method: "POST",
+  });
 }

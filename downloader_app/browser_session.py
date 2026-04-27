@@ -1,18 +1,13 @@
 from __future__ import annotations
 
 import http.cookiejar
-import webbrowser
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import HTTPCookieProcessor, Request, build_opener
 
-from downloader_app.browser_config import (
-    BrowserConfigError,
-    browser_config_manager,
-    detect_profiles_for_browser_path,
-    launch_browser_with_profile,
-)
+from downloader_app.browser_config import launch_browser_with_profile, resolve_feature_browser_profile
 
 
 GOOGLE_LOGIN_URL = "https://docs.google.com/spreadsheets/u/0/"
@@ -30,46 +25,35 @@ class BrowserCandidate:
 
 class BrowserSessionManager:
     def __init__(self) -> None:
-        self._candidates = [
-            BrowserCandidate(name="CocCoc", loader_name="coccoc"),
-            BrowserCandidate(name="Chrome", loader_name="chrome"),
-            BrowserCandidate(name="Edge", loader_name="edge"),
-            BrowserCandidate(name="Firefox", loader_name="firefox"),
-            BrowserCandidate(name="Brave", loader_name="brave"),
-            BrowserCandidate(name="Opera", loader_name="opera"),
-            BrowserCandidate(name="Opera GX", loader_name="opera_gx"),
-            BrowserCandidate(name="Vivaldi", loader_name="vivaldi"),
-            BrowserCandidate(name="Chromium", loader_name="chromium"),
-            BrowserCandidate(name="LibreWolf", loader_name="librewolf"),
-            BrowserCandidate(name="Safari", loader_name="safari"),
-        ]
-        self._active_candidate: BrowserCandidate | None = None
         self._session_cache: dict | None = None
         self._session_cache_time: float = 0.0
-        # Cached full cookiejar so export and has_session reuse without re-scanning
         self._cookiejar_cache: http.cookiejar.CookieJar | None = None
         self._cookiejar_cache_time: float = 0.0
+        self._active_candidate: BrowserCandidate | None = None
         self._active_profile_dir: str = ""
 
-    _SESSION_CACHE_TTL = 60  # seconds – applies to both status and cookiejar cache
+    _SESSION_CACHE_TTL = 60
 
     def _get_cached_status(self) -> dict | None:
         import time
+
         if self._session_cache is not None and (time.monotonic() - self._session_cache_time) < self._SESSION_CACHE_TTL:
             return self._session_cache
         return None
 
     def _set_cached_status(self, result: dict) -> None:
         import time
+
         self._session_cache = result
         self._session_cache_time = time.monotonic()
 
     def invalidate_cache(self) -> None:
-        """Clear cached session so the next status() call re-scans browsers."""
         self._session_cache = None
         self._session_cache_time = 0.0
         self._cookiejar_cache = None
         self._cookiejar_cache_time = 0.0
+        self._active_candidate = None
+        self._active_profile_dir = ""
 
     def status(self) -> dict:
         cached = self._get_cached_status()
@@ -77,67 +61,27 @@ class BrowserSessionManager:
             return cached
 
         try:
-            import browser_cookie3
-            dependencies_ready = True
-        except ImportError:
-            dependencies_ready = False
-
-        status = {
-            "dependencies_ready": dependencies_ready,
-            "authenticated": False,
-            "cookie_count": 0,
-            "browser": None,
-            "profileDir": "",
-            "message": "",
-        }
-
-        if not dependencies_ready:
-            status["message"] = "Thieu thu vien browser-cookie3. Hay chay pip3 install -r requirements.txt."
-            self._set_cached_status(status)
-            return status
-
-        try:
             result = self._find_working_browser()
         except BrowserSessionError as exc:
-            if self._active_candidate is not None:
-                status["browser"] = self._active_candidate.name
-                status["profileDir"] = self._active_profile_dir
-            elif self._candidates:
-                status["browser"] = self._candidates[0].name
-            message = str(exc)
-            browser_name = status.get("browser")
-            if (
-                browser_name
-                and str(browser_name).lower() == "coccoc"
-                and "Chua tim thay Google session hop le trong browser." in message
-            ):
-                status["authenticated"] = True
-                status["cookie_count"] = 0
-                status["message"] = (
-                    "Da tim thay profile CocCoc. "
-                    "Neu gap loi khi doc Google Sheets private, hay mo Google Sheets trong CocCoc "
-                    "roi bam Lam moi phien."
-                )
-                self._set_cached_status(status)
-                return status
-            if (
-                browser_name
-                and "Chua tim thay Google session hop le trong browser." in message
-            ):
-                message = (
-                    f"Chua tim thay Google session hop le trong {browser_name}. "
-                    f"Hay mo Google Sheets trong {browser_name} co quyen xem roi bam Lam moi phien."
-                )
-            status["message"] = message
+            status = {
+                "dependencies_ready": "browser-cookie3" not in str(exc).lower(),
+                "authenticated": False,
+                "cookie_count": 0,
+                "browser": self._active_candidate.name if self._active_candidate else None,
+                "profileDir": self._active_profile_dir,
+                "message": str(exc),
+            }
             self._set_cached_status(status)
             return status
 
-        status["dependencies_ready"] = True
-        status["authenticated"] = True
-        status["cookie_count"] = result["cookie_count"]
-        status["browser"] = result["browser"]
-        status["profileDir"] = result.get("profile_dir", "")
-        status["message"] = f"Da xac nhan session Google tu {result['browser']}."
+        status = {
+            "dependencies_ready": True,
+            "authenticated": True,
+            "cookie_count": result["cookie_count"],
+            "browser": result["browser"],
+            "profileDir": result["profile_dir"],
+            "message": f"Da xac nhan session Google tu profile rieng cua app tren {result['browser']}.",
+        }
         self._set_cached_status(status)
         return status
 
@@ -146,30 +90,25 @@ class BrowserSessionManager:
 
     def export_netscape_cookies(self, file_path: str, domains: list[str] | None = None) -> str:
         import time
-        # Use the cached cookiejar if available — avoids re-scanning all profiles per download item
+
         cookiejar_cache_valid = (
             self._cookiejar_cache is not None
             and (time.monotonic() - self._cookiejar_cache_time) < self._SESSION_CACHE_TTL
         )
         if not cookiejar_cache_valid:
-            # Force a fresh scan and populate the cache
             self._find_working_browser()
 
         source_jar = self._cookiejar_cache
         if source_jar is None:
-            raise BrowserSessionError("Khong xac dinh duoc browser dang active de xuat cookie.")
+            raise BrowserSessionError("Khong xac dinh duoc profile trinh duyet de xuat cookie.")
 
         requested_domains = domains or [""]
         cookie_file = http.cookiejar.MozillaCookieJar(file_path)
         seen: set[tuple[str, str, str]] = set()
 
         for cookie in source_jar:
-            # Filter by domain if domains are specified
             if requested_domains != [""]:
-                if not any(
-                    cookie.domain.lstrip(".").endswith(d.lstrip("."))
-                    for d in requested_domains
-                ):
+                if not any(cookie.domain.lstrip(".").endswith(d.lstrip(".")) for d in requested_domains):
                     continue
             key = (cookie.domain, cookie.path, cookie.name)
             if key in seen:
@@ -178,164 +117,91 @@ class BrowserSessionManager:
             cookie_file.set_cookie(cookie)
 
         if not seen:
-            # Fall back to full cookiejar without domain filtering
             for cookie in source_jar:
                 key = (cookie.domain, cookie.path, cookie.name)
-                if key not in seen:
-                    seen.add(key)
-                    cookie_file.set_cookie(cookie)
+                if key in seen:
+                    continue
+                seen.add(key)
+                cookie_file.set_cookie(cookie)
 
         cookie_file.save(ignore_discard=True, ignore_expires=True)
         return file_path
 
     def extract_platform_cookies(self, platform_id: str) -> str:
-        """Find cookies for a specific platform in the browser and return Netscape string."""
-        import time
-        import io
         from downloader_app.jobs import COOKIE_DOMAIN_HINTS
 
-        # Refresh candidate/cookiejar if needed
         self.status()
-
         source_jar = self._cookiejar_cache
-        if source_jar is None:
-            # Try once more to find a working browser if cache is empty
-            try:
-                self._find_working_browser()
-                source_jar = self._cookiejar_cache
-            except Exception:
-                return ""
-
         if source_jar is None:
             return ""
 
         domains = COOKIE_DOMAIN_HINTS.get(platform_id, [f"{platform_id}.com"])
-        
-        # We need a Netscape format string. 
-        # MozillaCookieJar expects a file path to save to. 
-        # We'll use a temporary file then delete it.
-        import tempfile
-        from pathlib import Path
-
         tmp = tempfile.NamedTemporaryFile(suffix=".txt", delete=False)
         tmp.close()
         try:
             target = http.cookiejar.MozillaCookieJar(tmp.name)
             seen: set[tuple[str, str, str]] = set()
             found_count = 0
-
             for cookie in source_jar:
                 if any(cookie.domain.lstrip(".").endswith(d.lstrip(".")) for d in domains):
                     key = (cookie.domain, cookie.path, cookie.name)
-                    if key not in seen:
-                        seen.add(key)
-                        target.set_cookie(cookie)
-                        found_count += 1
-
-            if found_count > 0:
-                target.save(ignore_discard=True, ignore_expires=True)
-                return Path(tmp.name).read_text(encoding="utf-8", errors="replace")
-            return ""
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    target.set_cookie(cookie)
+                    found_count += 1
+            if found_count <= 0:
+                return ""
+            target.save(ignore_discard=True, ignore_expires=True)
+            return Path(tmp.name).read_text(encoding="utf-8", errors="replace")
         finally:
             Path(tmp.name).unlink(missing_ok=True)
 
     def fetch_text(self, url: str) -> str:
         import time
 
-        # Fast path: use cached cookiejar if still fresh
         cache_valid = (
             self._cookiejar_cache is not None
             and (time.monotonic() - self._cookiejar_cache_time) < self._SESSION_CACHE_TTL
         )
-        if cache_valid and self._cookiejar_cache is not None:
-            opener = build_opener(HTTPCookieProcessor(self._cookiejar_cache))
-            request = Request(
-                url,
-                headers={
-                    "User-Agent": (
-                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/123.0 Safari/537.36"
-                    )
-                },
-            )
-            try:
-                with opener.open(request, timeout=20) as response:
-                    final_url = response.geturl()
-                    payload = response.read().decode("utf-8", errors="replace")
-                if not self._is_logged_out_response(final_url, payload):
-                    return payload
-                # Session became invalid — invalidate cache and fall through to full scan
-                self.invalidate_cache()
-            except HTTPError:
-                pass
-            except Exception:
-                pass
+        if not cache_valid:
+            self._find_working_browser()
 
-        # Slow path: scan all browser candidates
-        last_error: Exception | None = None
-        primary_error: Exception | None = None
+        cookiejar = self._cookiejar_cache
+        if cookiejar is None:
+            raise BrowserSessionError("Khong co cookie Google trong profile rieng cua app.")
 
-        for candidate in self._ordered_candidates():
-            try:
-                cookiejar = self._load_cookiejar(candidate)
-            except BrowserSessionError as exc:
-                last_error = exc
-                if candidate == self._active_candidate and primary_error is None:
-                    primary_error = exc
-                continue
-
-            opener = build_opener(HTTPCookieProcessor(cookiejar))
-            request = Request(
-                url,
-                headers={
-                    "User-Agent": (
-                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/123.0 Safari/537.36"
-                    )
-                },
-            )
-
-            try:
-                with opener.open(request, timeout=20) as response:
-                    final_url = response.geturl()
-                    payload = response.read().decode("utf-8", errors="replace")
-            except HTTPError as exc:
-                last_error = self._http_error_for_candidate(candidate.name, exc)
-                if candidate == self._active_candidate and primary_error is None:
-                    primary_error = last_error
-                continue
-            except Exception as exc:
-                last_error = exc
-                if candidate == self._active_candidate and primary_error is None:
-                    primary_error = exc
-                continue
-
-            if self._is_logged_out_response(final_url, payload):
-                last_error = BrowserSessionError(
-                    f"Google session trong {candidate.name} chua hop le."
+        opener = build_opener(HTTPCookieProcessor(cookiejar))
+        request = Request(
+            url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/123.0 Safari/537.36"
                 )
-                if candidate == self._active_candidate and primary_error is None:
-                    primary_error = last_error
-                continue
+            },
+        )
+        try:
+            with opener.open(request, timeout=20) as response:
+                final_url = response.geturl()
+                payload = response.read().decode("utf-8", errors="replace")
+        except HTTPError as exc:
+            raise self._http_error_for_candidate(
+                self._active_candidate.name if self._active_candidate else "browser",
+                exc,
+            ) from exc
+        except Exception as exc:
+            raise BrowserSessionError(str(exc)) from exc
 
-            self._active_candidate = candidate
-            # Update cookiejar cache with newly found working cookies
-            self._cookiejar_cache = cookiejar
-            self._cookiejar_cache_time = time.monotonic()
-            return payload
+        if self._is_logged_out_response(final_url, payload):
+            self.invalidate_cache()
+            raise BrowserSessionError(
+                "Google session trong profile rieng cua app chua hop le. "
+                "Hay bam Dang nhap Google roi thu lai."
+            )
 
-        if isinstance(primary_error, BrowserSessionError):
-            raise primary_error
-
-        if isinstance(last_error, BrowserSessionError):
-            raise last_error
-
-        raise BrowserSessionError(
-            "Khong the dung browser session hien tai de doc Google Sheets private. "
-            "Hay mo chinh sheet trong browser dang dung va dam bao tai khoan do co quyen xem."
-        ) from last_error
+        return payload
 
     def get_domain_cookies(self, domains: list[str]) -> tuple[str | None, list[http.cookiejar.Cookie]]:
         import time
@@ -349,73 +215,34 @@ class BrowserSessionManager:
             and self._active_candidate is not None
             and (time.monotonic() - self._cookiejar_cache_time) < self._SESSION_CACHE_TTL
         )
-        if cache_valid and self._cookiejar_cache is not None:
-            matched = [
-                cookie
-                for cookie in self._cookiejar_cache
-                if any(cookie.domain.lstrip(".").lower().endswith(domain) for domain in normalized_domains)
-            ]
-            if matched:
-                return self._active_candidate.name, matched
+        if not cache_valid:
+            self._find_working_browser()
 
-        for candidate in self._ordered_candidates():
-            try:
-                cookiejar = self._load_cookiejar(candidate, domain_name="")
-            except BrowserSessionError:
-                continue
+        if self._cookiejar_cache is None or self._active_candidate is None:
+            return None, []
 
-            matched = [
-                cookie
-                for cookie in cookiejar
-                if any(cookie.domain.lstrip(".").lower().endswith(domain) for domain in normalized_domains)
-            ]
-            if not matched:
-                continue
-
-            self._active_candidate = candidate
-            self._cookiejar_cache = cookiejar
-            self._cookiejar_cache_time = time.monotonic()
-            return candidate.name, matched
-
-        return None, []
+        matched = [
+            cookie
+            for cookie in self._cookiejar_cache
+            if any(cookie.domain.lstrip(".").lower().endswith(domain) for domain in normalized_domains)
+        ]
+        return self._active_candidate.name, matched
 
     def open_login(self, target_url: str = GOOGLE_LOGIN_URL) -> dict:
-        configured = browser_config_manager.get_feature("downloader")
-        if configured.browser_path:
-            try:
-                return launch_browser_with_profile(
-                    feature="downloader",
-                    target_url=target_url,
-                )
-            except BrowserConfigError as exc:
-                raise BrowserSessionError(str(exc)) from exc
-        opened = webbrowser.open(target_url, new=2)
-        return {"opened": bool(opened), "url": target_url}
-
-    def _configured_candidate(self) -> BrowserCandidate | None:
-        configured = browser_config_manager.get_feature("downloader")
-        if not configured.browser_path:
-            return None
-        detected = detect_profiles_for_browser_path(
-            feature="downloader",
-            browser_path=configured.browser_path,
-            profile_name=configured.profile_name,
+        try:
+            payload = launch_browser_with_profile(feature="downloader", target_url=target_url)
+        except Exception as exc:
+            raise BrowserSessionError(str(exc)) from exc
+        self.invalidate_cache()
+        message = (
+            f"Da mo Google bang profile rieng cua app tren {payload.get('browser', 'browser')}. "
+            "Dang nhap xong, dong cua so vua mo roi quay lai app bam Lam moi phien."
         )
-        return BrowserCandidate(
-            name=str(detected["browserName"]),
-            loader_name=self._loader_name_for_browser(str(detected["browserName"])),
-        )
+        return {**payload, "message": message}
 
     def _find_working_browser(self) -> dict:
         import time
-        try:
-            import browser_cookie3
-        except ImportError as exc:
-            raise BrowserSessionError(
-                "Thieu thu vien browser-cookie3. Hay chay pip3 install -r requirements.txt."
-            ) from exc
 
-        # Return cached cookiejar if still fresh
         if (
             self._cookiejar_cache is not None
             and self._active_candidate is not None
@@ -424,117 +251,38 @@ class BrowserSessionManager:
             return {
                 "browser": self._active_candidate.name,
                 "cookie_count": len(list(self._cookiejar_cache)),
+                "profile_dir": self._active_profile_dir,
             }
 
-        last_error: Exception | None = None
-        configured = browser_config_manager.get_feature("downloader")
+        resolved = resolve_feature_browser_profile("downloader")
+        candidate = BrowserCandidate(
+            name=str(resolved["browserName"]),
+            loader_name=self._loader_name_for_browser(str(resolved["browserName"])),
+        )
+        cookiejar = self._load_manual_cookiejar(
+            candidate,
+            profile_dir=Path(str(resolved["profileDir"])),
+            user_data_dir=Path(str(resolved["userDataDir"])),
+            domain_name="",
+        )
 
-        if configured.browser_path:
-            try:
-                detected = detect_profiles_for_browser_path(
-                    feature="downloader",
-                    browser_path=configured.browser_path,
-                    profile_name=configured.profile_name,
-                )
-                candidate = BrowserCandidate(
-                    name=str(detected["browserName"]),
-                    loader_name=self._loader_name_for_browser(str(detected["browserName"])),
-                )
-                cookiejar = self._load_manual_cookiejar(
-                    candidate,
-                    profile_dir=Path(str(detected["selectedProfileDir"])),
-                    user_data_dir=Path(str(detected["userDataDir"])),
-                    domain_name="",
-                )
-                google_cookie_count = sum(
-                    1 for cookie in cookiejar if "google.com" in cookie.domain
-                )
-                if google_cookie_count <= 0:
-                    raise BrowserSessionError(
-                        f"Chua tim thay Google session hop le trong {candidate.name}. "
-                        f"Hay mo Google Sheets trong {candidate.name} co quyen xem roi bam Lam moi phien."
-                    )
-                self._active_candidate = candidate
-                self._active_profile_dir = str(detected["selectedProfileDir"])
-                self._cookiejar_cache = cookiejar
-                self._cookiejar_cache_time = time.monotonic()
-                return {
-                    "browser": candidate.name,
-                    "cookie_count": len(list(cookiejar)),
-                    "profile_dir": str(detected["selectedProfileDir"]),
-                }
-            except (BrowserConfigError, BrowserSessionError) as exc:
-                # Do not fail hard here. The configured profile can be stale or
-                # partially unreadable; continue with normal browser scanning.
-                last_error = exc
+        google_cookie_count = sum(1 for cookie in cookiejar if "google.com" in cookie.domain)
+        self._active_candidate = candidate
+        self._active_profile_dir = str(resolved["profileDir"])
+        self._cookiejar_cache = cookiejar
+        self._cookiejar_cache_time = time.monotonic()
 
-        for candidate in self._ordered_candidates():
-            try:
-                # Load ALL cookies into the cache so we can export any domain later
-                cookiejar = self._load_cookiejar(candidate, domain_name="")
-            except BrowserSessionError as exc:
-                last_error = exc
-                continue
-
-            # Verify this profile actually has Google cookies before selecting it
-            google_cookie_count = sum(1 for c in cookiejar if "google.com" in c.domain)
-            if google_cookie_count <= 0:
-                continue
-
-            self._active_candidate = candidate
-            self._active_profile_dir = ""
-            self._cookiejar_cache = cookiejar
-            self._cookiejar_cache_time = time.monotonic()
-            return {
-                "browser": candidate.name,
-                "cookie_count": len(list(cookiejar)),
-                "profile_dir": "",
-            }
-
-        raise BrowserSessionError(
-            "Chua tim thay Google session hop le trong browser. "
-            "Hay mo Google Sheets trong browser co quyen xem roi bam Refresh Session."
-        ) from last_error
-
-    def _load_cookiejar(self, candidate: BrowserCandidate, domain_name: str = "google.com"):
-        try:
-            import browser_cookie3
-        except ImportError as exc:
+        if google_cookie_count <= 0:
             raise BrowserSessionError(
-                "Thieu thu vien browser-cookie3. Hay chay pip3 install -r requirements.txt."
-            ) from exc
+                f"Chua tim thay Google session hop le trong profile rieng cua app tren {candidate.name}. "
+                "Hay mo Google Sheets trong cua so Dang nhap cua app roi bam Lam moi phien."
+            )
 
-        configured = browser_config_manager.get_feature("downloader")
-        if configured.browser_path:
-            try:
-                detected = detect_profiles_for_browser_path(
-                    feature="downloader",
-                    browser_path=configured.browser_path,
-                    profile_name=configured.profile_name,
-                )
-                if str(detected["browserName"]).strip().lower() == candidate.name.strip().lower():
-                    return self._load_manual_cookiejar(
-                        candidate,
-                        profile_dir=Path(str(detected["selectedProfileDir"])),
-                        user_data_dir=Path(str(detected["userDataDir"])),
-                        domain_name=domain_name,
-                    )
-            except (BrowserConfigError, BrowserSessionError):
-                # Fall back to browser_cookie3 default discovery instead of
-                # failing the whole session on a single configured profile.
-                pass
-
-        try:
-            if candidate.loader_name == "coccoc":
-                loader = self._coccoc_cookie_loader(browser_cookie3)
-            else:
-                loader = getattr(browser_cookie3, candidate.loader_name)
-            return loader(domain_name=domain_name)
-        except Exception as exc:
-            raise BrowserSessionError(
-                f"Khong doc duoc cookie tu {candidate.name}. "
-                "Neu dung macOS, co the can cap quyen cho Terminal/Codex de doc browser profile."
-            ) from exc
+        return {
+            "browser": candidate.name,
+            "cookie_count": len(list(cookiejar)),
+            "profile_dir": str(resolved["profileDir"]),
+        }
 
     def _load_manual_cookiejar(
         self,
@@ -548,7 +296,7 @@ class BrowserSessionManager:
             import browser_cookie3
         except ImportError as exc:
             raise BrowserSessionError(
-                "Thieu thu vien browser-cookie3. Hay chay pip3 install -r requirements.txt."
+                "Thieu thu vien browser-cookie3. Hay chay pip install -r requirements.txt."
             ) from exc
 
         cookie_paths = [
@@ -557,11 +305,11 @@ class BrowserSessionManager:
         ]
         cookie_path = next((path for path in cookie_paths if path.exists()), None)
         if cookie_path is None:
-            raise BrowserSessionError(f"Khong tim thay cookie db trong {profile_dir}.")
+            return http.cookiejar.CookieJar()
 
         key_file = user_data_dir / "Local State"
         if not key_file.exists():
-            raise BrowserSessionError(f"Khong tim thay Local State trong {user_data_dir}.")
+            return http.cookiejar.CookieJar()
 
         try:
             if candidate.loader_name == "coccoc":
@@ -593,80 +341,19 @@ class BrowserSessionManager:
             )
         except Exception as exc:
             raise BrowserSessionError(
-                f"Khong doc duoc cookie tu {candidate.name}. "
-                "Neu dung macOS, co the can cap quyen cho Terminal/Codex de doc browser profile."
+                f"Khong doc duoc cookie tu profile rieng cua app tren {candidate.name}: {exc}"
             ) from exc
 
     def _loader_name_for_browser(self, browser_name: str) -> str:
         normalized = browser_name.strip().lower()
-        for candidate in self._candidates:
-            if candidate.name.strip().lower() == normalized:
-                return candidate.loader_name
-        if normalized == "coccoc":
-            return "coccoc"
+        mapping = {
+            "coccoc": "coccoc",
+            "chrome": "chrome",
+            "edge": "edge",
+        }
+        if normalized in mapping:
+            return mapping[normalized]
         raise BrowserSessionError(f"Khong ho tro browser `{browser_name}`.")
-
-    def _coccoc_cookie_loader(self, browser_cookie3_module):
-        import glob
-        import os
-        import sys
-        import http.cookiejar
-
-        def load_all_profiles(domain_name=""):
-            combined_cj = http.cookiejar.CookieJar()
-            base_dirs: list[str] = []
-            local_app_data = os.getenv("LOCALAPPDATA")
-            if local_app_data:
-                base_dirs.append(os.path.join(local_app_data, "CocCoc", "Browser", "User Data"))
-            if sys.platform == "darwin":
-                base_dirs.append(os.path.expanduser("~/Library/Application Support/CocCoc/Browser"))
-            elif sys.platform.startswith("linux"):
-                base_dirs.append(os.path.expanduser("~/.config/CocCoc/Browser"))
-
-            class CocCoc(browser_cookie3_module.ChromiumBased):
-                def __init__(self, c_file, k_file, d_name):
-                    super().__init__(
-                        browser="CocCoc",
-                        cookie_file=c_file,
-                        domain_name=d_name,
-                        key_file=k_file,
-                        os_crypt_name="coccoc",
-                        osx_key_service="CocCoc Safe Storage",
-                        osx_key_user="CocCoc",
-                    )
-
-            for base_dir in base_dirs:
-                key_file = os.path.join(base_dir, "Local State")
-                if not os.path.exists(key_file):
-                    continue
-
-                patterns = [
-                    os.path.join(base_dir, "Default", "Cookies"),
-                    os.path.join(base_dir, "Default", "Network", "Cookies"),
-                    os.path.join(base_dir, "Profile *", "Cookies"),
-                    os.path.join(base_dir, "Profile *", "Network", "Cookies"),
-                    os.path.join(base_dir, "Guest Profile", "Cookies"),
-                    os.path.join(base_dir, "Guest Profile", "Network", "Cookies"),
-                ]
-
-                found_files = []
-                for pat in patterns:
-                    found_files.extend(glob.glob(pat))
-
-                for cf in set(found_files):
-                    if not os.path.isfile(cf):
-                        continue
-                    try:
-                        extractor = CocCoc(c_file=cf, k_file=key_file, d_name=domain_name)
-                        extracted_cj = extractor.load()
-                        for cookie in extracted_cj:
-                            combined_cj.set_cookie(cookie)
-                    except Exception:
-                        pass
-
-            return combined_cj
-
-        return load_all_profiles
 
     def _is_logged_out_response(self, final_url: str, payload: str) -> bool:
         if "accounts.google.com" in final_url or "ServiceLogin" in final_url:
@@ -679,43 +366,17 @@ class BrowserSessionManager:
         ]
         return any(marker in payload for marker in sign_in_markers)
 
-    def _ordered_candidates(self) -> list[BrowserCandidate]:
-        configured = browser_config_manager.get_feature("downloader")
-        if configured.browser_path:
-            try:
-                configured_candidate = self._configured_candidate()
-            except BrowserConfigError:
-                configured_candidate = None
-            if configured_candidate is not None:
-                return [configured_candidate] + [
-                    candidate
-                    for candidate in self._candidates
-                    if candidate != configured_candidate
-                ]
-            return list(self._candidates)
-
-        if self._active_candidate is None:
-            return list(self._candidates)
-
-        return [self._active_candidate] + [
-            candidate
-            for candidate in self._candidates
-            if candidate != self._active_candidate
-        ]
-
     def _http_error_for_candidate(self, browser_name: str, error: HTTPError) -> BrowserSessionError:
         if error.code == 404:
             return BrowserSessionError(
                 f"Google tra ve 404 khi truy cap sheet bang {browser_name}. "
-                "Thuong dieu nay co nghia la link sheet dang dan bi sai, bi thieu ky tu, "
-                "hoac tai khoan trong browser nay khong nhin thay sheet do. "
-                "Hay copy lai full URL truc tiep tu thanh dia chi cua tab sheet dang mo."
+                "Thuong nghia la link sheet sai hoac tai khoan trong profile nay khong thay sheet do."
             )
 
         if error.code == 403:
             return BrowserSessionError(
                 f"Google tra ve 403 khi truy cap sheet bang {browser_name}. "
-                "Tai khoan trong browser nay chua du quyen doc sheet."
+                "Tai khoan trong profile nay chua du quyen doc sheet."
             )
 
         return BrowserSessionError(

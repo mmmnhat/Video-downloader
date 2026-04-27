@@ -23,7 +23,7 @@ packaging/windows/dist/
 
 # Ignore compiled exe artifacts in dist (not spec files)
 dist/*.exe
-dist/
+dist*/
 
 # TTS runtime & browser profiles (legacy paths kept for older local runs)
 tts_profiles/
@@ -46,3 +46,5 @@ patch.py
 test_shared_browser.py
 .test_profile/
 browser_config.json
+
+*.zip

@@ -15,12 +15,6 @@ import {
 import { Field, FieldGroup } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import {
-  InputGroup,
-  InputGroupAddon,
-  InputGroupButton,
-  InputGroupInput,
-} from "@/components/ui/input-group";
-import {
   Select,
   SelectContent,
   SelectItem,
@@ -30,7 +24,6 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { SessionStatusAlert } from "@/components/ui/session-status-alert";
 import { TooltipFieldLabel } from "@/components/ui/tooltip-field-label";
-import { VoicePicker } from "@/components/ui/voice-picker";
 import {
   resolveSequenceRangeInput,
   type SequenceRangeMode,
@@ -165,7 +158,6 @@ export default function TtsManager() {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [startLoading, setStartLoading] = useState(false);
   const [sessionRefreshing, setSessionRefreshing] = useState(false);
-  const [sessionChecking, setSessionChecking] = useState(false);
   const [voicesLoading, setVoicesLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -191,12 +183,6 @@ export default function TtsManager() {
     [myVoices, voiceQuery],
   );
   const selectedBatchActive = selectedBatch ? ACTIVE_BATCH_STATUSES.has(selectedBatch.status) : false;
-  const voiceFieldLoading = sessionChecking || voicesLoading;
-  const voiceFieldPlaceholder = voiceFieldLoading
-    ? "Đang tải danh sách giọng My Voice..."
-    : myVoices.length > 0
-      ? "Chọn giọng từ My Voice..."
-      : "Không có giọng My Voice trong phiên hiện tại.";
 
   useEffect(() => {
     void bootstrap();
@@ -367,7 +353,6 @@ export default function TtsManager() {
       return;
     }
     sessionRefreshInFlightRef.current = true;
-    setSessionChecking(true);
     if (!silent) {
       setSessionRefreshing(true);
     }
@@ -386,7 +371,6 @@ export default function TtsManager() {
       }
     } finally {
       sessionRefreshInFlightRef.current = false;
-      setSessionChecking(false);
       if (!silent) {
         setSessionRefreshing(false);
       }
@@ -688,39 +672,38 @@ export default function TtsManager() {
       ) : null}
 
       <Card className={`relative min-w-0 border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)] lg:sticky ${TAB_STICKY_TOP_CLASS} ${TAB_VIEWPORT_CARD_HEIGHT_CLASS} lg:overflow-hidden flex flex-col`}>
-        <div className="absolute top-4 right-4 flex items-center gap-2 z-10">
+        <div className="flex items-center justify-end px-4 pt-0 pb-2 shrink-0 gap-1.5">
+          <div className="relative">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 text-[10px] font-bold uppercase tracking-wider px-2.5 hover:bg-muted/80 rounded-full border border-border/40 flex items-center gap-2"
+              onClick={() => void handleOpenLogin()}
+            >
+              {sessionStatus?.authenticated && (
+                <span className="size-1.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)]" />
+              )}
+              {sessionStatus?.authenticated ? "Đã đăng nhập" : "Đăng nhập"}
+            </Button>
+          </div>
           <Button
             type="button"
-            variant="outline"
-            size="sm"
-            className="flex-1 h-8 text-xs font-semibold"
-            onClick={() => void handleOpenLogin()}
-          >
-            Đăng nhập
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
+            variant="ghost"
             size="icon"
-            className="size-8"
+            className="size-7 hover:bg-muted/80 rounded-full border border-border/40"
             onClick={() => void handleRefreshSession()}
             disabled={sessionRefreshing}
             title="Làm mới phiên"
           >
             {sessionRefreshing ? (
-              <Loader2 className="size-3.5 animate-spin" />
+              <Loader2 className="size-3 animate-spin" />
             ) : (
-              <RefreshCw className="size-3.5" />
+              <RefreshCw className="size-3" />
             )}
           </Button>
-          {Boolean(sessionStatus?.authenticated) && (
-            <div 
-              className="absolute -right-1 -top-1 size-2.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" 
-              title="Đã kết nối ElevenLabs" 
-            />
-          )}
         </div>
-        <CardContent className="flex min-h-0 min-w-0 flex-1 flex-col gap-6 lg:overflow-x-hidden lg:overflow-y-auto pt-14">
+        <CardContent className="flex min-h-0 min-w-0 flex-1 flex-col gap-6 lg:overflow-x-hidden lg:overflow-y-auto p-4 pt-2">
           <SessionStatusAlert
             authenticated={Boolean(sessionStatus?.authenticated)}
             notReadyTitle={"Phiên ElevenLabs chưa sẵn sàng"}
@@ -735,8 +718,8 @@ export default function TtsManager() {
               >
                 URL Google Sheets
               </TooltipFieldLabel>
-              <InputGroup>
-                <InputGroupInput
+              <div className="flex items-center gap-1 p-1 pl-3 rounded-full border border-border/70 bg-muted/20 focus-within:ring-1 focus-within:ring-primary/30 focus-within:border-primary/50 transition-all">
+                <input
                   id="tts-sheet-url"
                   value={sheetUrl}
                   onChange={(event) => {
@@ -745,40 +728,39 @@ export default function TtsManager() {
                     setErrorMessage("");
                   }}
                   type="url"
-                  inputMode="url"
+                  className="flex-1 bg-transparent border-0 outline-none text-xs h-7 placeholder:text-muted-foreground/50"
                   spellCheck={false}
                   autoComplete="off"
                   placeholder="https://docs.google.com/spreadsheets/d/..."
                 />
-                <InputGroupAddon align="inline-end">
-                  <InputGroupButton
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      if (!navigator.clipboard?.readText) {
-                        toast.error("Không hỗ trợ truy cập clipboard tại đây.");
-                        return;
-                      }
-                      void navigator.clipboard
-                        .readText()
-                        .then((value) => value.trim())
-                        .then((value) => {
-                          if (!value) {
-                            throw new Error("Clipboard đang trống.");
-                          }
-                          setSheetUrl(value);
-                          setPreview(null);
-                        })
-                        .catch((error: unknown) => {
-                          toast.error(getErrorMessage(error));
-                        });
-                    }}
-                  >
-                    Dán
-                  </InputGroupButton>
-                </InputGroupAddon>
-              </InputGroup>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 px-3 text-xs hover:bg-background/50 rounded-full shrink-0"
+                  onClick={() => {
+                    if (!navigator.clipboard?.readText) {
+                      toast.error("Không hỗ trợ truy cập clipboard tại đây.");
+                      return;
+                    }
+                    void navigator.clipboard
+                      .readText()
+                      .then((value) => value.trim())
+                      .then((value) => {
+                        if (!value) {
+                          throw new Error("Clipboard đang trống.");
+                        }
+                        setSheetUrl(value);
+                        setPreview(null);
+                      })
+                      .catch((error: unknown) => {
+                        toast.error(getErrorMessage(error));
+                      });
+                  }}
+                >
+                  Dán
+                </Button>
+              </div>
             </Field>
 
             <Field>
@@ -792,7 +774,7 @@ export default function TtsManager() {
                 value={textColumn || "__auto__"}
                 onValueChange={(value) => setTextColumn(value === "__auto__" ? "" : value)}
               >
-                <SelectTrigger id="tts-text-column">
+                <SelectTrigger id="tts-text-column" className="h-8 rounded-lg bg-muted/20 border-border/70 text-xs">
                   <SelectValue placeholder="Tự nhận diện cột bình luận" />
                 </SelectTrigger>
                 <SelectContent>
@@ -814,18 +796,33 @@ export default function TtsManager() {
                 Giọng My Voice
               </TooltipFieldLabel>
               <div className="flex items-center gap-2">
-                <VoicePicker
-                  voices={myVoices}
-                  value={voiceQuery || undefined}
-                  onValueChange={(value) => setVoiceQuery(value)}
-                  disabled={voiceFieldLoading || myVoices.length === 0}
-                  placeholder={voiceFieldPlaceholder}
-                  className="flex-1"
-                />
+                <Select
+                  value={voiceQuery || ""}
+                  onValueChange={setVoiceQuery}
+                >
+                  <SelectTrigger className="h-8 rounded-full bg-muted/20 border-border/70 text-xs flex-1">
+                    <SelectValue placeholder="Chọn giọng đọc..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {voices.map((v) => (
+                      <SelectItem key={v.voiceId} value={v.voiceId}>
+                        <div className="flex items-center gap-2">
+                          {v.previewUrl && (
+                            <div className="size-4 rounded-full overflow-hidden border border-border/50">
+                              <img src={v.previewUrl} alt="" className="size-full object-cover" />
+                            </div>
+                          )}
+                          <span className="truncate">{v.name}</span>
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
                 <Button
                   type="button"
-                  variant="outline"
+                  variant="ghost"
                   size="icon"
+                  className="size-8 hover:bg-muted/40 rounded-full border border-border/70 bg-muted/20 shrink-0"
                   onClick={() => void loadVoices({ refresh: true })}
                   disabled={voicesLoading}
                   title="Quét lại danh sách giọng"
@@ -847,7 +844,7 @@ export default function TtsManager() {
                   value={modelFamily}
                   onValueChange={(value) => setModelFamily(value as "v2" | "v3")}
                 >
-                  <SelectTrigger id="tts-model-family">
+                  <SelectTrigger id="tts-model-family" className="h-8 rounded-lg bg-muted/20 border-border/70 text-xs">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -871,6 +868,7 @@ export default function TtsManager() {
                   max={5}
                   inputMode="numeric"
                   value={takeCount}
+                  className="h-8 rounded-lg bg-muted/20 border-border/70 text-xs"
                   onChange={(event) =>
                     setTakeCount(clampNumber(Number(event.target.value), 1, 5))
                   }
@@ -891,6 +889,7 @@ export default function TtsManager() {
                   max={5}
                   inputMode="numeric"
                   value={retryCount}
+                  className="h-8 rounded-lg bg-muted/20 border-border/70 text-xs"
                   onChange={(event) =>
                     setRetryCount(clampNumber(Number(event.target.value), 0, 5))
                   }
@@ -911,6 +910,7 @@ export default function TtsManager() {
                   max={6}
                   inputMode="numeric"
                   value={workerCount}
+                  className="h-8 rounded-lg bg-muted/20 border-border/70 text-xs"
                   onChange={(event) =>
                     setWorkerCount(clampNumber(Number(event.target.value), 1, 6))
                   }
@@ -928,6 +928,7 @@ export default function TtsManager() {
               <Input
                 id="tts-tag-text"
                 value={tagText}
+                className="h-8 rounded-lg bg-muted/20 border-border/70 text-xs"
                 onChange={(event) => setTagText(event.target.value)}
                 placeholder="[excited] hoặc tiền tố prompt bạn muốn"
                 disabled={modelFamily !== "v3"}
@@ -944,6 +945,7 @@ export default function TtsManager() {
               <Input
                 id="tts-channel-prefix"
                 value={channelPrefix}
+                className="h-8 rounded-lg bg-muted/20 border-border/70 text-xs"
                 onChange={(event) => setChannelPrefix(event.target.value)}
                 placeholder="Ví dụ: theoof"
               />
@@ -965,7 +967,7 @@ export default function TtsManager() {
                     setErrorMessage("");
                   }}
                 >
-                  <SelectTrigger id="tts-range-mode">
+                  <SelectTrigger id="tts-range-mode" className="h-8 rounded-lg bg-muted/20 border-border/70 text-xs">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -986,6 +988,7 @@ export default function TtsManager() {
                   id="tts-range-start"
                   type="number"
                   min={1}
+                  className="h-8 rounded-lg bg-muted/20 border-border/70 text-xs"
                   inputMode="numeric"
                   value={sequenceStart}
                   onChange={(event) => {
@@ -1009,6 +1012,7 @@ export default function TtsManager() {
                   id="tts-range-end"
                   type="number"
                   min={1}
+                  className="h-8 rounded-lg bg-muted/20 border-border/70 text-xs"
                   inputMode="numeric"
                   value={sequenceEnd}
                   onChange={(event) => {
@@ -1022,11 +1026,10 @@ export default function TtsManager() {
               </Field>
             </FieldGroup>
             <Field>
-              <div className="flex items-center justify-between gap-4 rounded-lg border border-border/50 px-3 py-1.5 bg-muted/20">
+              <div className="flex items-center justify-between gap-4 rounded-full border border-border/70 px-3 h-8 bg-muted/20">
                 <TooltipFieldLabel
-                  htmlFor="tts-headless"
-                  tooltip="Chạy trình duyệt nền mà không hiển thị cửa sổ."
-                  className="mb-0 text-xs font-semibold"
+                  tooltip="Nếu bật, trình duyệt sẽ chạy ngầm. Nếu tắt, bạn có thể xem quá trình gen trực tiếp."
+                  className="text-muted-foreground font-medium"
                 >
                   Chạy nền (headless)
                 </TooltipFieldLabel>

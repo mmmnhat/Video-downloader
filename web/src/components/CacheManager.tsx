@@ -39,7 +39,7 @@ function featureLabel(feature: string) {
     return "Tạo ảnh AI";
   }
   if (feature === "tts") {
-    return "TTS";
+    return "Lồng tiếng (TTS)";
   }
   return feature;
 }
@@ -137,7 +137,7 @@ export default function CacheManager() {
             <div className="space-y-1">
               <CardTitle className="flex items-center gap-2">
                 <Archive className="size-4" />
-                Quản lý cache
+                Quản lý bộ nhớ đệm
               </CardTitle>
             </div>
             <div className="flex gap-2">
@@ -152,7 +152,7 @@ export default function CacheManager() {
                 disabled={busyId !== null}
               >
                 {busyId === "all" ? <Loader2 className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
-                Xoá cache
+                Xoá tất cả
               </Button>
             </div>
           </CardHeader>
@@ -179,8 +179,8 @@ export default function CacheManager() {
             </div>
 
             <div className="rounded-xl border border-border/70 bg-muted/20 p-3 text-sm">
-              <div className="text-xs text-muted-foreground">Thư mục cache gốc</div>
-              <div className="mt-1 break-all font-mono text-xs">{payload?.rootPath}</div>
+              <div className="text-xs text-muted-foreground uppercase tracking-wider font-bold">Thư mục gốc</div>
+              <div className="mt-1 break-all font-mono text-xs opacity-80">{payload?.rootPath}</div>
             </div>
           </CardContent>
         </Card>
@@ -190,9 +190,9 @@ export default function CacheManager() {
             <CardTitle className="text-base">Lưu ý</CardTitle>
           </CardHeader>
           <CardContent className="space-y-2 text-sm text-muted-foreground">
-            <p>- `Story Generated` là ảnh trong pipeline, không phải ảnh đã xuất.</p>
-            <p>- `TTS Batches` chứa audio đã tạo; xoá xong sẽ không nghe lại hoặc xuất batch cũ được nữa.</p>
-            <p>- Nếu một nhóm đang được sử dụng, app sẽ chặn thao tác xoá để tránh hỏng workflow đang chạy.</p>
+            <p>- `Story Generated`: Ảnh trong quy trình tạo, không phải ảnh đã xuất.</p>
+            <p>- `TTS Batches`: Âm thanh đã tạo; xóa xong sẽ không thể nghe lại hoặc xuất tệp cũ.</p>
+            <p>- Nếu một nhóm đang được sử dụng, hệ thống sẽ chặn thao tác xóa để bảo vệ quy trình đang chạy.</p>
           </CardContent>
         </Card>
       </div>
@@ -251,8 +251,8 @@ export default function CacheManager() {
                   </CardHeader>
                   <CardContent className="space-y-3">
                     <div className="rounded-xl border border-border/70 bg-muted/20 p-3">
-                      <div className="text-[11px] text-muted-foreground">Path</div>
-                      <div className="mt-1 break-all font-mono text-xs">{group.path}</div>
+                      <div className="text-[11px] text-muted-foreground uppercase tracking-wider font-bold">Đường dẫn</div>
+                      <div className="mt-1 break-all font-mono text-xs opacity-80">{group.path}</div>
                     </div>
                     <div className="flex gap-2">
                       <Button type="button" variant="outline" onClick={() => void handleOpen(group)}>

@@ -1,212 +1,42 @@
-# Flowgen
+# Video Downloader & StoryStudio AI v1.2.3
 
-Flowgen la ung dung local de xu ly 3 nhom viec trong cung mot giao dien:
+Ứng dụng hỗ trợ tải video đa nền tảng và sáng tạo nội dung AI (StoryStudio) tích hợp Gemini.
 
-- Tai video hang loat tu Google Sheets
-- Chay Story Pipeline de tao anh theo marker
-- Tao batch TTS tu Google Sheets
+## 🚀 Có gì mới trong bản v1.2.3?
 
-Ung dung gom backend Python, frontend React build san trong `web/dist`, va shell desktop PyQt6. Khi can, app co the fallback sang mo bang trinh duyet tai `http://127.0.0.1:8765`.
+### 🎨 StoryStudio - Nâng cấp Bộ sưu tập & Gallery
+- **Tab Bộ sưu tập hoàn toàn mới**: Chuyển đổi từ danh sách Video sang **Gallery ảnh**. Tất cả những tấm ảnh bạn đã bấm "Duyệt" sẽ xuất hiện tại đây như một kho lưu trữ thành phẩm.
+- **Quy tắc đặt tên Export mới**: Ảnh xuất ra sẽ tự động được đặt tên theo định dạng `[TênVideo].m[Cảnh]s[Bước]v[BiếnThể]`. Ví dụ: `KB1.m2s3v1.png`.
+- **Hỗ trợ Xuất hàng loạt**: Bạn có thể chọn nhiều ảnh trong Gallery và xuất tất cả vào thư mục đầu ra chỉ với một cú click.
 
-## Tinh nang chinh
+### ⚡ Tự động hóa & Hiệu năng
+- **Chế độ Tự động chạy (Auto-run)**: 
+  - Khi bấm **Tinh chỉnh (Refine)** hoặc **Tạo lại (Regenerate)**, trình duyệt sẽ tự động mở và xử lý ngay lập tức.
+  - Khi bấm **Duyệt (Accept)**, hệ thống sẽ tự động chuyển sang bước tiếp theo nếu có.
+- **Refine thông minh**: Chức năng Tinh chỉnh giờ đây sẽ luôn mở một phiên chat mới và tự động Upload ảnh từ bước trước đó lên Gemini để làm input.
 
-### 1. Video Downloader
+### 🛠️ Sửa lỗi & Ổn định
+- **Sửa lỗi hiển thị**: Khắc phục triệt để lỗi font chữ/mã hóa trong Popup cập nhật hệ thống.
+- **Ổn định UI**: Sửa lỗi crash sidebar khi thao tác với các bước mới chưa có kết quả.
+- **Tương thích Windows**: Cải thiện tính năng "Mở thư mục" (Open Output Folder) trên Windows.
 
-- Doc danh sach video tu Google Sheets
-- Preview truoc khi chay batch
-- Loc theo khoang STT
-- Theo doi tien do qua SSE
-- Mo nhanh thu muc output
-- Co retry va kiem tra tinh toan ven file tai ve
+---
 
-### 2. Story Pipeline
+## 🛠 Hướng dẫn cài đặt & Sử dụng
 
-- Quan ly theo cau truc `Video -> Marker -> Step -> Attempt`
-- Chay worker pool theo video, giu thu tu tung marker/step
-- Ho tro `accept`, `regenerate`, `refine`, `skip`
-- Ho tro `chain` va `from_source`
-- Luu anh gen vao cache, chi export nhung anh user da chon
-- Dong bo realtime qua `/api/story/events`
+1. **Chạy từ Source (Dev)**:
+   ```bash
+   python main.py
+   ```
+2. **Xây dựng bản App (.exe)**:
+   ```bash
+   python build.py
+   ```
 
-### 3. TTS Studio
+## 📝 Yêu cầu hệ thống
+- Python 3.10+
+- Google Chrome / Microsoft Edge (để chạy Automation)
+- Tài khoản Gemini (đã đăng nhập trên trình duyệt)
 
-- Tao batch voiceover tu Google Sheets
-- Preview truoc khi chay
-- Loc theo khoang STT
-- Doc danh sach `My Voice` cua phien hien tai
-- Theo doi batch, nghe lai audio, mo output
-
-### 4. Cache Manager
-
-- Theo doi cache rieng cho Story Pipeline va TTS
-- Mo nhanh thu muc cache
-- Don dep cache theo nhom hoac toan bo khi khong con dung
-
-## Kien truc tong quan
-
-```text
-.
-├── downloader_app/
-│   ├── launcher.py
-│   ├── server.py
-│   ├── jobs.py
-│   ├── story_pipeline.py
-│   ├── tts_manager.py
-│   └── gemini_web_adapter.py
-├── web/
-│   ├── src/
-│   └── dist/
-├── docs/
-├── static/
-├── main.py
-└── requirements.txt
-```
-
-## Yeu cau
-
-- Python 3.9+
-- Node.js 18+ (khuyen nghi 20+)
-- Chromium cho Playwright
-- FFmpeg / FFprobe
-
-## Cai dat
-
-```bash
-git clone https://github.com/mmmnhat/Video-downloader.git
-cd Video-downloader
-
-python -m venv .venv
-source .venv/bin/activate
-
-pip install -r requirements.txt
-python -m playwright install chromium
-
-npm --prefix web install
-npm --prefix web run build
-```
-
-Tren Windows:
-
-```powershell
-.venv\Scripts\activate
-```
-
-## Chay ung dung
-
-### Chay desktop app
-
-```bash
-python main.py
-```
-
-Flowgen se:
-
-- uu tien su dung Python trong `.venv` neu co
-- khoi dong local server tai `127.0.0.1:8765`
-- mo shell desktop PyQt6
-- fallback sang trinh duyet neu thieu PyQt6
-
-### Chay server web local
-
-```bash
-python -c "from downloader_app.server import run; run()"
-```
-
-Sau do mo:
-
-- [http://127.0.0.1:8765](http://127.0.0.1:8765)
-
-## Luong su dung nhanh
-
-### Video Downloader
-
-1. Dang nhap Google neu can
-2. Dan URL Google Sheets
-3. Chon `Ten kenh`, `Pham vi STT`, thu muc output
-4. Bam `Xem truoc` hoac `Bat dau`
-
-### Story Pipeline
-
-1. Import manifest trong tab Story Pipeline
-2. Chon video trong queue
-3. Run video
-4. Review tung step voi `Accept / Regenerate / Refine / Skip`
-5. Export cac anh da duoc chon sang thu muc export
-
-### TTS Studio
-
-1. Mo session ElevenLabs
-2. Dan URL Google Sheets
-3. Chon `My Voice`
-4. Dat `Ten kenh`, `Pham vi STT`
-5. Preview hoac bat dau batch
-
-## API noi bo
-
-### Core
-
-- `GET /api/bootstrap`
-- `GET /api/events`
-- `GET /api/settings`
-- `POST /api/settings`
-
-### Story Pipeline
-
-- `GET /api/story/bootstrap`
-- `GET /api/story/videos`
-- `GET /api/story/videos/{videoId}`
-- `POST /api/story/videos/import`
-- `POST /api/story/videos/{videoId}/run`
-- `POST /api/story/videos/{videoId}/pause`
-- `POST /api/story/videos/{videoId}/export`
-- `POST /api/story/actions`
-- `GET /api/story/events`
-
-### TTS
-
-- `GET /api/tts/bootstrap`
-- `GET /api/tts/session/status`
-- `GET /api/tts/voices`
-- `GET /api/tts/batches`
-- `GET /api/tts/batches/{batchId}`
-
-### Cache
-
-- `GET /api/cache/bootstrap`
-- `POST /api/cache/clear`
-
-## Thu muc runtime
-
-Mot so thu muc se duoc tao va cap nhat trong qua trinh chay:
-
-- `cache/`
-  - `cache/story_pipeline/...`
-  - `cache/tts/batches/...`
-  - `cache/tts/profiles/...`
-- `story_exports/`
-
-Khong nen dua du lieu runtime lon vao commit neu khong that su can thiet.
-
-## Troubleshooting
-
-- Neu giao dien khong cap nhat: chay lai `npm --prefix web run build`
-- Neu Story Pipeline khong nhan session: mo lai login va refresh session
-- Neu TTS khong thay `My Voice`: kiem tra phien ElevenLabs va refresh session
-- Neu app desktop khong len cua so: kiem tra `PyQt6` va `PyQt6-WebEngine`
-- Neu tai video loi: kiem tra `ffmpeg`, `ffprobe` va dung luong o dia
-
-## Tai lieu lien quan
-
-- [Story pipeline spec](docs/story-pipeline-spec.md)
-
-## Changelog
-
-### v1.2 (2026-04-27)
-- **Windows Session Stability**: Khắc phục lỗi khóa file Cookie khi trình duyệt đang mở bằng cơ chế fallback thông minh.
-- **Bypass Gemini Security**: Thêm chế độ ẩn danh (Stealth mode) và các tham số khởi động sạch để tránh bị Google chặn khi quét Gem/Gen ảnh.
-- **Improved Browser Support**: Tối ưu hóa việc đồng bộ session cho Microsoft Edge và Cốc Cốc trên Windows.
-- **Fix "about:blank" Hang**: Tự động bỏ qua các màn hình chào mừng và thông báo của trình duyệt khi chạy automation.
-
-## Luu y
-
-Cong cu nay danh cho workflow ca nhan/noi bo. Nguoi dung tu chiu trach nhiem voi noi dung, quyen su dung, va dieu khoan cua cac nen tang duoc thao tac.
+---
+*Phát triển bởi mmmnhat - 2026*

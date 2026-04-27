@@ -21,10 +21,9 @@ from urllib.request import HTTPCookieProcessor, Request, build_opener
 from downloader_app.browser_config import (
     BrowserConfigError,
     browser_config_manager,
-    detect_profiles_for_browser_path,
     launch_browser_with_profile,
+    resolve_feature_browser_profile,
 )
-from downloader_app.browser_session import browser_session
 from downloader_app.jobs import build_sheet_sequence_stem, sanitize_file_stem, utc_now
 from downloader_app.runtime import app_path, cache_path
 from downloader_app.sheets import filter_entries_by_sequence_range
@@ -593,83 +592,30 @@ def _choose_profile_dir(user_data_dir: Path, domain: str = TTS_AUTH_DOMAIN) -> P
 
 
 def detect_tts_browser_profile() -> TtsBrowserProfile:
-    configured = browser_config_manager.get_feature("tts")
-    if configured.browser_path:
-        try:
-            detected = detect_profiles_for_browser_path(
-                feature="tts",
-                browser_path=configured.browser_path,
-                profile_name=configured.profile_name,
-            )
-        except BrowserConfigError as exc:
-            raise ElevenLabsError(str(exc)) from exc
-        return TtsBrowserProfile(
-            name=str(detected["browserName"]),
-            app_path=Path(str(detected.get("appPath") or Path(str(detected["executablePath"])).parent)),
-            executable_path=Path(str(detected["executablePath"])),
-            user_data_dir=Path(str(detected["userDataDir"])),
-            profile_dir=Path(str(detected["selectedProfileDir"])),
-        )
-
-    ranked_candidates: list[tuple[int, TtsBrowserProfile]] = []
-    fallback_profiles: list[TtsBrowserProfile] = []
-
-    for candidate in _available_browser_candidates():
-        profile_dir = _choose_profile_dir(candidate.user_data_dir)
-        if profile_dir is None:
-            continue
-        profile = TtsBrowserProfile(
-            name=candidate.name,
-            app_path=candidate.app_path,
-            executable_path=candidate.executable_path,
-            user_data_dir=candidate.user_data_dir,
-            profile_dir=profile_dir,
-        )
-        cookie_count = max(
-            _cookie_count_for_domain(profile_dir / "Network" / "Cookies", TTS_AUTH_DOMAIN),
-            _cookie_count_for_domain(profile_dir / "Cookies", TTS_AUTH_DOMAIN),
-        )
-        if cookie_count > 0:
-            ranked_candidates.append((cookie_count, profile))
-        else:
-            fallback_profiles.append(profile)
-
-    if ranked_candidates:
-        ranked_candidates.sort(key=lambda item: item[0], reverse=True)
-        return ranked_candidates[0][1]
-
-    if fallback_profiles:
-        return fallback_profiles[0]
-
-    raise ElevenLabsError(
-        "Khong tim thay CocCoc/Chrome/Edge co the dung cho ElevenLabs tren may nay."
+    try:
+        detected = resolve_feature_browser_profile("tts")
+    except BrowserConfigError as exc:
+        raise ElevenLabsError(str(exc)) from exc
+    return TtsBrowserProfile(
+        name=str(detected["browserName"]),
+        app_path=Path(str(detected.get("appPath") or Path(str(detected["executablePath"])).parent)),
+        executable_path=Path(str(detected["executablePath"])),
+        user_data_dir=Path(str(detected["userDataDir"])),
+        profile_dir=Path(str(detected["profileDir"])),
     )
 
 
 def detect_tts_login_browser() -> TtsBrowserCandidate:
-    configured = browser_config_manager.get_feature("tts")
-    if configured.browser_path:
-        try:
-            detected = detect_profiles_for_browser_path(
-                feature="tts",
-                browser_path=configured.browser_path,
-                profile_name=configured.profile_name,
-            )
-        except BrowserConfigError as exc:
-            raise ElevenLabsError(str(exc)) from exc
-        executable_path = Path(str(detected["executablePath"]))
-        return TtsBrowserCandidate(
-            name=str(detected["browserName"]),
-            app_path=Path(str(detected.get("appPath") or executable_path.parent)),
-            executable_path=executable_path,
-            user_data_dir=Path(str(detected["userDataDir"])),
-        )
-
-    candidates = _available_browser_candidates()
-    if candidates:
-        return candidates[0]
-    raise ElevenLabsError(
-        "Khong tim thay CocCoc/Chrome/Edge de mo ElevenLabs login."
+    try:
+        detected = resolve_feature_browser_profile("tts")
+    except BrowserConfigError as exc:
+        raise ElevenLabsError(str(exc)) from exc
+    executable_path = Path(str(detected["executablePath"]))
+    return TtsBrowserCandidate(
+        name=str(detected["browserName"]),
+        app_path=Path(str(detected.get("appPath") or executable_path.parent)),
+        executable_path=executable_path,
+        user_data_dir=Path(str(detected["userDataDir"])),
     )
 
 
@@ -2182,42 +2128,25 @@ class ElevenLabsSessionManager:
         return status
 
     def open_login(self) -> dict:
-        browser_name = "browser local"
-        profile_dir = ""
-        warning_message: str | None = None
-        opened = False
-
         try:
             opened_payload = launch_browser_with_profile(
                 feature="tts",
                 target_url=ELEVENLABS_LOGIN_URL,
             )
-            opened = bool(opened_payload.get("opened", True))
-            browser_name = str(opened_payload.get("browser", browser_name))
-            profile_dir = str(opened_payload.get("profileDir", profile_dir))
         except Exception as exc:
-            warning_message = _format_exception_message(exc)
-            try:
-                opened_payload = browser_session.open_login(ELEVENLABS_LOGIN_URL)
-                opened = bool(opened_payload.get("opened", True))
-            except Exception as fallback_exc:  # noqa: BLE001
-                raise ElevenLabsError(
-                    f"Khong mo duoc cua so dang nhap ElevenLabs: {fallback_exc}"
-                ) from fallback_exc
-
-        message = (
-            f"Da mo ElevenLabs tren {browser_name}. Dang nhap trong {browser_name}, "
-            "roi quay lai app bam Lam moi phien."
-        )
-        if warning_message:
-            message += f" (Fallback default browser: {warning_message})"
+            raise ElevenLabsError(
+                f"Khong mo duoc cua so dang nhap ElevenLabs: {_format_exception_message(exc)}"
+            ) from exc
 
         return {
-            "opened": opened,
+            "opened": bool(opened_payload.get("opened", True)),
             "url": ELEVENLABS_LOGIN_URL,
-            "browser": browser_name,
-            "profileDir": profile_dir,
-            "message": message,
+            "browser": str(opened_payload.get("browser", "browser")),
+            "profileDir": str(opened_payload.get("profileDir", "")),
+            "message": (
+                f"Da mo ElevenLabs bang profile rieng cua app tren {opened_payload.get('browser', 'browser')}. "
+                "Dang nhap xong, dong cua so vua mo roi quay lai app bam Lam moi phien."
+            ),
         }
 
     def _dependencies_ready(self) -> bool:
@@ -3319,21 +3248,10 @@ class TtsManager:
 
 
 def run_login_window() -> None:
-    browser = detect_tts_login_browser()
-    if sys.platform == "win32":
-        command = [str(browser.executable_path), ELEVENLABS_LOGIN_URL]
-    else:
-        command = ["open", "-a", str(browser.app_path), ELEVENLABS_LOGIN_URL]
-
-    completed = subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if completed.returncode != 0:
-        message = (completed.stderr or completed.stdout or "Khong mo duoc ElevenLabs login.").strip()
-        raise ElevenLabsError(message)
+    try:
+        launch_browser_with_profile(feature="tts", target_url=ELEVENLABS_LOGIN_URL)
+    except Exception as exc:
+        raise ElevenLabsError(str(exc)) from exc
 
 
 tts_manager = TtsManager()

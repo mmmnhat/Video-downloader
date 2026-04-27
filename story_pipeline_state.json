@@ -1,63 +1,91 @@
 {
   "settings": {
-    "output_root": "/Volumes/External/1234",
+    "output_root": "C:/Users/ad/Downloads/2",
     "max_parallel_videos": 1,
     "generation_backend": "gemini_web",
     "gemini_headless": false,
-    "gemini_base_url": "https://gemini.google.com/gem/1SdgoNSZ2aoe1aNvBuazO--p6pb-NAH3c?usp=sharing",
+    "gemini_base_url": "https://gemini.google.com/gem/b25da0bbb225",
     "gemini_response_timeout_ms": 120000,
-    "gemini_model": "gemini-2.5-flash"
+    "gemini_model": "flash"
   },
   "global_prompt": "GIỮ ĐÚNG POSE VÀ BỐ CỤC ẢNH GỐC",
-  "active_video_id": "video-d713db1fe6",
+  "active_video_id": "video-a5bfd0c0ce89",
   "videos": [
     {
-      "id": "video-d713db1fe6",
+      "id": "video-a5bfd0c0ce89",
       "name": "KB3_1.mp4",
       "source_video_path": "C:\\Users\\ad\\Downloads\\2\\KB3_1.mp4",
       "mode": "chain",
       "video_prompt": "",
-      "status": "running",
-      "created_at": "2026-04-27T11:40:50Z",
-      "last_updated_at": "2026-04-27T11:40:52Z",
+      "status": "completed",
+      "created_at": "2026-04-27T16:20:37Z",
+      "last_updated_at": "2026-04-27T16:27:33Z",
       "error": null,
       "markers": [
         {
-          "id": "marker-178173e939",
+          "id": "marker-0db8d66f10",
           "index": 1,
           "label": "Marker 1",
           "timestamp_ms": 0,
           "input_frame_path": "C:\\Users\\ad\\Downloads\\2\\_frames\\KB3_1\\marker_001_0.00.jpg",
           "seed_prompt": "Marker 1",
-          "status": "running",
+          "status": "completed",
           "parent_marker_id": null,
           "variant_index": 0,
           "steps": [
             {
-              "id": "step-036af4be3b",
+              "id": "step-622dabc272",
               "index": 1,
               "title": "Marker 1",
               "modifier_prompt": "",
-              "status": "running",
-              "selected_attempt_id": null,
+              "status": "completed",
+              "selected_attempt_id": "att-dabb3f4f29",
               "pending_mode": "auto",
               "pending_input_path": null,
               "pending_thread_url": null,
               "pending_prompt_override": null,
               "attempts": [
                 {
-                  "id": "att-12b85dbd02",
+                  "id": "att-dabb3f4f29",
                   "index": 1,
                   "mode": "auto",
-                  "status": "running",
+                  "status": "accepted",
                   "prompt": "GIỮ ĐÚNG POSE VÀ BỐ CỤC ẢNH GỐC",
                   "input_image_path": "C:\\Users\\ad\\Downloads\\2\\_frames\\KB3_1\\marker_001_0.00.jpg",
-                  "thread_url": null,
-                  "preview_path": null,
-                  "normalized_path": null,
+                  "thread_url": "https://gemini.google.com/gem/b25da0bbb225/b6f41ca72884f500",
+                  "preview_path": "C:\\Users\\ad\\Downloads\\Video download\\cache\\story_pipeline\\accepted\\video-a5bfd0c0ce89\\KB3_1.mark001.step01.png",
+                  "normalized_path": "C:\\Users\\ad\\Downloads\\Video download\\cache\\story_pipeline\\accepted\\video-a5bfd0c0ce89\\KB3_1.mark001.step01.png",
                   "error": null,
-                  "started_at": "2026-04-27T11:40:52Z",
-                  "completed_at": null
+                  "started_at": "2026-04-27T16:21:02Z",
+                  "completed_at": "2026-04-27T16:22:02Z"
+                }
+              ]
+            },
+            {
+              "id": "step-bdad5053b4",
+              "index": 2,
+              "title": "Tinh chỉnh 1",
+              "modifier_prompt": "xóa người bên trái (áo trắng quần đen)",
+              "status": "completed",
+              "selected_attempt_id": "att-24cd6ceac9",
+              "pending_mode": "auto",
+              "pending_input_path": null,
+              "pending_thread_url": null,
+              "pending_prompt_override": null,
+              "attempts": [
+                {
+                  "id": "att-24cd6ceac9",
+                  "index": 1,
+                  "mode": "refine",
+                  "status": "accepted",
+                  "prompt": "xóa người bên trái (áo trắng quần đen)",
+                  "input_image_path": "C:\\Users\\ad\\Downloads\\Video download\\cache\\story_pipeline\\generated\\video-a5bfd0c0ce89\\marker_001\\step_01\\attempt_01\\normalized.png",
+                  "thread_url": "https://gemini.google.com/gem/b25da0bbb225/cbad55cf0a07f9d3",
+                  "preview_path": "C:\\Users\\ad\\Downloads\\Video download\\cache\\story_pipeline\\accepted\\video-a5bfd0c0ce89\\KB3_1.mark001.step02.png",
+                  "normalized_path": "C:\\Users\\ad\\Downloads\\Video download\\cache\\story_pipeline\\accepted\\video-a5bfd0c0ce89\\KB3_1.mark001.step02.png",
+                  "error": null,
+                  "started_at": "2026-04-27T16:23:19Z",
+                  "completed_at": "2026-04-27T16:24:18Z"
                 }
               ]
             }
@@ -66,18 +94,18 @@
       ]
     },
     {
-      "id": "video-e82a13fb8c",
+      "id": "video-e876d62bbc97",
       "name": "KB3_13.mp4",
       "source_video_path": "C:\\Users\\ad\\Downloads\\2\\KB3_13.mp4",
       "mode": "chain",
       "video_prompt": "",
-      "status": "queued",
-      "created_at": "2026-04-27T11:40:50Z",
-      "last_updated_at": "2026-04-27T11:40:50Z",
+      "status": "ready",
+      "created_at": "2026-04-27T16:20:37Z",
+      "last_updated_at": "2026-04-27T16:20:37Z",
       "error": null,
       "markers": [
         {
-          "id": "marker-1d82c9529d",
+          "id": "marker-706e82501b",
           "index": 1,
           "label": "Marker 1",
           "timestamp_ms": 0,
@@ -88,7 +116,7 @@
           "variant_index": 0,
           "steps": [
             {
-              "id": "step-75c55d80ff",
+              "id": "step-25b83f1a28",
               "index": 1,
               "title": "Marker 1",
               "modifier_prompt": "",
@@ -105,18 +133,18 @@
       ]
     },
     {
-      "id": "video-95bd991495",
+      "id": "video-a46d56a5e300",
       "name": "KB3_15.mp4",
       "source_video_path": "C:\\Users\\ad\\Downloads\\2\\KB3_15.mp4",
       "mode": "chain",
       "video_prompt": "",
-      "status": "queued",
-      "created_at": "2026-04-27T11:40:50Z",
-      "last_updated_at": "2026-04-27T11:40:50Z",
+      "status": "ready",
+      "created_at": "2026-04-27T16:20:37Z",
+      "last_updated_at": "2026-04-27T16:20:37Z",
       "error": null,
       "markers": [
         {
-          "id": "marker-c2189bfc90",
+          "id": "marker-09872f3553",
           "index": 1,
           "label": "Marker 1",
           "timestamp_ms": 0,
@@ -127,7 +155,7 @@
           "variant_index": 0,
           "steps": [
             {
-              "id": "step-4645d5c5e6",
+              "id": "step-6e56cdf404",
               "index": 1,
               "title": "Marker 1",
               "modifier_prompt": "",
@@ -144,18 +172,18 @@
       ]
     },
     {
-      "id": "video-e2ad9fd8d4",
+      "id": "video-29debd0273de",
       "name": "KB3_18.mp4",
       "source_video_path": "C:\\Users\\ad\\Downloads\\2\\KB3_18.mp4",
       "mode": "chain",
       "video_prompt": "",
-      "status": "queued",
-      "created_at": "2026-04-27T11:40:50Z",
-      "last_updated_at": "2026-04-27T11:40:50Z",
+      "status": "ready",
+      "created_at": "2026-04-27T16:20:37Z",
+      "last_updated_at": "2026-04-27T16:20:37Z",
       "error": null,
       "markers": [
         {
-          "id": "marker-fd70e51939",
+          "id": "marker-a4a2e7c6b2",
           "index": 1,
           "label": "Marker 1",
           "timestamp_ms": 0,
@@ -166,7 +194,7 @@
           "variant_index": 0,
           "steps": [
             {
-              "id": "step-56a613c186",
+              "id": "step-1213a022b3",
               "index": 1,
               "title": "Marker 1",
               "modifier_prompt": "",
@@ -183,18 +211,18 @@
       ]
     },
     {
-      "id": "video-f5ef11cb27",
+      "id": "video-e7a512ea0ad2",
       "name": "KB3_20.mp4",
       "source_video_path": "C:\\Users\\ad\\Downloads\\2\\KB3_20.mp4",
       "mode": "chain",
       "video_prompt": "",
-      "status": "queued",
-      "created_at": "2026-04-27T11:40:50Z",
-      "last_updated_at": "2026-04-27T11:40:50Z",
+      "status": "ready",
+      "created_at": "2026-04-27T16:20:37Z",
+      "last_updated_at": "2026-04-27T16:20:37Z",
       "error": null,
       "markers": [
         {
-          "id": "marker-cfeab84db8",
+          "id": "marker-f60b00bf58",
           "index": 1,
           "label": "Marker 1",
           "timestamp_ms": 0,
@@ -205,7 +233,7 @@
           "variant_index": 0,
           "steps": [
             {
-              "id": "step-9eed425698",
+              "id": "step-ab1d75dc53",
               "index": 1,
               "title": "Marker 1",
               "modifier_prompt": "",
@@ -220,7 +248,7 @@
           ]
         },
         {
-          "id": "marker-a7b545404c",
+          "id": "marker-063f444324",
           "index": 2,
           "label": "Marker 2",
           "timestamp_ms": 0,
@@ -231,7 +259,7 @@
           "variant_index": 0,
           "steps": [
             {
-              "id": "step-21dc83eae0",
+              "id": "step-ca46560352",
               "index": 1,
               "title": "Marker 2",
               "modifier_prompt": "",
@@ -246,7 +274,7 @@
           ]
         },
         {
-          "id": "marker-ec3cbf51eb",
+          "id": "marker-cabe1eee3c",
           "index": 3,
           "label": "Marker 3",
           "timestamp_ms": 0,
@@ -257,7 +285,7 @@
           "variant_index": 0,
           "steps": [
             {
-              "id": "step-767f58fed4",
+              "id": "step-62ee4aa4e7",
               "index": 1,
               "title": "Marker 3",
               "modifier_prompt": "",
@@ -274,18 +302,18 @@
       ]
     },
     {
-      "id": "video-5c764106dc",
+      "id": "video-b6f1bcd37a41",
       "name": "KB3_21.mp4",
       "source_video_path": "C:\\Users\\ad\\Downloads\\2\\KB3_21.mp4",
       "mode": "chain",
       "video_prompt": "",
-      "status": "queued",
-      "created_at": "2026-04-27T11:40:50Z",
-      "last_updated_at": "2026-04-27T11:40:50Z",
+      "status": "ready",
+      "created_at": "2026-04-27T16:20:37Z",
+      "last_updated_at": "2026-04-27T16:20:37Z",
       "error": null,
       "markers": [
         {
-          "id": "marker-8c9ca7c38f",
+          "id": "marker-816ca72829",
           "index": 1,
           "label": "Marker 1",
           "timestamp_ms": 0,
@@ -296,7 +324,7 @@
           "variant_index": 0,
           "steps": [
             {
-              "id": "step-dca4279e13",
+              "id": "step-0e1786476c",
               "index": 1,
               "title": "Marker 1",
               "modifier_prompt": "",
@@ -313,18 +341,18 @@
       ]
     },
     {
-      "id": "video-b64cbd6e23",
+      "id": "video-862e63bcc6fa",
       "name": "KB3_24.mp4",
       "source_video_path": "C:\\Users\\ad\\Downloads\\2\\KB3_24.mp4",
       "mode": "chain",
       "video_prompt": "",
-      "status": "queued",
-      "created_at": "2026-04-27T11:40:50Z",
-      "last_updated_at": "2026-04-27T11:40:50Z",
+      "status": "ready",
+      "created_at": "2026-04-27T16:20:37Z",
+      "last_updated_at": "2026-04-27T16:20:37Z",
       "error": null,
       "markers": [
         {
-          "id": "marker-379ace9c38",
+          "id": "marker-1551c148f8",
           "index": 1,
           "label": "Marker 1",
           "timestamp_ms": 0,
@@ -335,7 +363,7 @@
           "variant_index": 0,
           "steps": [
             {
-              "id": "step-8cbb5f466d",
+              "id": "step-1b54321045",
               "index": 1,
               "title": "Marker 1",
               "modifier_prompt": "",
@@ -350,7 +378,7 @@
           ]
         },
         {
-          "id": "marker-6a8050948f",
+          "id": "marker-ef7804e088",
           "index": 2,
           "label": "Marker 2",
           "timestamp_ms": 0,
@@ -361,7 +389,7 @@
           "variant_index": 0,
           "steps": [
             {
-              "id": "step-64f7a17093",
+              "id": "step-07a50b3107",
               "index": 1,
               "title": "Marker 2",
               "modifier_prompt": "",

@@ -10,7 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 BIN_DIR_ENV = "VIDEO_DOWNLOADER_BIN_DIR"
 CACHE_DIR_NAME = "cache"
 
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.2.3"
 GITHUB_REPO = "mmmnhat/Video-downloader"
 
 def is_frozen() -> bool:
