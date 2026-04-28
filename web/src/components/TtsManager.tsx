@@ -816,7 +816,7 @@ export default function TtsManager() {
                   <SelectTrigger className="h-8 rounded-full bg-muted/20 border-border/70 text-xs flex-1">
                     <SelectValue placeholder="Chọn giọng đọc..." />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent className="max-h-72">
                     {voices.map((v) => (
                       <SelectItem key={v.voiceId} value={v.voiceId}>
                         <div className="flex items-center gap-2">

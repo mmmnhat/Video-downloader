@@ -25,6 +25,7 @@ from downloader_app.tts_manager import (
 from downloader_app.thumbnail_pipeline import (
     THUMBNAIL_CACHE_ROOT,
     thumbnail_debug_root,
+    thumbnail_projects_root,
     thumbnail_runtime_root,
 )
 
@@ -162,6 +163,14 @@ class CacheManager:
                 title="Thumbnail Debug",
                 description="Dữ liệu debug và selector dump của Thumbnail Studio.",
                 path=thumbnail_debug_root(),
+                open_path=THUMBNAIL_CACHE_ROOT,
+            ),
+            CacheGroupDefinition(
+                id="thumbnail-projects",
+                feature="thumbnail",
+                title="Thumbnail Projects",
+                description="Dữ liệu project và ảnh version của Thumbnail Studio.",
+                path=thumbnail_projects_root(),
                 open_path=THUMBNAIL_CACHE_ROOT,
             ),
         ]

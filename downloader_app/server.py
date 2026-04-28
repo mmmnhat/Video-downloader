@@ -366,6 +366,46 @@ class AppHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
 
+        if path == "/api/thumbnail/profiles":
+            try:
+                payload = self._read_json_body()
+                self._send_json(thumbnail_pipeline.create_profile(payload), status=HTTPStatus.CREATED)
+            except (json.JSONDecodeError, ThumbnailPipelineError) as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/thumbnail/buttons/delete":
+            try:
+                payload = self._read_json_body()
+                self._send_json({"success": thumbnail_pipeline.delete_button(str(payload.get("id", "")).strip())})
+            except (json.JSONDecodeError, ThumbnailPipelineError) as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/thumbnail/buttons/toggle-pin":
+            try:
+                payload = self._read_json_body()
+                self._send_json(thumbnail_pipeline.toggle_pin_button(str(payload.get("id", "")).strip()))
+            except (json.JSONDecodeError, ThumbnailPipelineError) as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/thumbnail/profiles/delete":
+            try:
+                payload = self._read_json_body()
+                self._send_json({"success": thumbnail_pipeline.delete_profile(str(payload.get("id", "")).strip())})
+            except (json.JSONDecodeError, ThumbnailPipelineError) as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/thumbnail/profiles/toggle-pin":
+            try:
+                payload = self._read_json_body()
+                self._send_json(thumbnail_pipeline.toggle_pin_profile(str(payload.get("id", "")).strip()))
+            except (json.JSONDecodeError, ThumbnailPipelineError) as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
         if path == "/api/thumbnail/select-project":
             try:
                 payload = self._read_json_body()
@@ -395,6 +435,14 @@ class AppHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
 
+        if path == "/api/thumbnail/run-batch":
+            try:
+                payload = self._read_json_body()
+                self._send_json(thumbnail_pipeline.run_generation_batch(payload))
+            except (json.JSONDecodeError, ThumbnailPipelineError) as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
         if path == "/api/thumbnail/profile/run":
             try:
                 payload = self._read_json_body()
@@ -408,6 +456,41 @@ class AppHandler(BaseHTTPRequestHandler):
                 payload = self._read_json_body()
                 self._send_json(thumbnail_pipeline.export_image(payload))
             except (json.JSONDecodeError, ThumbnailPipelineError) as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/thumbnail/projects/delete":
+            try:
+                payload = self._read_json_body()
+                project_id = str(payload.get("project_id", "")).strip()
+                self._send_json(thumbnail_pipeline.delete_project(project_id))
+            except (json.JSONDecodeError, ThumbnailPipelineError) as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        if path == "/api/thumbnail/projects/rename":
+            try:
+                payload = self._read_json_body()
+                project_id = str(payload.get("project_id", "")).strip()
+                name = str(payload.get("name", "")).strip()
+                self._send_json(thumbnail_pipeline.rename_project(project_id, name))
+            except (json.JSONDecodeError, ThumbnailPipelineError) as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        if path == "/api/thumbnail/delete-version":
+            try:
+                payload = self._read_json_body()
+                project_id = str(payload.get("project_id", "")).strip()
+                version_id = str(payload.get("version_id", "")).strip()
+                self._send_json(thumbnail_pipeline.delete_version(project_id, version_id))
+            except (json.JSONDecodeError, ThumbnailPipelineError) as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+
+        if path == "/api/thumbnail/clear":
+            try:
+                self._send_json(thumbnail_pipeline.clear_cache())
+            except ThumbnailPipelineError as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
 
@@ -1005,7 +1088,18 @@ class AppHandler(BaseHTTPRequestHandler):
                 continue
 
             if candidate.exists() and candidate.is_file():
-                content_type, _ = mimetypes.guess_type(str(candidate))
+                ext = candidate.suffix.lower()
+                if ext == ".js" or ext == ".mjs":
+                    content_type = "application/javascript"
+                elif ext == ".css":
+                    content_type = "text/css"
+                elif ext == ".svg":
+                    content_type = "image/svg+xml"
+                elif ext == ".html":
+                    content_type = "text/html"
+                else:
+                    content_type, _ = mimetypes.guess_type(str(candidate))
+
                 if content_type and content_type.startswith("text/"):
                     content_type = f"{content_type}; charset=utf-8"
                 self._serve_file(candidate, content_type or "application/octet-stream")

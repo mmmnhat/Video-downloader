@@ -41,13 +41,24 @@ class UpdateManager:
             latest_version = data.get("tag_name", "").lstrip("v")
             release_notes = data.get("body", "")
             
-            # Find the Windows zip asset
+            # Find the correct asset for the platform
             download_url = ""
             for asset in data.get("assets", []):
                 name = asset.get("name", "").lower()
-                if name.endswith(".zip"):
+                if sys.platform == "darwin" and "mac" in name and (name.endswith(".zip") or name.endswith(".dmg") or name.endswith(".tar.gz")):
                     download_url = asset.get("browser_download_url", "")
                     break
+                elif sys.platform == "win32" and "win" in name and name.endswith(".zip"):
+                    download_url = asset.get("browser_download_url", "")
+                    break
+
+            # Fallback if no platform specific name was found
+            if not download_url:
+                for asset in data.get("assets", []):
+                    name = asset.get("name", "").lower()
+                    if name.endswith(".zip"):
+                        download_url = asset.get("browser_download_url", "")
+                        break
 
             update_available = False
             # Very simple version split to check if latest > current

@@ -22,6 +22,10 @@ def thumbnail_runtime_root() -> Path:
     return THUMBNAIL_CACHE_ROOT / "gemini_runtime"
 
 
+def thumbnail_projects_root() -> Path:
+    return THUMBNAIL_PROJECTS_ROOT
+
+
 def thumbnail_debug_root() -> Path:
     return THUMBNAIL_CACHE_ROOT / "debug"
 
@@ -36,6 +40,32 @@ def display_time() -> str:
 
 class ThumbnailPipelineError(RuntimeError):
     pass
+
+
+def _coerce_guide_rect(payload: dict) -> tuple[float, float, float, float] | None:
+    rect = payload.get("rect")
+    if not isinstance(rect, dict):
+        return None
+    try:
+        x = float(rect.get("x", 0))
+        y = float(rect.get("y", 0))
+        width = float(rect.get("width", 0))
+        height = float(rect.get("height", 0))
+    except (TypeError, ValueError):
+        return None
+    if width <= 1 or height <= 1:
+        return None
+    return x, y, width, height
+
+
+def require_pillow():
+    try:
+        from PIL import Image
+    except ModuleNotFoundError as exc:
+        raise ThumbnailPipelineError(
+            "Thiếu thư viện Pillow. Hãy chạy `.venv/bin/pip install -r requirements.txt` rồi mở lại app."
+        ) from exc
+    return Image
 
 
 @dataclass
@@ -63,16 +93,23 @@ class ThumbnailButton:
     create_new_chat: bool
     allow_regenerate: bool
     summary: str
+    is_pinned: bool = False
     fields: list[ThumbnailButtonField] = field(default_factory=list)
 
+
+@dataclass
+class ThumbnailProfileEffect:
+    button_id: str
+    fields: list[ThumbnailButtonField] = field(default_factory=list)
 
 @dataclass
 class ThumbnailProfile:
     id: str
     name: str
     icon: str
-    button_ids: list[str]
+    effects: list[ThumbnailProfileEffect] = field(default_factory=list)
     description: str = ""
+    is_pinned: bool = False
 
 
 @dataclass
@@ -146,14 +183,41 @@ def default_buttons() -> list[ThumbnailButton]:
         ),
         ThumbnailButton(
             id="extend-wide",
-            name="Extend 16:9",
+            name="Extend Canvas",
             icon="🖼️",
             category="Khung hình",
-            prompt_template="Extend this image to a clean 16:9 thumbnail composition.\nPreserve the subject scale, identity, and lighting.\nFill new space naturally for YouTube thumbnail framing.",
+            prompt_template="Extend this image to a clean {target_ratio} thumbnail composition.\n{artboard_hint}\nPreserve the subject scale, identity, and lighting.\nFill new space naturally for the new frame while respecting the intended composition.",
             requires_mask=False,
             create_new_chat=True,
             allow_regenerate=True,
-            summary="Mở rộng khung hình sang 16:9 để chuẩn bị xuất thumbnail.",
+            summary="Mở rộng khung hình theo tỉ lệ mong muốn để chuẩn bị xuất thumbnail.",
+            fields=[
+                ThumbnailButtonField(
+                    key="target_ratio",
+                    label="Tỉ lệ đích",
+                    type="select",
+                    value="16:9",
+                    tooltip="Chọn tỉ lệ khung hình muốn mở rộng tới.",
+                    options=["16:9", "4:5", "1:1", "3:4", "2:3", "9:16", "21:9", "custom"],
+                ),
+                ThumbnailButtonField(
+                    key="custom_ratio",
+                    label="Tỉ lệ custom",
+                    type="text",
+                    value="",
+                    tooltip="Nhập tỉ lệ tự do, ví dụ 5:4 hoặc 7:10.",
+                    required=False,
+                    visible_if={"target_ratio": "custom"},
+                ),
+                ThumbnailButtonField(
+                    key="artboard_hint",
+                    label="Ghi chú artboard",
+                    type="textarea",
+                    value="Keep the main subject balanced inside the new frame.",
+                    tooltip="Gợi ý bố cục bổ sung, có thể tự động cập nhật từ tool artboard trên canvas.",
+                    required=False,
+                ),
+            ],
         ),
         ThumbnailButton(
             id="shock-face",
@@ -198,24 +262,51 @@ class ThumbnailPipelineManager:
         self._projects: dict[str, ThumbnailProject] = {}
         self._buttons: list[ThumbnailButton] = default_buttons()
         self._active_project_id: str | None = None
-        self._profiles: list[ThumbnailProfile] = [
-            ThumbnailProfile(
-                id="funny_thumbnail",
-                name="Funny Thumbnail",
-                icon="🔥",
-                button_ids=["extend-wide", "shock-face"], # Example combo
-                description="Combo: Mở rộng + Biểu cảm sốc"
-            ),
-            ThumbnailProfile(
-                id="cinematic_look",
-                name="Cinematic Look",
-                icon="🎬",
-                button_ids=["remove-object", "extend-wide"],
-                description="Combo: Xóa rác + Mở rộng 16:9"
-            )
-        ]
+        self._profiles: list[ThumbnailProfile] = []
         self._adapter: GeminiWebAdapter | None = None
         self._load_state()
+        if not self._profiles:
+            self._profiles = [
+                ThumbnailProfile(
+                    id="funny_thumbnail",
+                    name="Funny Thumbnail",
+                    icon="🔥",
+                    effects=[
+                        self._build_profile_effect("extend-wide"),
+                        self._build_profile_effect(
+                            "shock-face",
+                            field_values={"expression": "shocked", "intensity": 8},
+                        ),
+                    ],
+                    description="Combo: Mở rộng + Biểu cảm sốc",
+                )
+            ]
+
+    def _build_unique_project_dir(self, folder_path: Path, project_name: str, project_id: str) -> Path:
+        base_stem = sanitize_file_stem(project_name or project_id).strip() or project_id
+        preferred = folder_path / f"{base_stem}-{project_id}"
+        if not preferred.exists():
+            return preferred
+
+        suffix = 1
+        while True:
+            candidate = folder_path / f"{base_stem}-{project_id}-{suffix}"
+            if not candidate.exists():
+                return candidate
+            suffix += 1
+
+    def _folder_in_use_by_other_project_locked(self, folder: Path, current_project_id: str) -> bool:
+        target = str(folder.resolve())
+        for project in self._projects.values():
+            if project.id == current_project_id:
+                continue
+            try:
+                if str(Path(project.folder).resolve()) == target:
+                    return True
+            except Exception:
+                if project.folder == target:
+                    return True
+        return False
 
     def get_bootstrap(self) -> dict:
         with self._lock:
@@ -224,7 +315,7 @@ class ThumbnailPipelineManager:
                 "projects": [self._serialize_project_summary(project) for project in self._projects.values()],
                 "activeProjectId": self._active_project_id,
                 "activeProject": self._serialize_project_detail(self._projects[self._active_project_id]) if self._active_project_id and self._active_project_id in self._projects else None,
-                "profiles": [asdict(p) for p in self._profiles],
+                "profiles": [self._serialize_profile(profile) for profile in self._profiles],
                 "sessionStatus": {
                     "backend": "gemini_web",
                     "dependencies_ready": True,
@@ -249,7 +340,7 @@ class ThumbnailPipelineManager:
 
         project_id = f"thumb-{uuid.uuid4().hex[:10]}"
         version_id = "original"
-        project_dir = folder_path / sanitize_file_stem(project_name or project_id)
+        project_dir = self._build_unique_project_dir(folder_path, project_name, project_id)
         project_dir.mkdir(parents=True, exist_ok=True)
         versions_dir = project_dir / "versions" / version_id
         versions_dir.mkdir(parents=True, exist_ok=True)
@@ -293,6 +384,29 @@ class ThumbnailPipelineManager:
             self._persist_locked()
             return self._serialize_project_detail(project)
 
+    def delete_project(self, project_id: str) -> dict:
+        with self._lock:
+            project = self._projects.pop(project_id, None)
+            if project:
+                if self._active_project_id == project_id:
+                    self._active_project_id = None
+                project_dir = Path(project.folder)
+                if project_dir.exists() and not self._folder_in_use_by_other_project_locked(project_dir, project_id):
+                    shutil.rmtree(project_dir, ignore_errors=True)
+                self._persist_locked()
+            return {"ok": True}
+
+    def rename_project(self, project_id: str, name: str) -> dict:
+        name = name.strip()
+        if not name:
+            raise ThumbnailPipelineError("Tên dự án không được để trống.")
+        with self._lock:
+            project = self._require_project(project_id)
+            project.name = name
+            project.updated_at = utc_now()
+            self._persist_locked()
+            return self._serialize_project_detail(project)
+
     def select_version(self, project_id: str, version_id: str) -> dict:
         with self._lock:
             project = self._require_project(project_id)
@@ -306,6 +420,47 @@ class ThumbnailPipelineManager:
             project.updated_at = utc_now()
             self._persist_locked()
             return self._serialize_project_detail(project)
+    def delete_version(self, project_id: str, version_id: str) -> dict:
+        with self._lock:
+            project = self._require_project(project_id)
+
+            # If this is the only version, delete the entire project
+            if len(project.versions) <= 1:
+                if self._active_project_id == project_id:
+                    self._active_project_id = None
+                project_dir = Path(project.folder)
+                self._projects.pop(project_id, None)
+                if project_dir.exists() and not self._folder_in_use_by_other_project_locked(project_dir, project_id):
+                    shutil.rmtree(project_dir, ignore_errors=True)
+                self._persist_locked()
+                return {"ok": True, "projectDeleted": True}
+
+            version_to_delete = None
+            for idx, v in enumerate(project.versions):
+                if v.id == version_id:
+                    version_to_delete = project.versions.pop(idx)
+                    break
+
+            if not version_to_delete:
+                raise ValueError(f"Không tìm thấy phiên bản {version_id}")
+
+            # Physical cleanup
+            if version_to_delete.output_image_path:
+                img_path = Path(version_to_delete.output_image_path)
+                if img_path.exists():
+                    img_path.unlink()
+
+            # Update selected version if it was the one deleted
+            if project.selected_version_id == version_id:
+                project.selected_version_id = project.versions[-1].id
+                # Reset statuses
+                for v in project.versions:
+                    v.status = "current" if v.id == project.selected_version_id else "history"
+
+            project.updated_at = utc_now()
+            self._persist_locked()
+            return {**self._serialize_project_detail(project), "projectDeleted": False}
+
 
     def create_button(self, payload: dict) -> dict:
         button_id = str(payload.get("id", "")).strip() or f"custom-{uuid.uuid4().hex[:8]}"
@@ -316,37 +471,76 @@ class ThumbnailPipelineManager:
             category=str(payload.get("category", "")).strip() or "Custom",
             prompt_template=str(payload.get("promptTemplate", "")).strip(),
             requires_mask=bool(payload.get("requiresMask", False)),
-            create_new_chat=bool(payload.get("createNewChat", True)),
+            create_new_chat=True,
             allow_regenerate=bool(payload.get("allowRegenerate", True)),
             summary=str(payload.get("summary", "")).strip() or "Nút tùy biến do user tạo.",
-            fields=[
-                ThumbnailButtonField(
-                    key=str(field.get("key", "")).strip(),
-                    label=str(field.get("label", "")).strip(),
-                    type=str(field.get("type", "text")).strip(),
-                    value=field.get("value", ""),
-                    tooltip=str(field.get("tooltip", "")).strip(),
-                    options=[str(option) for option in field.get("options", [])],
-                    min=float(field["min"]) if field.get("min") is not None else None,
-                    max=float(field["max"]) if field.get("max") is not None else None,
-                    required=bool(field.get("required", True)),
-                    visible_if=field.get("visible_if") or field.get("visibleIf"),
-                )
-                for field in (payload.get("fields") or [])
-            ],
+            fields=[self._deserialize_button_field(field) for field in (payload.get("fields") or [])],
         )
         if not button.prompt_template:
             raise ThumbnailPipelineError("Prompt template của button không được để trống.")
         with self._lock:
+            existing = next((item for item in self._buttons if item.id == button.id), None)
+            if existing:
+                button.is_pinned = existing.is_pinned
             self._buttons = [item for item in self._buttons if item.id != button.id]
             self._buttons.append(button)
             self._persist_locked()
             return self._serialize_button(button)
 
+    def delete_button(self, button_id: str) -> bool:
+        with self._lock:
+            self._buttons = [b for b in self._buttons if b.id != button_id]
+            self._persist_locked()
+            return True
+
+    def toggle_pin_button(self, button_id: str) -> dict:
+        with self._lock:
+            for b in self._buttons:
+                if b.id == button_id:
+                    b.is_pinned = not b.is_pinned
+                    self._persist_locked()
+                    return self._serialize_button(b)
+            raise ThumbnailPipelineError(f"Không tìm thấy button: {button_id}")
+
+    def create_profile(self, payload: dict) -> dict:
+        profile_id = str(payload.get("id", "")).strip() or f"prof-{uuid.uuid4().hex[:8]}"
+        profile = ThumbnailProfile(
+            id=profile_id,
+            name=str(payload.get("name", "")).strip() or "Profile mới",
+            icon=str(payload.get("icon", "")).strip() or "📦",
+            description=str(payload.get("description", "")).strip(),
+            effects=self._deserialize_profile_effects(payload),
+        )
+        
+        with self._lock:
+            existing = next((p for p in self._profiles if p.id == profile.id), None)
+            if existing:
+                profile.is_pinned = existing.is_pinned
+            self._profiles = [p for p in self._profiles if p.id != profile.id]
+            self._profiles.append(profile)
+            self._persist_locked()
+            return self._serialize_profile(profile)
+
+    def delete_profile(self, profile_id: str) -> bool:
+        with self._lock:
+            self._profiles = [p for p in self._profiles if p.id != profile_id]
+            self._persist_locked()
+            return True
+
+    def toggle_pin_profile(self, profile_id: str) -> dict:
+        with self._lock:
+            for p in self._profiles:
+                if p.id == profile_id:
+                    p.is_pinned = not p.is_pinned
+                    self._persist_locked()
+                    return self._serialize_profile(p)
+            raise ThumbnailPipelineError(f"Không tìm thấy profile: {profile_id}")
+
     def run_profile(self, payload: dict) -> dict:
         project_id = str(payload.get("project_id", "")).strip()
         profile_id = str(payload.get("profile_id", "")).strip()
         mask_base64 = str(payload.get("mask_base64", "")).strip()
+        canvas_guide = payload.get("canvas_guide")
         
         with self._lock:
             profile = next((p for p in self._profiles if p.id == profile_id), None)
@@ -356,11 +550,12 @@ class ThumbnailPipelineManager:
             combined_instructions = []
             buttons_map = {b.id: b for b in self._buttons}
             
-            for idx, b_id in enumerate(profile.button_ids):
-                btn = buttons_map.get(b_id)
+            for idx, effect in enumerate(profile.effects):
+                btn = buttons_map.get(effect.button_id)
                 if btn:
-                    # Build prompt with default field values
-                    instr = self._build_prompt(btn, {f.key: f.value for f in btn.fields})
+                    merged_values = {f.key: f.value for f in btn.fields}
+                    merged_values.update({field.key: field.value for field in effect.fields})
+                    instr = self._build_prompt(btn, merged_values)
                     combined_instructions.append(f"{idx+1}. {instr}")
             
             final_prompt = "Perform the following improvements simultaneously:\n" + "\n".join(combined_instructions)
@@ -394,11 +589,91 @@ class ThumbnailPipelineManager:
             finally:
                 self._buttons = [b for b in self._buttons if b.id != virtual_button.id]
 
+    def run_generation_batch(self, payload: dict) -> dict:
+        project_id = str(payload.get("project_id", "")).strip()
+        effects = payload.get("effects", [])
+        selected_mode = str(payload.get("selected_mode", "preset")).strip() or "preset"
+        regenerate_mode = "new-chat"
+        is_regenerate = bool(payload.get("is_regenerate", False))
+        mask_mode = str(payload.get("mask_mode", "")).strip() or (
+            "red" if selected_mode == "mask" else "none"
+        )
+        mask_base64 = str(payload.get("mask_base64", "")).strip()
+        canvas_guide = payload.get("canvas_guide")
+
+        if not effects:
+            raise ThumbnailPipelineError("Không có hiệu ứng nào để chạy.")
+
+        with self._lock:
+            project = self._require_project(project_id)
+            combined_instructions = []
+            buttons_map = {b.id: b for b in self._buttons}
+            
+            for idx, effect in enumerate(effects):
+                btn_id = effect.get("button_id")
+                btn = buttons_map.get(btn_id)
+                if btn:
+                    field_values = effect.get("field_values", {})
+                    merged_values = {f.key: f.value for f in btn.fields}
+                    merged_values.update(field_values)
+                    instr = self._build_prompt(btn, merged_values)
+                    combined_instructions.append(f"{idx+1}. {instr}")
+            
+            if not combined_instructions:
+                raise ThumbnailPipelineError("Các hiệu ứng không hợp lệ.")
+
+            if len(combined_instructions) == 1:
+                # Fallback to normal generation if only one effect
+                payload["button_id"] = effects[0].get("button_id")
+                payload["field_values"] = effects[0].get("field_values", {})
+                return self.run_generation(payload)
+
+            final_prompt = "Perform the following improvements simultaneously:\n" + "\n".join(combined_instructions)
+            final_prompt += "\n\nKeep the overall composition and all unmentioned details consistent with the original image."
+            
+            # Use properties from the first button as a base
+            first_btn = buttons_map.get(effects[0].get("button_id"))
+            virtual_button = ThumbnailButton(
+                id=f"virtual_batch_{uuid.uuid4().hex}",
+                name=f"Batch Effects ({len(effects)})",
+                icon=first_btn.icon if first_btn else "✨",
+                category="Batch",
+                prompt_template=final_prompt,
+                requires_mask=any(
+                    buttons_map.get(e.get("button_id")).requires_mask
+                    for e in effects
+                    if buttons_map.get(e.get("button_id"))
+                ),
+                create_new_chat=True,
+                allow_regenerate=first_btn.allow_regenerate if first_btn else True,
+                summary="Chạy đồng thời nhiều hiệu ứng trên cùng một ảnh.",
+                fields=[],
+            )
+            self._buttons.append(virtual_button)
+
+        try:
+            gen_payload = {
+                "project_id": project_id,
+                "button_id": virtual_button.id,
+                "field_values": {},
+                "prompt_override": final_prompt,
+                "selected_mode": selected_mode,
+                "regenerate_mode": regenerate_mode,
+                "is_regenerate": is_regenerate,
+                "mask_mode": mask_mode,
+                "mask_base64": mask_base64,
+                "canvas_guide": canvas_guide,
+            }
+            return self.run_generation(gen_payload)
+        finally:
+            with self._lock:
+                self._buttons = [b for b in self._buttons if b.id != virtual_button.id]
+
     def run_generation(self, payload: dict) -> dict:
         project_id = str(payload.get("project_id", "")).strip()
         button_id = str(payload.get("button_id", "")).strip()
         selected_mode = str(payload.get("selected_mode", "preset")).strip() or "preset"
-        regenerate_mode = str(payload.get("regenerate_mode", "new-chat")).strip() or "new-chat"
+        regenerate_mode = "new-chat"
         field_values = payload.get("field_values") or {}
         is_regenerate = bool(payload.get("is_regenerate", False))
         mask_mode = str(payload.get("mask_mode", "")).strip() or (
@@ -406,6 +681,7 @@ class ThumbnailPipelineManager:
         )
 
         mask_base64 = str(payload.get("mask_base64", "")).strip()
+        canvas_guide = payload.get("canvas_guide") or {}
 
         with self._lock:
             project = self._require_project(project_id)
@@ -427,36 +703,65 @@ class ThumbnailPipelineManager:
         source_path = Path(selected_version.output_image_path).expanduser().resolve()
         output_dir = Path(next_version.output_image_path).parent
         
-        # Handle mask compositing if provided
         input_image_for_gemini = source_path
-        if mask_base64:
+        if mask_base64 or canvas_guide:
             import base64
-            from PIL import Image
             import io
-            
+            Image = require_pillow()
+
             try:
-                if "," in mask_base64:
-                    mask_base64 = mask_base64.split(",")[1]
-                
-                mask_data = base64.b64decode(mask_base64)
-                mask_img = Image.open(io.BytesIO(mask_data)).convert("RGBA")
                 base_img = Image.open(source_path).convert("RGBA")
-                
-                # Resize mask to match base image if necessary
-                if mask_img.size != base_img.size:
-                    mask_img = mask_img.resize(base_img.size, Image.Resampling.LANCZOS)
-                
-                composite = Image.alpha_composite(base_img, mask_img)
-                composite_rgb = composite.convert("RGB")
-                
-                masked_source_path = output_dir / "masked_input.jpg"
-                composite_rgb.save(masked_source_path, "JPEG", quality=95)
-                input_image_for_gemini = masked_source_path
+                working_img = base_img
+                working_mask = None
+
+                if mask_base64:
+                    if "," in mask_base64:
+                        mask_base64 = mask_base64.split(",")[1]
+                    mask_data = base64.b64decode(mask_base64)
+                    working_mask = Image.open(io.BytesIO(mask_data)).convert("RGBA")
+                    if working_mask.size != working_img.size:
+                        working_mask = working_mask.resize(working_img.size, Image.Resampling.LANCZOS)
+
+                guide_mode = str(canvas_guide.get("mode", "")).strip().lower()
+                guide_rect = _coerce_guide_rect(canvas_guide) if isinstance(canvas_guide, dict) else None
+                if guide_mode in {"crop", "artboard"} and guide_rect:
+                    x, y, width, height = guide_rect
+                    left = int(round(x))
+                    top = int(round(y))
+                    right = int(round(x + width))
+                    bottom = int(round(y + height))
+
+                    if guide_mode == "crop":
+                        left = max(0, min(left, working_img.width - 1))
+                        top = max(0, min(top, working_img.height - 1))
+                        right = max(left + 1, min(right, working_img.width))
+                        bottom = max(top + 1, min(bottom, working_img.height))
+                        working_img = working_img.crop((left, top, right, bottom))
+                        if working_mask is not None:
+                            working_mask = working_mask.crop((left, top, right, bottom))
+                    else:
+                        target_width = max(1, int(round(width)))
+                        target_height = max(1, int(round(height)))
+                        artboard = Image.new("RGBA", (target_width, target_height), (0, 0, 0, 0))
+                        artboard.alpha_composite(working_img, (-left, -top))
+                        working_img = artboard
+                        if working_mask is not None:
+                            mask_artboard = Image.new("RGBA", (target_width, target_height), (0, 0, 0, 0))
+                            mask_artboard.alpha_composite(working_mask, (-left, -top))
+                            working_mask = mask_artboard
+
+                if working_mask is not None:
+                    working_img = Image.alpha_composite(working_img, working_mask)
+
+                prepared_source_path = output_dir / "prepared_input.png"
+                working_img.save(prepared_source_path, "PNG")
+                input_image_for_gemini = prepared_source_path
             except Exception as e:
-                print(f"[DEBUG] Failed to composite mask: {e}")
+                print(f"[DEBUG] Failed to prepare guided input: {e}")
 
         preview_path = output_dir / "preview.jpg"
         normalized_path = output_dir / "normalized.jpg"
+        thread_url = None
 
         adapter = self._get_adapter()
         result = adapter.generate(
@@ -466,7 +771,7 @@ class ThumbnailPipelineManager:
             normalized_path=normalized_path,
             context={
                 "mode": "regenerate" if is_regenerate else "auto",
-                "threadUrl": None if button.create_new_chat or regenerate_mode == "new-chat" else selected_version.thread_url,
+                "threadUrl": thread_url,
                 "buttonName": button.name,
                 "projectId": project.id,
                 "versionId": next_version.id,
@@ -479,6 +784,8 @@ class ThumbnailPipelineManager:
             stored_version.output_image_path = result.normalized_path
             stored_version.source_image_path = selected_version.output_image_path
             stored_version.thread_url = result.thread_url
+            if result.response_text:
+                stored_version.note = result.response_text
             project.selected_version_id = stored_version.id
             project.updated_at = utc_now()
             self._persist_locked()
@@ -517,7 +824,7 @@ class ThumbnailPipelineManager:
             shutil.copy2(source_path, target_path)
         else:
             try:
-                from PIL import Image
+                Image = require_pillow()
                 with Image.open(source_path) as img:
                     try:
                         w_str, h_str = target_size.split("x")
@@ -541,6 +848,16 @@ class ThumbnailPipelineManager:
             "ok": True,
             "path": str(target_path),
         }
+
+    def clear_cache(self) -> dict:
+        with self._lock:
+            self._projects = {}
+            self._active_project_id = None
+            if self._projects_root.exists():
+                shutil.rmtree(self._projects_root, ignore_errors=True)
+            self._projects_root.mkdir(parents=True, exist_ok=True)
+            self._persist_locked()
+            return {"ok": True}
 
     def get_project_detail(self, project_id: str) -> dict | None:
         with self._lock:
@@ -569,20 +886,12 @@ class ThumbnailPipelineManager:
             suffix = chr(ord("A") + variant_count)
             version_id = f"{parent_version.id}-{suffix.lower()}"
             label = f"{base_label}{suffix} - Regenerate"
-            note = (
-                f"Chạy lại prompt bằng chat Gemini mới từ {parent_version.label}"
-                if regenerate_mode == "new-chat"
-                else f"Chạy lại prompt trong cùng chat của {parent_version.label}"
-            )
+            note = f"Chạy lại prompt bằng chat Gemini mới từ {parent_version.label}"
             status = "branch"
         else:
             version_id = f"v{base_count}"
             label = f"Version {base_count} - {button.name}"
-            note = (
-                f"Tạo chat Gemini mới từ {parent_version.label}"
-                if button.create_new_chat
-                else f"Tiếp tục chỉnh trong chat của {parent_version.label}"
-            )
+            note = f"Tạo chat Gemini mới từ {parent_version.label}"
             status = "current"
 
         version_dir = Path(project.folder) / "versions" / version_id
@@ -676,12 +985,38 @@ class ThumbnailPipelineManager:
             "parentVersionId": version.parent_version_id,
         }
 
+    def _repair_legacy_image_path(self, raw_path: str) -> str:
+        path = str(raw_path or "").strip()
+        if not path:
+            return path
+
+        candidate = Path(path).expanduser()
+        try:
+            if candidate.exists():
+                return str(candidate.resolve())
+        except Exception:
+            return path
+
+        suffix = candidate.suffix.lower()
+        if suffix == ".png":
+            jpg_candidate = candidate.with_suffix(".jpg")
+            jpeg_candidate = candidate.with_suffix(".jpeg")
+            for fallback in (jpg_candidate, jpeg_candidate):
+                try:
+                    if fallback.exists():
+                        return str(fallback.resolve())
+                except Exception:
+                    continue
+        return path
+
     def _serialize_button(self, button: ThumbnailButton) -> dict:
         payload = asdict(button)
         payload["promptTemplate"] = payload.pop("prompt_template")
         payload["requiresMask"] = payload.pop("requires_mask")
-        payload["createNewChat"] = payload.pop("create_new_chat")
+        payload.pop("create_new_chat")
+        payload["createNewChat"] = True
         payload["allowRegenerate"] = payload.pop("allow_regenerate")
+        payload["isPinned"] = payload.pop("is_pinned")
         normalized_fields = []
         for field in payload["fields"]:
             field["visibleIf"] = field.pop("visible_if", None)
@@ -689,11 +1024,119 @@ class ThumbnailPipelineManager:
         payload["fields"] = normalized_fields
         return payload
 
+    def _serialize_profile(self, profile: ThumbnailProfile) -> dict:
+        return {
+            "id": profile.id,
+            "name": profile.name,
+            "icon": profile.icon,
+            "description": profile.description,
+            "isPinned": profile.is_pinned,
+            "effects": [
+                {
+                    "buttonId": effect.button_id,
+                    "fields": self._serialize_fields(effect.fields),
+                }
+                for effect in profile.effects
+            ],
+        }
+
+    def _serialize_fields(self, fields: list[ThumbnailButtonField]) -> list[dict]:
+        normalized_fields = []
+        for field_item in fields:
+            field_payload = asdict(field_item)
+            field_payload["visibleIf"] = field_payload.pop("visible_if", None)
+            normalized_fields.append(field_payload)
+        return normalized_fields
+
+    def _deserialize_button_field(
+        self,
+        field_data: dict,
+        fallback: ThumbnailButtonField | None = None,
+    ) -> ThumbnailButtonField:
+        fallback_options = list(fallback.options) if fallback else []
+        options = field_data.get("options", fallback_options)
+        min_value = field_data.get("min", fallback.min if fallback else None)
+        max_value = field_data.get("max", fallback.max if fallback else None)
+        required_default = fallback.required if fallback else True
+        return ThumbnailButtonField(
+            key=str(field_data.get("key", fallback.key if fallback else "")).strip(),
+            label=str(field_data.get("label", fallback.label if fallback else "")).strip(),
+            type=str(field_data.get("type", fallback.type if fallback else "text")).strip(),
+            value=field_data.get("value", fallback.value if fallback else ""),
+            tooltip=str(field_data.get("tooltip", fallback.tooltip if fallback else "")).strip(),
+            options=[str(option) for option in (options or [])],
+            min=float(min_value) if min_value is not None else None,
+            max=float(max_value) if max_value is not None else None,
+            required=bool(field_data.get("required", field_data.get("isRequired", required_default))),
+            visible_if=field_data.get("visible_if", field_data.get("visibleIf", fallback.visible_if if fallback else None)),
+        )
+
+    def _build_profile_effect(
+        self,
+        button_id: str,
+        *,
+        field_values: dict[str, str | int | float | bool | list] | None = None,
+        field_payloads: list[dict] | None = None,
+    ) -> ThumbnailProfileEffect:
+        button = next((item for item in self._buttons if item.id == button_id), None)
+        if field_payloads:
+            if button:
+                base_fields = {field.key: field for field in button.fields}
+                fields = [
+                    self._deserialize_button_field(
+                        field_data,
+                        fallback=base_fields.get(str(field_data.get("key", "")).strip()),
+                    )
+                    for field_data in field_payloads
+                ]
+            else:
+                fields = [self._deserialize_button_field(field_data) for field_data in field_payloads]
+        elif button:
+            saved_values = dict(field_values or {})
+            fields = [
+                self._deserialize_button_field({"value": saved_values.get(field.key, field.value)}, fallback=field)
+                for field in button.fields
+            ]
+        else:
+            fields = []
+        return ThumbnailProfileEffect(button_id=button_id, fields=fields)
+
+    def _deserialize_profile_effects(self, payload: dict) -> list[ThumbnailProfileEffect]:
+        effects_payload = payload.get("effects")
+        if isinstance(effects_payload, list):
+            effects: list[ThumbnailProfileEffect] = []
+            for effect_data in effects_payload:
+                button_id = str(effect_data.get("button_id", effect_data.get("buttonId", ""))).strip()
+                if not button_id:
+                    continue
+                effects.append(
+                    self._build_profile_effect(
+                        button_id,
+                        field_payloads=list(effect_data.get("fields") or []),
+                    )
+                )
+            return effects
+
+        legacy_items = payload.get("items") or []
+        effects = []
+        for item_data in legacy_items:
+            button_id = str(item_data.get("button_id", item_data.get("buttonId", ""))).strip()
+            if not button_id:
+                continue
+            effects.append(
+                self._build_profile_effect(
+                    button_id,
+                    field_values=dict(item_data.get("field_values", item_data.get("fieldValues", {}))),
+                )
+            )
+        return effects
+
     def _persist_locked(self) -> None:
         data = {
             "activeProjectId": self._active_project_id,
             "buttons": [asdict(button) for button in self._buttons],
             "projects": [asdict(project) for project in self._projects.values()],
+            "profiles": [asdict(profile) for profile in self._profiles],
         }
         self._state_file.parent.mkdir(parents=True, exist_ok=True)
         self._state_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -718,9 +1161,10 @@ class ThumbnailPipelineManager:
                 category=str(item.get("category", "")).strip(),
                 prompt_template=str(item.get("prompt_template", item.get("promptTemplate", ""))).strip(),
                 requires_mask=bool(item.get("requires_mask", item.get("requiresMask", False))),
-                create_new_chat=bool(item.get("create_new_chat", item.get("createNewChat", True))),
+                create_new_chat=True,
                 allow_regenerate=bool(item.get("allow_regenerate", item.get("allowRegenerate", True))),
                 summary=str(item.get("summary", "")).strip(),
+                is_pinned=bool(item.get("is_pinned", item.get("isPinned", False))),
                 fields=[
                     ThumbnailButtonField(
                         key=str(field.get("key", "")).strip(),
@@ -740,6 +1184,20 @@ class ThumbnailPipelineManager:
             for item in raw.get("buttons", [])
             if str(item.get("id", "")).strip()
         ] or default_buttons()
+        self._merge_builtin_buttons()
+
+        self._profiles = [
+            ThumbnailProfile(
+                id=str(p.get("id", "")).strip(),
+                name=str(p.get("name", "")).strip(),
+                icon=str(p.get("icon", "")).strip(),
+                description=str(p.get("description", "")).strip(),
+                is_pinned=bool(p.get("is_pinned", p.get("isPinned", False))),
+                effects=self._deserialize_profile_effects(p),
+            )
+            for p in raw.get("profiles", [])
+            if str(p.get("id", "")).strip()
+        ] or self._profiles
 
         projects: dict[str, ThumbnailProject] = {}
         for item in raw.get("projects", []):
@@ -754,8 +1212,8 @@ class ThumbnailPipelineManager:
                     mask_mode=str(version.get("mask_mode", version.get("maskMode", "none"))).strip() or "none",
                     created_at=str(version.get("created_at", version.get("createdAt", ""))).strip(),
                     status=str(version.get("status", "history")).strip() or "history",
-                    source_image_path=str(version.get("source_image_path", version.get("sourceImagePath", ""))).strip(),
-                    output_image_path=str(version.get("output_image_path", version.get("outputImagePath", ""))).strip(),
+                    source_image_path=self._repair_legacy_image_path(version.get("source_image_path", version.get("sourceImagePath", ""))),
+                    output_image_path=self._repair_legacy_image_path(version.get("output_image_path", version.get("outputImagePath", ""))),
                     thread_url=version.get("thread_url", version.get("threadUrl")),
                     parent_version_id=version.get("parent_version_id", version.get("parentVersionId")),
                 )
@@ -765,7 +1223,7 @@ class ThumbnailPipelineManager:
                 id=str(item.get("id", "")).strip(),
                 name=str(item.get("name", "")).strip(),
                 folder=str(item.get("folder", "")).strip(),
-                source_image_path=str(item.get("source_image_path", item.get("sourceImagePath", ""))).strip(),
+                source_image_path=self._repair_legacy_image_path(item.get("source_image_path", item.get("sourceImagePath", ""))),
                 created_at=str(item.get("created_at", item.get("createdAt", utc_now()))).strip(),
                 updated_at=str(item.get("updated_at", item.get("updatedAt", utc_now()))).strip(),
                 selected_version_id=str(item.get("selected_version_id", item.get("selectedVersionId", "original"))).strip(),
@@ -774,6 +1232,45 @@ class ThumbnailPipelineManager:
             if project.id:
                 projects[project.id] = project
         self._projects = projects
+        # Persist repaired legacy paths so the frontend stops requesting stale files.
+        self._persist_locked()
+
+    def _merge_builtin_buttons(self) -> None:
+        builtin_map = {button.id: button for button in default_buttons()}
+        merged_buttons: list[ThumbnailButton] = []
+        seen_ids: set[str] = set()
+
+        for button in self._buttons:
+            builtin = builtin_map.get(button.id)
+            if builtin is None:
+                merged_buttons.append(button)
+                seen_ids.add(button.id)
+                continue
+
+            field_map = {field.key: field for field in button.fields}
+            merged_fields = list(button.fields)
+            for builtin_field in builtin.fields:
+                if builtin_field.key not in field_map:
+                    merged_fields.append(builtin_field)
+
+            if button.id == "extend-wide":
+                legacy_prompt = "Extend this image to a clean 16:9 thumbnail composition.\nPreserve the subject scale, identity, and lighting.\nFill new space naturally for YouTube thumbnail framing."
+                if not button.prompt_template or button.prompt_template == legacy_prompt or "{target_ratio}" not in button.prompt_template:
+                    button.prompt_template = builtin.prompt_template
+                if not button.name or button.name == "Extend 16:9":
+                    button.name = builtin.name
+                if not button.summary or button.summary == "Mở rộng khung hình sang 16:9 để chuẩn bị xuất thumbnail.":
+                    button.summary = builtin.summary
+
+            button.fields = merged_fields
+            merged_buttons.append(button)
+            seen_ids.add(button.id)
+
+        for builtin in default_buttons():
+            if builtin.id not in seen_ids:
+                merged_buttons.append(builtin)
+
+        self._buttons = merged_buttons
 
     def _get_adapter(self) -> GeminiWebAdapter:
         with self._lock:

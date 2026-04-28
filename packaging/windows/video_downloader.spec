@@ -82,6 +82,11 @@ datas = [
     (str(REPO_ROOT / "vendor" / "windows" / "bin" / "ffprobe.exe"), "vendor/windows/bin"),
 ]
 
+for exiftool_name in ("exiftool.exe", "exiftool(-k).exe", "exiftool_k.exe"):
+    exiftool_path = REPO_ROOT / "vendor" / "windows" / "bin" / exiftool_name
+    if exiftool_path.exists():
+        datas.append((str(exiftool_path), "vendor/windows/bin"))
+
 a = Analysis(
     [str(REPO_ROOT / "main.py")],
     pathex=[str(REPO_ROOT)],

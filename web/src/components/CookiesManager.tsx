@@ -27,6 +27,7 @@ const PLATFORMS = [
   { id: "dailymotion", name: "Dailymotion", desc: "Dùng cho nội dung bị hạn chế (Xuất từ dailymotion.com)" },
   { id: "reddit", name: "Reddit", desc: "Dùng cho subreddit NSFW hoặc riêng tư (Xuất từ reddit.com)" },
   { id: "dumpert", name: "Dumpert", desc: "Dùng cho video 18+ hoặc cần đăng nhập (Xuất từ dumpert.nl)" },
+  { id: "snapchat", name: "Snapchat", desc: "Dùng cho video Snapchat (Xuất từ snapchat.com)" },
 ];
 
 interface CookiesManagerProps {

@@ -39,6 +39,7 @@ GEMINI_MODEL_MODE_LABELS = {
     "gemini-2.5-pro": "Pro",
     "gemini-1.5-pro": "Pro",
     "flash": "Nhanh",
+    "fast": "Nhanh",
     "nhanh": "Nhanh",
     "thinking": "Tư duy",
     "tu-duy": "Tư duy",
@@ -422,6 +423,7 @@ class GeminiGenerationResult:
     preview_path: str
     normalized_path: str
     thread_url: str | None = None
+    response_text: str | None = None
 
 
 @dataclass
@@ -1438,6 +1440,8 @@ class GeminiWebAdapter:
         try:
             stage = "workspace_ready"
             self._ensure_workspace_ready(page, target_url=target_thread_url)
+            stage = "select_image_tool"
+            self._ensure_image_tool_selected(page)
             stage = "select_mode"
             self._apply_generation_mode(page)
             self._dump_debug_state(
@@ -1522,10 +1526,14 @@ class GeminiWebAdapter:
                 selected_candidate=candidate,
             )
 
+            stage = "extract_response_text"
+            response_text = self._extract_gemini_response_text(page)
+
             return GeminiGenerationResult(
                 preview_path=str(resolved_preview_path),
                 normalized_path=str(resolved_normalized_path),
                 thread_url=self._sanitize_thread_url(page.url),
+                response_text=response_text,
             )
         except Exception as exc:
             page_had_error = True
@@ -1876,6 +1884,101 @@ class GeminiWebAdapter:
 
         raise GeminiWebError("Khong tim thay khung nhap prompt tren Gemini.")
 
+    def _ensure_image_tool_selected(self, page) -> None:
+        """
+        Chọn công cụ 'Tạo hình ảnh' (Image creation) trong Gemini trước khi gửi prompt.
+        Nếu không tìm thấy nút hoặc đã chọn rồi, bỏ qua và tiếp tục.
+        """
+        # Các selector phổ biến của nút tạo hình ảnh trên Gemini
+        image_tool_selectors = [
+            # Data attributes
+            '[data-tool-id="image_generation"]',
+            '[data-test-id="image-generation-tool"]',
+            # Aria labels (EN + VI)
+            'button[aria-label*="image" i][aria-label*="generat" i]',
+            'button[aria-label*="tạo hình" i]',
+            'button[aria-label*="tao hinh" i]',
+            'button[aria-label*="image creation" i]',
+            'button[aria-label*="create image" i]',
+            # Pill / chip buttons at toolbar
+            'button.tool-chip',
+            '[role="button"][data-tool-name*="image" i]',
+        ]
+
+        # Check if there's an active/selected image tool already
+        active_selectors = [
+            '[data-tool-id="image_generation"][aria-pressed="true"]',
+            '[data-tool-id="image_generation"].active',
+            'button[aria-label*="image" i][aria-pressed="true"]',
+        ]
+        for sel in active_selectors:
+            try:
+                loc = page.locator(sel)
+                if loc.count() > 0 and loc.first.is_visible():
+                    return  # Already selected
+            except Exception:
+                pass
+
+        # Try to find and click the image tool button
+        for selector in image_tool_selectors:
+            try:
+                loc = page.locator(selector)
+                count = loc.count()
+                for idx in range(min(count, 10)):
+                    candidate = loc.nth(idx)
+                    try:
+                        if not candidate.is_visible():
+                            continue
+                        text = (candidate.inner_text() or "").strip().lower()
+                        aria = (candidate.get_attribute("aria-label") or "").strip().lower()
+                        combined = f"{text} {aria}"
+                        # Match if the button contains image/hình keywords
+                        if any(kw in combined for kw in (
+                            "image", "tạo hình", "tao hinh", "hình ảnh", "hinh anh",
+                            "create image", "generate image", "image generation",
+                        )):
+                            candidate.click()
+                            page.wait_for_timeout(400)
+                            print(
+                                f"[GeminiWebAdapter] Đã chọn công cụ tạo hình ảnh: '{text or aria}'",
+                                flush=True,
+                            )
+                            return
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+
+        # Fallback: scan all visible toolbar buttons for image keyword
+        try:
+            all_buttons = page.locator("button, [role='button']")
+            btn_count = all_buttons.count()
+            for idx in range(min(btn_count, 60)):
+                btn = all_buttons.nth(idx)
+                try:
+                    if not btn.is_visible():
+                        continue
+                    text = (btn.inner_text() or "").strip().lower()
+                    aria = (btn.get_attribute("aria-label") or "").strip().lower()
+                    title = (btn.get_attribute("title") or "").strip().lower()
+                    combined = f"{text} {aria} {title}"
+                    if any(kw in combined for kw in (
+                        "tạo hình ảnh", "image creation", "create image", "generate image",
+                    )):
+                        btn.click()
+                        page.wait_for_timeout(400)
+                        print(
+                            f"[GeminiWebAdapter] (fallback) Đã chọn công cụ tạo hình ảnh: '{text or aria}'",
+                            flush=True,
+                        )
+                        return
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        print("[GeminiWebAdapter] Không tìm thấy nút tạo hình ảnh — bỏ qua, dùng chế độ mặc định.", flush=True)
+
     def _resolve_generation_mode_label(self) -> str | None:
         raw_model = str(self._model_name or "").strip()
         if not raw_model:
@@ -1958,6 +2061,8 @@ class GeminiWebAdapter:
         selectors = [
             'button[data-test-id="bard-mode-menu-button"]',
             'button[aria-label*="bộ chọn chế độ" i]',
+            'button[aria-label*="model switcher" i]',
+            'button[aria-label*="mode switcher" i]',
             'button[aria-label*="mode" i]',
         ]
         for selector in selectors:
@@ -1985,7 +2090,23 @@ class GeminiWebAdapter:
             return ""
 
     def _find_mode_menu_option(self, page, desired_label: str):
+        # We need to find the option that matches the desired mode.
+        # Gemini UI uses different labels depending on the language (e.g. "Nhanh" vs "Flash").
         desired_key = self._normalize_ui_text(desired_label)
+        
+        # Mapping of canonical terms to alternative language terms
+        alt_terms = {
+            "nhanh": ["flash", "fast", "nhanh"],
+            "tu duy": ["thinking", "tu duy"],
+            "pro": ["pro"],
+        }
+        
+        target_keys = [desired_key]
+        for canonical, alts in alt_terms.items():
+            if desired_key in alts:
+                target_keys = alts
+                break
+
         selectors = [
             "[role='menuitem']",
             "button",
@@ -2009,14 +2130,17 @@ class GeminiWebAdapter:
                         continue
                     text_blob = self._button_text_blob(candidate)
                     normalized_text = self._normalize_ui_text(text_blob)
-                    if desired_key not in normalized_text:
+                    
+                    matches = any(tk in normalized_text for tk in target_keys)
+                    if not matches:
                         continue
+                        
                     box = candidate.bounding_box()
                     if not box or box["width"] < 120 or box["height"] < 24:
                         continue
 
                     score = 0.0
-                    if normalized_text.startswith(desired_key):
+                    if any(normalized_text.startswith(tk) for tk in target_keys):
                         score += 140.0
                     if "gemini 3" in normalized_text:
                         score -= 80.0
@@ -2035,7 +2159,22 @@ class GeminiWebAdapter:
     def _mode_label_matches(self, current_label: str, desired_label: str) -> bool:
         current_key = self._normalize_ui_text(current_label)
         desired_key = self._normalize_ui_text(desired_label)
-        return bool(current_key and desired_key and desired_key in current_key)
+        if not current_key or not desired_key:
+            return False
+            
+        alt_terms = {
+            "nhanh": ["flash", "fast", "nhanh"],
+            "tu duy": ["thinking", "tu duy"],
+            "pro": ["pro"],
+        }
+        
+        target_keys = [desired_key]
+        for canonical, alts in alt_terms.items():
+            if desired_key in alts:
+                target_keys = alts
+                break
+                
+        return any(tk in current_key for tk in target_keys)
 
     def _normalize_ui_text(self, value: str) -> str:
         text = unicodedata.normalize("NFKD", str(value or ""))
@@ -2259,6 +2398,8 @@ class GeminiWebAdapter:
                 try:
                     if not candidate.is_visible():
                         continue
+                    if self._is_stop_or_cancel_button(candidate):
+                        continue
                     aria_disabled = (candidate.get_attribute("aria-disabled") or "").strip().lower()
                     disabled_attr = candidate.get_attribute("disabled")
                     if aria_disabled == "true" or disabled_attr is not None or candidate.is_disabled():
@@ -2267,6 +2408,34 @@ class GeminiWebAdapter:
                 except Exception:
                     continue
         return False
+
+    def _is_stop_or_cancel_button(self, candidate) -> bool:
+        parts: list[str] = []
+        for attr in ("aria-label", "title", "class", "data-testid", "data-test-id"):
+            try:
+                parts.append(candidate.get_attribute(attr) or "")
+            except Exception:
+                pass
+        try:
+            parts.append(candidate.inner_text() or "")
+        except Exception:
+            pass
+
+        text_blob = self._normalize_ui_text(" ".join(parts))
+        if not text_blob:
+            return False
+
+        stop_tokens = (
+            "stop",
+            "stop response",
+            "stop generating",
+            "cancel response",
+            "dung",
+            "ngung",
+            "tam dung",
+            "huy",
+        )
+        return any(token in text_blob for token in stop_tokens)
 
     def _dismiss_transient_overlays(self, page) -> None:
         overlay_selectors = [
@@ -2320,6 +2489,10 @@ class GeminiWebAdapter:
             "div[aria-label*='Nhập' i]",
             "div[aria-label*='Prompt' i]",
             "div[aria-label*='tin nhắn' i]",
+            "div[aria-label*='Enter' i]",
+            "div[aria-label*='Type' i]",
+            "div[aria-label*='message' i]",
+            "div[aria-label*='ask' i]",
             "[role='textbox']",
         ]
 
@@ -2595,6 +2768,7 @@ class GeminiWebAdapter:
         targeted_selectors = [
             'button[aria-label*="upload" i]',
             'button[aria-label*="attach" i]',
+            'button[aria-label*="add" i]',
             'button[aria-label*="tải" i]',
             'button[aria-label*="đính" i]',
             'button[aria-label*="ảnh" i]',
@@ -2775,15 +2949,14 @@ class GeminiWebAdapter:
             return _normalize_gem_entries(raw_gems)
 
         playwright = None
+        browser = None
         context = None
         try:
             playwright = sync_playwright().start()
-            context = playwright.chromium.launch_persistent_context(
-                str(_gem_scan_user_data_dir()),
+            browser = playwright.chromium.launch(
                 headless=True,
                 executable_path=str(profile.executable_path),
                 args=[
-                    f"--profile-directory={profile.profile_name}",
                     "--disable-blink-features=AutomationControlled",
                     "--no-first-run",
                     "--no-default-browser-check",
@@ -2793,21 +2966,46 @@ class GeminiWebAdapter:
                     "--disable-component-update",
                 ],
             )
-            page = context.pages[0] if context.pages else context.new_page()
-            page.set_default_timeout(30_000)
-            page.goto(GEMINI_GEMS_VIEW_URL, wait_until="domcontentloaded", timeout=45_000)
-            page.wait_for_timeout(4_000)
-
-            if _is_login_gate(page):
+            context = browser.new_context()
+            cookie_count = _sync_browser_cookies_to_context(context, profile)
+            if cookie_count <= 0:
+                print("[DEBUG] Gem scan khong nap duoc cookie nao vao context tam.")
                 return []
 
-            return _collect_gems_from_page(page)
+            page = context.new_page()
+            page.set_default_timeout(30_000)
+
+            candidate_urls = [
+                GEMINI_GEMS_VIEW_URL,
+                "https://gemini.google.com/gems",
+                "https://gemini.google.com/app/gems",
+            ]
+            for target_url in candidate_urls:
+                try:
+                    page.goto(target_url, wait_until="domcontentloaded", timeout=45_000)
+                    page.wait_for_timeout(4_000)
+                except Exception as exc:
+                    print(f"[DEBUG] Gem scan goto failed for {target_url}: {exc}")
+                    continue
+
+                if _is_login_gate(page):
+                    print(f"[DEBUG] Gem scan bi chuyen toi login gate tai {target_url}.")
+                    continue
+
+                gems = _collect_gems_from_page(page)
+                if gems:
+                    return gems
+
+            print("[DEBUG] Gem scan khong tim thay Gem nao tren cac trang da thu.")
+            return []
         except Exception as exc:
             print(f"[DEBUG] Failed to list gems from dedicated Gemini profile: {exc}")
             return []
         finally:
             if context:
                 context.close()
+            if browser:
+                browser.close()
             if playwright:
                 playwright.stop()
 
@@ -2826,7 +3024,10 @@ class GeminiWebAdapter:
             "os.environ['FLOWGEN_GEM_SCAN_MODE'] = 'child'\n"
             "adapter = GeminiWebAdapter(runtime_root=Path(sys.argv[1]))\n"
             "gems = adapter._list_gems_with_playwright()\n"
-            "sys.stdout.buffer.write(json.dumps(gems, ensure_ascii=False).encode('utf-8'))\n"
+            "payload = json.dumps(gems, ensure_ascii=False)\n"
+            "sys.stdout.write('\\n__GEM_SCAN_JSON_START__\\n')\n"
+            "sys.stdout.write(payload)\n"
+            "sys.stdout.write('\\n__GEM_SCAN_JSON_END__\\n')\n"
         )
         try:
             completed = subprocess.run(
@@ -2843,9 +3044,19 @@ class GeminiWebAdapter:
         if completed.returncode == 0 and completed.stdout:
             try:
                 stdout_str = completed.stdout.decode('utf-8').strip()
-                return _normalize_gem_entries(json.loads(stdout_str.splitlines()[-1]))
-            except Exception:
+                start_marker = "__GEM_SCAN_JSON_START__"
+                end_marker = "__GEM_SCAN_JSON_END__"
+                start = stdout_str.rfind(start_marker)
+                end = stdout_str.rfind(end_marker)
+                if start != -1 and end != -1 and end > start:
+                    payload = stdout_str[start + len(start_marker):end].strip()
+                else:
+                    payload = stdout_str.splitlines()[-1]
+                return _normalize_gem_entries(json.loads(payload))
+            except Exception as exc:
                 print("[DEBUG] Gem scan subprocess returned unparsable JSON.")
+                print(f"[DEBUG] Gem scan raw stdout: {stdout_str[:600]}")
+                print(f"[DEBUG] Gem scan parse error: {exc}")
                 return []
 
         stderr = str(completed.stderr or "").strip()
@@ -2908,6 +3119,8 @@ class GeminiWebAdapter:
                         candidate = locator.nth(index)
                         if not candidate.is_visible() or candidate.is_disabled():
                             continue
+                        if self._is_stop_or_cancel_button(candidate):
+                            continue
                         candidate.click()
                         return True
                 except Exception:
@@ -2940,13 +3153,16 @@ class GeminiWebAdapter:
                             (candidate.get_attribute("class") or ""),
                         ]
                     ).strip().lower()
-                    attach_hint = any(token in text_blob for token in attach_tokens)
+                    normalized_text_blob = self._normalize_ui_text(text_blob)
+                    if self._is_stop_or_cancel_button(candidate):
+                        continue
+                    attach_hint = any(token in normalized_text_blob for token in attach_tokens)
                     if attach_hint:
                         continue
 
-                    send_hint = any(token in text_blob for token in send_tokens)
+                    send_hint = any(token in normalized_text_blob for token in send_tokens)
                     score = 0.0
-                    if "send-button" in text_blob:
+                    if "send-button" in normalized_text_blob:
                         score += 320.0
                     if send_hint:
                         score += 220.0
@@ -3319,6 +3535,65 @@ class GeminiWebAdapter:
         text = str(message).strip()
         return text or None
 
+    def _extract_gemini_response_text(self, page) -> str | None:
+        """
+        Trích xuất text message mà Gemini trả về cùng với hình ảnh (dòng mô tả, ghi chú...).
+        Tìm phần text trong response cuối cùng, loại trừ UI boilerplate.
+        """
+        try:
+            text = page.evaluate(r"""() => {
+                // Tìm các container response Gemini — thường là model-response, response-content, etc.
+                const responseSelectors = [
+                    'model-response',
+                    '[data-response-id]',
+                    '.model-response-text',
+                    '.response-content',
+                    '.conversation-item:last-child',
+                    'message-content',
+                    '.message-content',
+                ];
+
+                let best = '';
+                for (const sel of responseSelectors) {
+                    const els = Array.from(document.querySelectorAll(sel));
+                    if (!els.length) continue;
+                    // Lấy phần tử cuối cùng (response mới nhất)
+                    const el = els[els.length - 1];
+                    const text = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+                    if (text && text.length > best.length && text.length < 3000) {
+                        best = text;
+                    }
+                }
+
+                if (best) return best;
+
+                // Fallback: tìm paragraphs trong khu vực response
+                const paras = Array.from(document.querySelectorAll('p, [role="paragraph"]'));
+                const SKIP_PATTERNS = [
+                    /^(gemini|google|flash|pro|thinking)/i,
+                    /^(share|copy|export|feedback|like|dislike)/i,
+                    /^\s*$/,
+                ];
+                const goodParas = paras.filter(p => {
+                    const t = (p.innerText || p.textContent || '').trim();
+                    if (!t || t.length < 10 || t.length > 1000) return false;
+                    return !SKIP_PATTERNS.some(rx => rx.test(t));
+                });
+                if (goodParas.length) {
+                    return goodParas[goodParas.length - 1].innerText?.trim() || null;
+                }
+
+                return null;
+            }""")
+        except Exception:
+            return None
+
+        if not text:
+            return None
+        result = str(text).strip()
+        # Filter out very short/useless texts
+        return result if len(result) > 5 else None
+
     def _collect_candidate_source_urls(self, candidate: _PreviewCandidate) -> list[str]:
         return self._collect_locator_source_urls(candidate.locator)
 
@@ -3541,6 +3816,7 @@ class GeminiWebAdapter:
         retry_selectors = [
             'button[aria-label*="retry" i]',
             'button[aria-label*="regenerate" i]',
+            'button[aria-label*="redo" i]',
             'button[aria-label*="thử lại" i]',
             'button[aria-label*="thu lai" i]',
             'button[aria-label*="tạo lại" i]',
@@ -3581,6 +3857,7 @@ class GeminiWebAdapter:
         direct_selectors = [
             'button[aria-label*="retry" i]',
             'button[aria-label*="regenerate" i]',
+            'button[aria-label*="redo" i]',
             'button[aria-label*="try again" i]',
             'button[aria-label*="rerun" i]',
             'button[aria-label*="thử lại" i]',
@@ -3591,6 +3868,7 @@ class GeminiWebAdapter:
             'button[aria-label*="khoi phuc" i]',
             '[role="button"][aria-label*="retry" i]',
             '[role="button"][aria-label*="regenerate" i]',
+            '[role="button"][aria-label*="redo" i]',
             '[role="button"][aria-label*="try again" i]',
             '[role="button"][aria-label*="thử lại" i]',
             '[role="button"][aria-label*="thu lai" i]',
@@ -3694,11 +3972,13 @@ class GeminiWebAdapter:
         action_root = self._find_response_actions_root(candidate)
         direct_selectors = [
             'button[aria-label*="Tải hình ảnh có kích thước đầy đủ xuống" i]',
+            'button[aria-label*="Download full size" i]',
             'button[aria-label*="download" i]',
             'button[aria-label*="tải" i]',
             'button[aria-label*="lưu" i]',
             'button[aria-label*="save" i]',
             '[role="button"][aria-label*="Tải hình ảnh có kích thước đầy đủ xuống" i]',
+            '[role="button"][aria-label*="Download full size" i]',
             '[role="button"][aria-label*="download" i]',
             '[role="button"][aria-label*="tải" i]',
             '[role="button"][aria-label*="lưu" i]',
@@ -4167,6 +4447,11 @@ class GeminiWebAdapter:
                 fallback_payload=fallback_payload,
                 skip_clipboard_paste=False,
             )
+
+            downloaded_path = self._download_candidate_image(page, uploaded_candidate, preview_path)
+            if downloaded_path is not None:
+                return downloaded_path
+
             send_baseline_candidates = self._collect_uploaded_preview_candidates(page)
             send_baseline_keys = {item.key for item in send_baseline_candidates}
             baseline_sent_y_bottom = max(
@@ -4196,7 +4481,6 @@ class GeminiWebAdapter:
             if sent_candidate is None:
                 return None
 
-            self._click_stop_button(page, composer)
             page.wait_for_timeout(250)
             capture_candidate = sent_candidate
 

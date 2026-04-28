@@ -51,6 +51,11 @@ def cache_path(*parts: str) -> Path:
 def resolve_binary(name: str, env_var: str | None = None) -> str | None:
     suffix = ".exe" if sys.platform == "win32" else ""
     binary_name = name if suffix and name.lower().endswith(suffix) else f"{name}{suffix}"
+    binary_names = [binary_name]
+
+    if sys.platform == "win32" and name.lower() in {"exiftool", "exiftool.exe"}:
+        # Official Windows package is often shipped as exiftool(-k).exe until renamed.
+        binary_names.extend(["exiftool(-k).exe", "exiftool_k.exe"])
 
     candidates: list[Path] = []
 
@@ -61,7 +66,8 @@ def resolve_binary(name: str, env_var: str | None = None) -> str | None:
 
     extra_bin_dir = os.environ.get(BIN_DIR_ENV)
     if extra_bin_dir:
-        candidates.append(Path(extra_bin_dir).expanduser() / binary_name)
+        for candidate_name in binary_names:
+            candidates.append(Path(extra_bin_dir).expanduser() / candidate_name)
 
     # Platform-specific vendor bin directory (e.g. vendor/windows/bin/).
     if sys.platform == "win32":
@@ -72,9 +78,10 @@ def resolve_binary(name: str, env_var: str | None = None) -> str | None:
         platform_vendor = "linux"
 
     for root in (app_root(), bundle_root()):
-        candidates.append(root / "vendor" / platform_vendor / "bin" / binary_name)
-        candidates.append(root / "bin" / binary_name)
-        candidates.append(root / binary_name)
+        for candidate_name in binary_names:
+            candidates.append(root / "vendor" / platform_vendor / "bin" / candidate_name)
+            candidates.append(root / "bin" / candidate_name)
+            candidates.append(root / candidate_name)
 
 
     seen: set[Path] = set()
@@ -86,9 +93,10 @@ def resolve_binary(name: str, env_var: str | None = None) -> str | None:
         if resolved.exists():
             return str(resolved)
 
-    path_binary = shutil.which(binary_name) or shutil.which(name)
-    if path_binary:
-        return path_binary
+    for candidate_name in binary_names + [name]:
+        path_binary = shutil.which(candidate_name)
+        if path_binary:
+            return path_binary
 
     # Dev fallback: use ffmpeg binary bundled by imageio-ffmpeg if installed.
     # This lets clip/extract flows work even when ffmpeg is not in PATH.

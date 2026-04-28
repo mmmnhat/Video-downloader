@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, useTransition } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef, useTransition } from "react";
 import { 
   RefreshCw, Play, Pause, ChevronRight, ChevronDown, Trash2,
   Loader2, X, FileText, Video as VideoIcon, History as HistoryIcon,
@@ -30,6 +30,7 @@ import {
   updateStoryGlobalPrompt, listStoryGems, controlStoryQueue,
   chooseFolder, openFolder, clearStoryVideos, exportStorySelected
 } from "@/lib/api";
+import { useLocalStorage } from "@/hooks/use-local-storage";
 import {
   TAB_CARD_GAP_CLASS,
   TAB_STICKY_TOP_CLASS,
@@ -189,13 +190,16 @@ export function StoryStudio() {
   const [bootLoading, setBootLoading] = useState(true);
   const [sessionStatus, setSessionStatus] = useState<StorySessionStatus | null>(null);
   const [videoSummaries, setVideoSummaries] = useState<StoryVideoSummary[]>([]);
-  const [selectedVideoId, setSelectedVideoId] = useState<string | null>(null);
+  const [selectedVideoId, setSelectedVideoId] =
+    useLocalStorage<string | null>("story.selectedVideoId", null);
   const [selectedVideo, setSelectedVideo] = useState<StoryVideoDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [actionBusyKey, setActionBusyKey] = useState<string | null>(null);
+  const actionBusyRef = useRef<string | null>(null);
 
   const [settingsDraft, setSettingsDraft] = useState<StorySettings | null>(null);
-  const [sourceFolderPath, setSourceFolderPath] = useState("");
+  const [sourceFolderPath, setSourceFolderPath] =
+    useLocalStorage("story.sourceFolderPath", "");
   const [availableGems, setAvailableGems] = useState<{name: string, url: string}[]>([]);
 
   const [globalPrompt, setGlobalPrompt] = useState("");
@@ -205,21 +209,42 @@ export function StoryStudio() {
   const [videoPromptDraft, setVideoPromptDraft] = useState("");
   const [savingVideoPrompt, setSavingVideoPrompt] = useState(false);
 
-  const [leftPanelTab, setLeftPanelTab] = useState<StoryPanelTab>("gemini");
-  const [mainPanelTab, setMainPanelTab] = useState<StoryMainTab>("videos");
-  const [queueFilter, setQueueFilter] = useState<StoryQueueFilter>("all");
+  const [leftPanelTab, setLeftPanelTab] =
+    useLocalStorage<StoryPanelTab>("story.leftPanelTab", "gemini");
+  const [mainPanelTab, setMainPanelTab] =
+    useLocalStorage<StoryMainTab>("story.mainPanelTab", "videos");
+  const [queueFilter, setQueueFilter] =
+    useLocalStorage<StoryQueueFilter>("story.queueFilter", "all");
 
-  const [selectedMarkerId, setSelectedMarkerId] = useState<string | null>(null);
-  const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
-  const [selectedAttemptId, setSelectedAttemptId] = useState<string | null>(null);
+  const [selectedMarkerId, setSelectedMarkerId] =
+    useLocalStorage<string | null>("story.selectedMarkerId", null);
+  const [selectedStepId, setSelectedStepId] =
+    useLocalStorage<string | null>("story.selectedStepId", null);
+  const [selectedAttemptId, setSelectedAttemptId] =
+    useLocalStorage<string | null>("story.selectedAttemptId", null);
   const [expandedMarkerIds, setExpandedMarkerIds] = useState<string[]>([]);
   const [sessionRefreshing, setSessionRefreshing] = useState(false);
+  const [gemsRefreshing, setGemsRefreshing] = useState(false);
 
   const [showRefinePrompt, setShowRefinePrompt] = useState(false);
   const [refinePromptDraft, setRefinePromptDraft] = useState("");
   const [previewDialogPath, setPreviewDialogPath] = useState<string | null>(null);
 
   const [, startTransition] = useTransition();
+
+  const beginAction = useCallback((key: string) => {
+    if (actionBusyRef.current) return false;
+    actionBusyRef.current = key;
+    setActionBusyKey(key);
+    return true;
+  }, []);
+
+  const endAction = useCallback((key: string) => {
+    if (actionBusyRef.current === key) {
+      actionBusyRef.current = null;
+    }
+    setActionBusyKey((current) => (current === key ? null : current));
+  }, []);
 
   const refreshSummaries = useCallback(async (silent = false) => {
     try {
@@ -239,39 +264,64 @@ export function StoryStudio() {
       startTransition(() => {
         setSelectedVideo(detail);
         setVideoPromptDraft(detail.videoPrompt || "");
-        if (!selectedMarkerId && detail.markers.length > 0) {
-          const firstInReview = detail.markers.find(m => m.status === 'review') || detail.markers[0];
-          setSelectedMarkerId(firstInReview.id);
-          setExpandedMarkerIds(curr => curr.includes(firstInReview.id) ? curr : [...curr, firstInReview.id]);
-          if (firstInReview.steps.length > 0) {
-            const firstStepInReview = firstInReview.steps.find(s => s.status === 'review') || firstInReview.steps[0];
-            setSelectedStepId(firstStepInReview.id);
-            if (!selectedAttemptId) {
-              setSelectedAttemptId(firstStepInReview.attempts.at(-1)?.id || null);
-            }
+        const fallbackMarker =
+          detail.markers.find((marker) => marker.id === selectedMarkerId) ??
+          detail.markers.find((marker) => marker.status === "review") ??
+          detail.markers[0] ??
+          null;
+        const fallbackStep =
+          fallbackMarker?.steps.find((step) => step.id === selectedStepId) ??
+          fallbackMarker?.steps.find((step) => step.status === "review") ??
+          fallbackMarker?.steps[0] ??
+          null;
+        const fallbackAttempt =
+          fallbackStep?.attempts.find((attempt) => attempt.id === selectedAttemptId) ??
+          fallbackStep?.attempts.at(-1) ??
+          null;
+
+        setSelectedMarkerId(fallbackMarker?.id ?? null);
+        setSelectedStepId(fallbackStep?.id ?? null);
+        setSelectedAttemptId(fallbackAttempt?.id ?? null);
+        setExpandedMarkerIds((current) => {
+          const validIds = current.filter((markerId) =>
+            detail.markers.some((marker) => marker.id === markerId),
+          );
+          if (!fallbackMarker || validIds.includes(fallbackMarker.id)) {
+            return validIds;
           }
-        }
+          return [...validIds, fallbackMarker.id];
+        });
       });
     } catch {
       if (!options.silent) toast.error("Không thể tải chi tiết video.");
     } finally {
       if (!options.silent) setDetailLoading(false);
     }
-  }, [selectedAttemptId, selectedMarkerId, startTransition]);
+  }, [selectedAttemptId, selectedMarkerId, selectedStepId, startTransition]);
 
   useEffect(() => {
     const init = async () => {
       try {
         const bootstrap = await getStoryBootstrap();
+        const fallbackVideoId =
+          bootstrap.activeVideoId && bootstrap.videoSummaries.some((video) => video.id === bootstrap.activeVideoId)
+            ? bootstrap.activeVideoId
+            : selectedVideoId && bootstrap.videoSummaries.some((video) => video.id === selectedVideoId)
+              ? selectedVideoId
+              : bootstrap.videoSummaries[0]?.id ?? null;
         setSessionStatus(bootstrap.sessionStatus);
         setVideoSummaries(bootstrap.videoSummaries);
         setSettingsDraft(bootstrap.settings);
         setGlobalPrompt(bootstrap.globalPrompt || "");
         setGlobalPromptDraft(bootstrap.globalPrompt || "");
-        
-        // Fetch gems
+        setSelectedVideoId(fallbackVideoId);
+
         const gems = await listStoryGems();
         setAvailableGems(gems);
+
+        if (fallbackVideoId) {
+          await loadVideoDetail(fallbackVideoId, { silent: true });
+        }
       } catch {
         toast.error("Lỗi khởi tạo Tạo ảnh.");
       } finally {
@@ -279,7 +329,46 @@ export function StoryStudio() {
       }
     };
     init();
-  }, []);
+  }, [loadVideoDetail, selectedVideoId, setSelectedVideoId]);
+
+  useEffect(() => {
+    if (selectedVideoId && videoSummaries.some((video) => video.id === selectedVideoId)) {
+      return;
+    }
+
+    const fallbackVideoId = videoSummaries[0]?.id ?? null;
+    if (selectedVideoId !== fallbackVideoId) {
+      setSelectedVideoId(fallbackVideoId);
+    }
+
+    if (!fallbackVideoId) {
+      setSelectedVideo(null);
+      setSelectedMarkerId(null);
+      setSelectedStepId(null);
+      setSelectedAttemptId(null);
+      setExpandedMarkerIds([]);
+    }
+  }, [
+    selectedAttemptId,
+    selectedMarkerId,
+    selectedStepId,
+    selectedVideoId,
+    setSelectedAttemptId,
+    setSelectedMarkerId,
+    setSelectedStepId,
+    setSelectedVideoId,
+    videoSummaries,
+  ]);
+
+  useEffect(() => {
+    if (!selectedVideoId) {
+      return;
+    }
+    if (selectedVideo?.id === selectedVideoId) {
+      return;
+    }
+    void loadVideoDetail(selectedVideoId, { silent: true });
+  }, [loadVideoDetail, selectedVideo, selectedVideoId]);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -310,6 +399,19 @@ export function StoryStudio() {
       toast.error("Không thể cập nhật session.");
     } finally {
       setSessionRefreshing(false);
+    }
+  }, []);
+
+  const handleRefreshGems = useCallback(async () => {
+    setGemsRefreshing(true);
+    try {
+      const gems = await listStoryGems();
+      setAvailableGems(gems);
+      toast.success("Đã quét lại danh sách Gem.");
+    } catch {
+      toast.error("Không thể quét danh sách Gem.");
+    } finally {
+      setGemsRefreshing(false);
     }
   }, []);
 
@@ -398,7 +500,8 @@ export function StoryStudio() {
   }, [selectedVideoId, videoPromptDraft]);
 
   const handleLocalAction = useCallback(async (action: "run" | "pause" | "cancel", videoId: string) => {
-    setActionBusyKey(`local:${action}:${videoId}`);
+    const busyKey = `local:${action}:${videoId}`;
+    if (!beginAction(busyKey)) return;
     try {
       const detail = await applyStoryAction({ action, video_id: videoId });
       if (selectedVideoId === videoId) setSelectedVideo(detail);
@@ -408,13 +511,14 @@ export function StoryStudio() {
     } catch (error) {
       toast.error(getErrorMessage(error));
     } finally {
-      setActionBusyKey(null);
+      endAction(busyKey);
     }
-  }, [refreshSummaries, selectedVideoId]);
+  }, [beginAction, endAction, refreshSummaries, selectedVideoId]);
 
 
   const handleGlobalControl = useCallback(async (action: "run" | "pause" | "resume" | "cancel") => {
-    setActionBusyKey(`global:${action}`);
+    const busyKey = `global:${action}`;
+    if (!beginAction(busyKey)) return;
     try {
       const result = await controlStoryQueue(action);
       await refreshSummaries(false);
@@ -424,9 +528,9 @@ export function StoryStudio() {
     } catch (error) {
       toast.error(getErrorMessage(error));
     } finally {
-      setActionBusyKey(null);
+      endAction(busyKey);
     }
-  }, [loadVideoDetail, refreshSummaries, selectedVideoId]);
+  }, [beginAction, endAction, loadVideoDetail, refreshSummaries, selectedVideoId]);
 
   const handleClearVideos = useCallback(async () => {
     try {
@@ -447,7 +551,8 @@ export function StoryStudio() {
       toast.error("Hãy nhập yêu cầu tinh chỉnh.");
       return;
     }
-    setActionBusyKey(selectionKey("refine", selectedMarkerId, selectedStepId));
+    const busyKey = selectionKey("refine", selectedMarkerId, selectedStepId);
+    if (!beginAction(busyKey)) return;
     try {
       const detail = await applyStoryAction({
         action: "refine",
@@ -467,13 +572,14 @@ export function StoryStudio() {
     } catch (error) {
       toast.error(getErrorMessage(error));
     } finally {
-      setActionBusyKey(null);
+      endAction(busyKey);
     }
-  }, [refinePromptDraft, selectedMarkerId, selectedStepId, selectedVideoId]);
+  }, [beginAction, endAction, refinePromptDraft, selectedMarkerId, selectedStepId, selectedVideoId]);
 
   const handleAcceptAndNext = useCallback(async () => {
     if (!selectedVideoId || !selectedMarkerId || !selectedStepId) return;
-    setActionBusyKey("step:accept");
+    const busyKey = "step:accept";
+    if (!beginAction(busyKey)) return;
     try {
       const detail = await applyStoryAction({
         action: "accept",
@@ -487,13 +593,14 @@ export function StoryStudio() {
     } catch (error) {
       toast.error(getErrorMessage(error));
     } finally {
-      setActionBusyKey(null);
+      endAction(busyKey);
     }
-  }, [selectedAttemptId, selectedMarkerId, selectedStepId, selectedVideoId]);
+  }, [beginAction, endAction, selectedAttemptId, selectedMarkerId, selectedStepId, selectedVideoId]);
 
   const runStepAction = useCallback(async (action: StoryStepAction, markerId: string, stepId: string) => {
     if (!selectedVideoId) return;
-    setActionBusyKey(selectionKey(action, markerId, stepId));
+    const busyKey = selectionKey(action, markerId, stepId);
+    if (!beginAction(busyKey)) return;
     try {
       const detail = await applyStoryAction({ action, video_id: selectedVideoId, marker_id: markerId, step_id: stepId });
       setSelectedVideo(detail);
@@ -505,9 +612,9 @@ export function StoryStudio() {
     } catch (error) {
       toast.error(getErrorMessage(error));
     } finally {
-      setActionBusyKey(null);
+      endAction(busyKey);
     }
-  }, [selectedVideoId]);
+  }, [beginAction, endAction, selectedVideoId]);
 
   const handleToggleExportSelection = useCallback((key: string) => {
     setSelectedExportKeys(prev => {
@@ -670,10 +777,10 @@ export function StoryStudio() {
                           variant="ghost"
                           size="icon"
                           className="size-8 hover:bg-muted/40 rounded-full border border-border/70 bg-muted/20 shrink-0"
-                          onClick={handleRefreshSession}
-                          disabled={sessionRefreshing}
+                          onClick={handleRefreshGems}
+                          disabled={gemsRefreshing}
                         >
-                          <RefreshCw className={cn("size-3", sessionRefreshing && "animate-spin")} />
+                          <RefreshCw className={cn("size-3", gemsRefreshing && "animate-spin")} />
                         </Button>
                       </div>
                     </Field>
@@ -682,7 +789,9 @@ export function StoryStudio() {
                       <Field>
                         <TooltipFieldLabel tooltip="Chọn model Gemini để tối ưu hóa giữa tốc độ và chất lượng.">Model</TooltipFieldLabel>
                         <Select value={settingsDraft.gemini_model || "flash"} onValueChange={v => handleSaveSettings({ gemini_model: v })}>
-                          <SelectTrigger className="w-full h-8 text-xs"><SelectValue /></SelectTrigger>
+                          <SelectTrigger className="w-full h-8 rounded-full bg-muted/20 border-border/70 text-xs">
+                            <SelectValue />
+                          </SelectTrigger>
                           <SelectContent>
                             <SelectItem value="flash"><div className="flex items-center gap-2"><Zap className="size-3.5 text-yellow-500" /><span>Nhanh (Flash)</span></div></SelectItem>
                             <SelectItem value="thinking"><div className="flex items-center gap-2"><Brain className="size-3.5 text-blue-500" /><span>Tư duy (Thinking)</span></div></SelectItem>
@@ -782,10 +891,10 @@ export function StoryStudio() {
                   </Button>
                 </div>
               <div className="h-4 w-px bg-border mx-1" />
-              <Button variant="secondary" size="sm" className="h-8 text-xs rounded-full" onClick={() => handleGlobalControl("run")} disabled={globalQueueCounts.queued === 0}><Play className="size-3 mr-1" /> Chạy hết</Button>
-              <Button variant="outline" size="sm" className="h-8 text-xs rounded-full" onClick={() => handleGlobalControl("pause")} disabled={globalQueueCounts.running === 0}><Pause className="size-3 mr-1" /> Tạm dừng</Button>
-              <Button variant="outline" size="sm" className="h-8 text-xs rounded-full" onClick={() => handleGlobalControl("resume")} disabled={globalQueueCounts.paused === 0}><RotateCcw className="size-3 mr-1" /> Tiếp tục</Button>
-              <Button variant="destructive" size="sm" className="h-8 text-xs rounded-full" onClick={() => handleGlobalControl("cancel")} disabled={globalQueueCounts.stoppable === 0}><X className="size-3 mr-1" /> Dừng hết</Button>
+              <Button variant="secondary" size="sm" className="h-8 text-xs rounded-full" onClick={() => handleGlobalControl("run")} disabled={!!actionBusyKey || globalQueueCounts.queued === 0}><Play className="size-3 mr-1" /> Chạy hết</Button>
+              <Button variant="outline" size="sm" className="h-8 text-xs rounded-full" onClick={() => handleGlobalControl("pause")} disabled={!!actionBusyKey || globalQueueCounts.running === 0}><Pause className="size-3 mr-1" /> Tạm dừng</Button>
+              <Button variant="outline" size="sm" className="h-8 text-xs rounded-full" onClick={() => handleGlobalControl("resume")} disabled={!!actionBusyKey || globalQueueCounts.paused === 0}><RotateCcw className="size-3 mr-1" /> Tiếp tục</Button>
+              <Button variant="destructive" size="sm" className="h-8 text-xs rounded-full" onClick={() => handleGlobalControl("cancel")} disabled={!!actionBusyKey || globalQueueCounts.stoppable === 0}><X className="size-3 mr-1" /> Dừng hết</Button>
             </div>
           </div>
 
@@ -850,8 +959,8 @@ export function StoryStudio() {
                   <CardHeader className="py-3 px-4 border-b bg-muted/5 flex-row items-center justify-between flex-none">
                     <div><CardTitle className="text-sm font-bold">{selectedVideo.name || selectedVideo.id}</CardTitle><CardDescription className="text-xs">{selectedVideo.completedSteps}/{selectedVideo.stepTotal} bước hoàn thành</CardDescription></div>
                     <div className="flex gap-2">
-                      <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => handleLocalAction("pause", selectedVideo.id)} disabled={selectedVideo.status.toLowerCase() === "paused"}><Pause className="size-3 mr-1" /> Tạm dừng</Button>
-                      <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => handleLocalAction("run", selectedVideo.id)} disabled={selectedVideo.status.toLowerCase() === "running"}><Play className="size-3 mr-1" /> Chạy</Button>
+                      <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => handleLocalAction("pause", selectedVideo.id)} disabled={!!actionBusyKey || selectedVideo.status.toLowerCase() === "paused"}><Pause className="size-3 mr-1" /> Tạm dừng</Button>
+                      <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => handleLocalAction("run", selectedVideo.id)} disabled={!!actionBusyKey || selectedVideo.status.toLowerCase() === "running"}><Play className="size-3 mr-1" /> Chạy</Button>
                     </div>
                   </CardHeader>
                   <CardContent className="flex-1 p-0 flex overflow-hidden">
@@ -909,7 +1018,7 @@ export function StoryStudio() {
                               />
                               <div className="flex justify-end gap-2">
                                 <Button variant="ghost" size="sm" className="text-[11px] h-8 font-bold uppercase" onClick={() => setShowRefinePrompt(false)}>Huỷ</Button>
-                                <Button size="sm" className="h-8 text-[11px] font-bold uppercase px-4 bg-primary hover:bg-primary/90" onClick={handleRefineSelectedStep}>Gửi yêu cầu</Button>
+                                <Button size="sm" className="h-8 text-[11px] font-bold uppercase px-4 bg-primary hover:bg-primary/90" onClick={handleRefineSelectedStep} disabled={!!actionBusyKey}>Gửi yêu cầu</Button>
                               </div>
                             </div>
                           )}
@@ -921,8 +1030,8 @@ export function StoryStudio() {
                                 <span className="text-[11px] font-bold uppercase tracking-wider text-foreground">Duyệt kết quả này?</span>
                               </div>
                               <div className="flex gap-1.5">
-                                <Button size="sm" className="h-8 text-[11px] px-4 font-bold uppercase tracking-wide bg-emerald-600 hover:bg-emerald-500 text-white" onClick={handleAcceptAndNext}>Duyệt</Button>
-                                <Button size="sm" variant="outline" className="h-8 text-[11px] font-bold uppercase tracking-wide border-border/70 hover:bg-muted/50" onClick={() => runStepAction("regenerate", selectedMarkerId!, selectedStepId!)}>Tạo lại</Button>
+                                <Button size="sm" className="h-8 text-[11px] px-4 font-bold uppercase tracking-wide bg-emerald-600 hover:bg-emerald-500 text-white" onClick={handleAcceptAndNext} disabled={!!actionBusyKey}>Duyệt</Button>
+                                <Button size="sm" variant="outline" className="h-8 text-[11px] font-bold uppercase tracking-wide border-border/70 hover:bg-muted/50" onClick={() => runStepAction("regenerate", selectedMarkerId!, selectedStepId!)} disabled={!!actionBusyKey}>Tạo lại</Button>
                                 <Button size="sm" variant="outline" className="h-8 text-[11px] font-bold uppercase tracking-wide border-border/70 hover:bg-muted/50" onClick={() => {
                                   setRefinePromptDraft(selectedStep?.modifierPrompt || "");
                                   setShowRefinePrompt(true);

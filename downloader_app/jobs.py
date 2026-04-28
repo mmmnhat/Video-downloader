@@ -50,6 +50,7 @@ COOKIE_DOMAIN_HINTS = {
     "yandex": ["yandex.ru", "yandex.com", "yandex.by", "yandex.kz", "yandex.ua", "yandex.com.tr"],
     "nicovideo": ["nicovideo.jp", "nico.ms"],
     "28lab": ["28lab.com"],
+    "snapchat": ["snapchat.com", "snap.com"],
 }
 FINAL_BATCH_STATUSES = {"completed", "completed_with_errors", "cancelled"}
 MAX_EVENT_BACKLOG = 500
@@ -895,12 +896,13 @@ class DownloadManager:
                         attempt_url = direct_url
                         print(f"[DEBUG] Threads scraper found direct URL: {attempt_url}", flush=True)
 
-                    if attempt.label == "dailymotion_no_impersonate_fallback":
-                        # This is a standard yt-dlp attempt but with no-impersonate
+                    if attempt.label in ("dailymotion_no_impersonate_fallback", "dailymotion_no_cookie_fallback"):
+                        # This is a standard yt-dlp attempt
                         attempt_url = item.source_url
 
-                    if attempt.label == "dailymotion_html_scraping_fallback":
-                        direct_url = self._resolve_dailymotion_direct_url(item.source_url, cookie_file_path=cookie_file_path)
+                    if attempt.label in ("dailymotion_html_scraping_fallback", "dailymotion_html_scraping_no_cookie_fallback"):
+                        cfp = cookie_file_path if attempt.label == "dailymotion_html_scraping_fallback" else None
+                        direct_url = self._resolve_dailymotion_direct_url(item.source_url, cookie_file_path=cfp)
                         if not direct_url:
                             last_error = "Could not scrape direct stream from Dailymotion metadata."
                             continue
@@ -1171,9 +1173,23 @@ class DownloadManager:
                     use_impersonation=False,
                 )
             )
+            # Dailymotion often gives 403 Forbidden with stale/partial cookies
+            attempts.append(
+                YtDlpAttempt(
+                    label="dailymotion_no_cookie_fallback",
+                    use_cookie_file=False,
+                )
+            )
             attempts.append(
                 YtDlpAttempt(
                     label="dailymotion_html_scraping_fallback",
+                    extra_args=(),
+                )
+            )
+            attempts.append(
+                YtDlpAttempt(
+                    label="dailymotion_html_scraping_no_cookie_fallback",
+                    use_cookie_file=False,
                     extra_args=(),
                 )
             )
@@ -1366,7 +1382,12 @@ class DownloadManager:
             return attempt_label == "default"
 
         if item.platform == "dailymotion":
-            return attempt_label in {"default", "dailymotion_no_impersonate_fallback"}
+            return attempt_label in {
+                "default", 
+                "dailymotion_no_impersonate_fallback",
+                "dailymotion_no_cookie_fallback",
+                "dailymotion_html_scraping_fallback",
+            }
 
         if item.platform == "yandex":
             return attempt_label == "default"

@@ -407,15 +407,85 @@ export type ThumbnailButton = {
   allowRegenerate: boolean;
   summary: string;
   fields: ThumbnailButtonField[];
+  isPinned?: boolean;
+};
+
+export type ThumbnailProfileEffect = {
+  buttonId: string;
+  fields: ThumbnailButtonField[];
 };
 
 export type ThumbnailProfile = {
   id: string;
   name: string;
   icon: string;
-  buttonIds: string[];
+  effects: ThumbnailProfileEffect[];
   description: string;
+  isPinned?: boolean;
 };
+
+export async function createThumbnailProfile(payload: {
+  id?: string;
+  name: string;
+  icon: string;
+  effects: ThumbnailProfileEffect[];
+  description: string;
+}) {
+  return requestJson<ThumbnailProfile>("/api/thumbnail/profiles", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteThumbnailProfile(id: string) {
+  return requestJson<{ success: boolean }>("/api/thumbnail/profiles/delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id }),
+  });
+}
+
+export async function togglePinThumbnailProfile(id: string) {
+  return requestJson<ThumbnailProfile>("/api/thumbnail/profiles/toggle-pin", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id }),
+  });
+}
+
+
+export async function selectThumbnailProject(projectId: string) {
+  return requestJson<ThumbnailProjectDetail>("/api/thumbnail/select-project", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ project_id: projectId }),
+  });
+}
+
+export async function selectThumbnailVersion(projectId: string, versionId: string) {
+  return requestJson<ThumbnailProjectDetail>("/api/thumbnail/select-version", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ project_id: projectId, version_id: versionId }),
+  });
+}
+
+export async function deleteThumbnailVersion(projectId: string, versionId: string) {
+  return requestJson<ThumbnailProjectDetail>("/api/thumbnail/delete-version", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ project_id: projectId, version_id: versionId }),
+  });
+}
+
+export async function renameThumbnailProject(projectId: string, name: string) {
+  return requestJson<ThumbnailProjectDetail>("/api/thumbnail/projects/rename", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ project_id: projectId, name }),
+  });
+}
 
 export type ThumbnailVersion = {
   id: string;
@@ -438,6 +508,7 @@ export type ThumbnailProjectSummary = {
   name: string;
   folder: string;
   sourceImagePath: string;
+  base64Image?: string;
   createdAt: string;
   updatedAt: string;
   selectedVersionId: string;
@@ -990,6 +1061,14 @@ export async function createThumbnailProject(payload: {
   });
 }
 
+export async function deleteThumbnailProject(projectId: string) {
+  return requestJson<{ ok: boolean }>("/api/thumbnail/projects/delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ project_id: projectId }),
+  });
+}
+
 export async function createThumbnailButton(payload: {
   id?: string;
   name: string;
@@ -1009,21 +1088,23 @@ export async function createThumbnailButton(payload: {
   });
 }
 
-export async function selectThumbnailProject(projectId: string) {
-  return requestJson<ThumbnailProjectDetail>("/api/thumbnail/select-project", {
+export async function deleteThumbnailButton(id: string) {
+  return requestJson<{ success: boolean }>("/api/thumbnail/buttons/delete", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ project_id: projectId }),
+    body: JSON.stringify({ id }),
   });
 }
 
-export async function selectThumbnailVersion(projectId: string, versionId: string) {
-  return requestJson<ThumbnailProjectDetail>("/api/thumbnail/select-version", {
+export async function togglePinThumbnailButton(id: string) {
+  return requestJson<ThumbnailButton>("/api/thumbnail/buttons/toggle-pin", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ project_id: projectId, version_id: versionId }),
+    body: JSON.stringify({ id }),
   });
 }
+
+
 
 export async function runThumbnailGeneration(payload: {
   projectId: string;
@@ -1034,6 +1115,11 @@ export async function runThumbnailGeneration(payload: {
   maskMode?: string;
   isRegenerate?: boolean;
   maskBase64?: string;
+  canvasGuide?: {
+    mode: "crop" | "artboard";
+    ratioLabel?: string | null;
+    rect: { x: number; y: number; width: number; height: number };
+  } | null;
 }): Promise<ThumbnailProjectDetail> {
   return requestJson<ThumbnailProjectDetail>("/api/thumbnail/run", {
     method: "POST",
@@ -1047,6 +1133,43 @@ export async function runThumbnailGeneration(payload: {
       mask_mode: payload.maskMode,
       is_regenerate: payload.isRegenerate ?? false,
       mask_base64: payload.maskBase64,
+      canvas_guide: payload.canvasGuide,
+    }),
+  });
+}
+
+export async function runThumbnailGenerationBatch(payload: {
+  projectId: string;
+  effects: Array<{
+    buttonId: string;
+    fieldValues?: Record<string, string | number | string[] | boolean>;
+  }>;
+  selectedMode?: string;
+  regenerateMode?: string;
+  maskMode?: string;
+  isRegenerate?: boolean;
+  maskBase64?: string;
+  canvasGuide?: {
+    mode: "crop" | "artboard";
+    ratioLabel?: string | null;
+    rect: { x: number; y: number; width: number; height: number };
+  } | null;
+}): Promise<ThumbnailProjectDetail> {
+  return requestJson<ThumbnailProjectDetail>("/api/thumbnail/run-batch", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      project_id: payload.projectId,
+      effects: payload.effects.map(e => ({
+        button_id: e.buttonId,
+        field_values: e.fieldValues,
+      })),
+      selected_mode: payload.selectedMode,
+      regenerate_mode: payload.regenerateMode,
+      mask_mode: payload.maskMode,
+      is_regenerate: payload.isRegenerate ?? false,
+      mask_base64: payload.maskBase64,
+      canvas_guide: payload.canvasGuide,
     }),
   });
 }
@@ -1055,6 +1178,11 @@ export async function runThumbnailProfile(payload: {
   projectId: string;
   profileId: string;
   maskBase64?: string;
+  canvasGuide?: {
+    mode: "crop" | "artboard";
+    ratioLabel?: string | null;
+    rect: { x: number; y: number; width: number; height: number };
+  } | null;
 }): Promise<ThumbnailProjectDetail> {
   return requestJson<ThumbnailProjectDetail>("/api/thumbnail/profile/run", {
     method: "POST",
@@ -1063,6 +1191,7 @@ export async function runThumbnailProfile(payload: {
       project_id: payload.projectId,
       profile_id: payload.profileId,
       mask_base64: payload.maskBase64,
+      canvas_guide: payload.canvasGuide,
     }),
   });
 }
@@ -1086,6 +1215,12 @@ export async function exportThumbnailImage(payload: {
       format: payload.format,
       size: payload.size,
     }),
+  });
+}
+
+export async function clearThumbnailCache() {
+  return requestJson<{ ok: boolean }>("/api/thumbnail/clear", {
+    method: "POST",
   });
 }
 

@@ -5,8 +5,8 @@ import threading
 import time
 from PyQt6.QtWidgets import QApplication, QMainWindow, QFileDialog
 from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtWebEngineCore import QWebEnginePage
-from PyQt6.QtCore import QUrl, QObject, pyqtSlot, QMetaObject, Qt, pyqtSignal, QSettings
+from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
+from PyQt6.QtCore import QUrl, QObject, pyqtSlot, QMetaObject, Qt, pyqtSignal, QSettings, QStandardPaths
 from PyQt6.QtGui import QIcon
 from pathlib import Path
 from downloader_app.runtime import set_ui_bridge
@@ -98,8 +98,25 @@ class DesktopWindow(QMainWindow):
         self.bridge = UIBridge(self)
         set_ui_bridge(self.bridge)
 
+        storage_root = Path(
+            QStandardPaths.writableLocation(
+                QStandardPaths.StandardLocation.AppDataLocation
+            )
+        )
+        profile_storage_path = storage_root / "webengine"
+        profile_cache_path = storage_root / "webengine-cache"
+        profile_storage_path.mkdir(parents=True, exist_ok=True)
+        profile_cache_path.mkdir(parents=True, exist_ok=True)
+
         self.browser = QWebEngineView()
-        
+        self.profile = QWebEngineProfile("VideoDownloader", self.browser)
+        self.profile.setPersistentStoragePath(str(profile_storage_path))
+        self.profile.setCachePath(str(profile_cache_path))
+        self.profile.setPersistentCookiesPolicy(
+            QWebEngineProfile.PersistentCookiesPolicy.AllowPersistentCookies
+        )
+        self.browser.setPage(QWebEnginePage(self.profile, self.browser))
+
         # Enable clipboard access and other modern features
         settings = self.browser.settings()
         settings.setAttribute(settings.WebAttribute.JavascriptCanAccessClipboard, True)
@@ -120,6 +137,8 @@ class DesktopWindow(QMainWindow):
 
 def run_desktop(url: str) -> int:
     app = QApplication(sys.argv)
+    app.setOrganizationName("Nhat")
+    app.setApplicationName("VideoDownloader")
     window = DesktopWindow(url)
     window.show()
     return app.exec()

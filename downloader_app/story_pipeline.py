@@ -456,14 +456,51 @@ class StoryPipelineManager:
             raise StoryPipelineError("folder_path la bat buoc")
 
         try:
-            videos = xmp_scanner.scan_folder(folder_path)
+            videos, diagnostics = xmp_scanner.scan_folder(folder_path)
         except Exception as exc:
             raise StoryPipelineError(f"Quet thu muc that bai: {exc}") from exc
 
         if not videos:
-            raise StoryPipelineError("Khong tim thay marker XMP nao trong thu muc nay. Hay dam bao ban da bat 'Write clip markers to XMP' trong Premiere.")
+            raise StoryPipelineError(self._build_xmp_import_error(diagnostics))
 
         return self.import_manifest({"manifest": {"videos": videos}})
+
+    def _build_xmp_import_error(self, diagnostics: dict) -> str:
+        video_count = len(diagnostics.get("video_files", []))
+        xmp_count = len(diagnostics.get("xmp_files", []))
+        videos_without_markers = diagnostics.get("videos_without_markers", [])
+        orphan_xmp_files = diagnostics.get("orphan_xmp_files", [])
+
+        if video_count == 0:
+            return (
+                "Khong tim thay file video nao trong thu muc nay hoac cac thu muc con. "
+                "Hay chon dung thu muc nguon chua clip Premiere."
+            )
+
+        message = (
+            f"Khong tim thay marker XMP hop le. Da quet {video_count} file video"
+            f" va {xmp_count} file .xmp trong ca thu muc con."
+        )
+
+        if xmp_count == 0:
+            message += " Khong thay sidecar .xmp nao; hay bat 'Write clip markers to XMP' trong Premiere hoac kiem tra marker da duoc ghi nhung vao file."
+        else:
+            message += " Co file .xmp nhung scanner khong trich xuat duoc marker hop le tu cac file do."
+
+        if not xmp_scanner.exiftool_cmd:
+            message += " ExifTool hien khong co san, nen app khong the doc embedded XMP mot cach day du."
+
+        if videos_without_markers:
+            preview = ", ".join(videos_without_markers[:3])
+            suffix = "..." if len(videos_without_markers) > 3 else ""
+            message += f" Video khong co marker: {preview}{suffix}."
+
+        if orphan_xmp_files:
+            preview = ", ".join(orphan_xmp_files[:3])
+            suffix = "..." if len(orphan_xmp_files) > 3 else ""
+            message += f" XMP khong khop ten clip: {preview}{suffix}."
+
+        return message
 
     def run_video(self, video_id: str) -> dict:
         with self._lock:
@@ -1440,8 +1477,8 @@ class StoryPipelineManager:
             "name": video.name,
             "status": video.status,
             "sourceVideoPath": video.source_video_path,
-            "createdAt": video.created_at.isoformat(),
-            "lastUpdatedAt": video.last_updated_at.isoformat(),
+            "createdAt": video.created_at,
+            "lastUpdatedAt": video.last_updated_at,
             "markerCount": len(video.markers),
             "stepTotal": sum(len(m.steps) for m in video.markers),
             "completedSteps": video.completed_steps,

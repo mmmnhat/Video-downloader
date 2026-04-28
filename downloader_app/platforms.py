@@ -119,6 +119,14 @@ PLATFORM_RULES = {
             }
         )
     ),
+    "snapchat": PlatformRule(
+        domains=frozenset(
+            {
+                "snapchat.com",
+                "snap.com",
+            }
+        )
+    ),
 }
 
 
