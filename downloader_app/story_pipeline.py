@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import shutil
 import threading
 import time
@@ -1401,7 +1402,14 @@ class StoryPipelineManager:
             video.video_prompt.strip(),
             step.modifier_prompt.strip(),
         ]
-        return "\n\n".join(part for part in parts if part)
+        prompt = "\n\n".join(part for part in parts if part)
+        if prompt:
+            return prompt
+
+        seed_prompt = marker.seed_prompt.strip()
+        if seed_prompt and not re.fullmatch(r"marker\s+\d+", seed_prompt, flags=re.IGNORECASE):
+            return seed_prompt
+        return "Create a high-quality image based on the uploaded reference image."
 
     def _parse_timestamp_ms(self, raw_value: object) -> int:
         if isinstance(raw_value, int):

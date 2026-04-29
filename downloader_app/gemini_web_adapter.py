@@ -1853,6 +1853,85 @@ class GeminiWebAdapter:
         right_key = ((right_parsed.netloc or "").lower(), right_parsed.path.rstrip("/"), right_query)
         return left_key == right_key
 
+    def _page_requires_sign_in(self, page) -> bool:
+        try:
+            if _looks_like_login_page(page.url):
+                return True
+        except Exception:
+            pass
+
+        try:
+            sign_in_locators = [
+                'button:has-text("Sign in")',
+                'a:has-text("Sign in")',
+                '[role="button"]:has-text("Sign in")',
+                'button:has-text("Đăng nhập")',
+                'a:has-text("Đăng nhập")',
+                '[role="button"]:has-text("Đăng nhập")',
+            ]
+            for selector in sign_in_locators:
+                locator = page.locator(selector)
+                count = locator.count()
+                for index in range(min(count, 5)):
+                    try:
+                        if locator.nth(index).is_visible():
+                            return True
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+
+        try:
+            body_text = (page.locator("body").inner_text() or "").lower()
+        except Exception:
+            body_text = ""
+
+        hard_markers = (
+            "sign in to upload files",
+            "sign in to use gemini",
+            "sign in to continue",
+            "đăng nhập để tải tệp lên",
+            "đăng nhập để tiếp tục",
+            "đăng nhập để dùng gemini",
+            "dang nhap de tai tep len",
+            "dang nhap de tiep tuc",
+        )
+        return any(marker in body_text for marker in hard_markers)
+
+    def _recover_session_from_live_browser(self, page, desired_url: str) -> bool:
+        cookies = _build_playwright_cookies_from_browser_session(GEMINI_AUTH_DOMAINS)
+        if not cookies:
+            return False
+
+        try:
+            page.context.add_cookies(cookies)
+        except Exception:
+            return False
+
+        try:
+            page.goto(desired_url, wait_until="domcontentloaded", timeout=35_000)
+        except Exception:
+            try:
+                page.reload(wait_until="domcontentloaded", timeout=35_000)
+            except Exception:
+                return False
+
+        deadline = time.monotonic() + 12
+        while time.monotonic() < deadline:
+            if not self._page_requires_sign_in(page):
+                try:
+                    if self._find_prompt_target(page) is not None:
+                        return True
+                except Exception:
+                    pass
+                try:
+                    if page.locator('input[type="file"]').count() > 0:
+                        return True
+                except Exception:
+                    pass
+            page.wait_for_timeout(300)
+        return False
+
     def _ensure_workspace_ready(self, page, *, target_url: str | None = None) -> None:
         desired_url = target_url or self._base_url
         try:
@@ -1870,11 +1949,22 @@ class GeminiWebAdapter:
                 "Chua tim thay session Gemini trong profile rieng cua app. Hay dang nhap Gemini roi thu lai."
             )
 
+        recovery_attempted = False
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
             if self._find_prompt_target(page) is not None:
                 return
 
+            if self._page_requires_sign_in(page):
+                if not recovery_attempted:
+                    recovery_attempted = True
+                    if self._recover_session_from_live_browser(page, desired_url):
+                        continue
+                raise GeminiWebAuthError(
+                    "Gemini dang o trang thai guest trong profile Story hien tai. "
+                    "Neu anh da dang nhap tren browser chinh, hay bam Dang nhap trong tab Story de mo dung profile rieng cua app, "
+                    "hoac chon lai browser/profile cho Story."
+                )
             try:
                 if page.locator('input[type="file"]').count() > 0:
                     return
@@ -1882,6 +1972,11 @@ class GeminiWebAdapter:
                 pass
             page.wait_for_timeout(350)
 
+        if self._page_requires_sign_in(page):
+            raise GeminiWebAuthError(
+                "Gemini dang o trang thai guest trong profile Story hien tai. "
+                "Hay dang nhap lai bang nut Dang nhap trong tab Story."
+            )
         raise GeminiWebError("Khong tim thay khung nhap prompt tren Gemini.")
 
     def _ensure_image_tool_selected(self, page) -> None:
@@ -2203,24 +2298,18 @@ class GeminiWebAdapter:
         composer = self._find_prompt_target(page)
         attach_buttons = self._find_attachment_buttons(page, composer)
         for button in attach_buttons:
-            try:
-                if self._set_file_via_file_chooser_click(page, button, input_image_path):
-                    return
-            except Exception:
-                pass
-
-            try:
-                button.click(force=True)
-            except Exception:
+            if not self._is_upload_menu_button(button):
                 try:
-                    button.evaluate("(el) => el.click()")
+                    if self._set_file_via_file_chooser_click(page, button, input_image_path):
+                        return
                 except Exception:
                     pass
-            page.wait_for_timeout(250)
+
+            if self._open_upload_menu_once(page, button):
+                if self._set_file_via_upload_menu_items(page, input_image_path):
+                    return
 
             if self._set_file_via_existing_inputs(page, input_image_path):
-                return
-            if self._set_file_via_upload_menu_items(page, input_image_path):
                 return
             if self._set_file_via_hidden_upload_triggers(page, input_image_path):
                 return
@@ -2230,6 +2319,11 @@ class GeminiWebAdapter:
         if self._set_file_via_hidden_upload_triggers(page, input_image_path):
             return
 
+        if self._page_requires_sign_in(page):
+            raise GeminiWebAuthError(
+                "Gemini hien chua cho phep upload file trong profile Story hien tai. "
+                "Hay dang nhap lai trong tab Story roi thu lai."
+            )
         raise GeminiWebError("Khong tim thay file input de upload anh vao Gemini.")
 
     def _submit_prompt(self, page, prompt: str) -> None:
@@ -2708,7 +2802,7 @@ class GeminiWebAdapter:
         return best
 
     def _set_file_via_existing_inputs(self, page, input_image_path: Path) -> bool:
-        file_inputs = page.locator('input[type="file"]')
+        file_inputs = page.locator('input[type="file"], input[accept*="image" i], input[accept*="jpeg" i], input[accept*="png" i]')
         try:
             count = file_inputs.count()
         except Exception:
@@ -2725,10 +2819,16 @@ class GeminiWebAdapter:
 
     def _set_file_via_hidden_upload_triggers(self, page, input_image_path: Path) -> bool:
         selectors = [
+            '[data-test-id*="upload" i]',
+            '[data-testid*="upload" i]',
+            '[data-test-id*="file" i]',
+            '[data-testid*="file" i]',
+            '[data-test-id*="image" i]',
+            '[data-testid*="image" i]',
             'button[data-test-id="hidden-local-image-upload-button"]',
             'button[data-test-id="hidden-local-file-upload-button"]',
-            'button[xapfileselectortrigger][data-test-id*="upload" i]',
-            'button[xapfileselectortrigger]',
+            '[xapfileselectortrigger][data-test-id*="upload" i]',
+            '[xapfileselectortrigger]',
         ]
 
         for selector in selectors:
@@ -2738,13 +2838,16 @@ class GeminiWebAdapter:
             except Exception:
                 count = 0
 
-            for index in reversed(range(count)):
+            for index in reversed(range(min(count, 40))):
                 if self._set_file_via_file_chooser_click(page, locator.nth(index), input_image_path, timeout_ms=1_000):
                     return True
 
         return False
 
     def _set_file_via_upload_menu_items(self, page, input_image_path: Path) -> bool:
+        if self._set_file_via_upload_text_items(page, input_image_path):
+            return True
+
         candidates: list[tuple[float, object]] = []
         selectors = [
             "[role='menuitem']",
@@ -2752,6 +2855,8 @@ class GeminiWebAdapter:
             "[role='button']",
             ".mat-mdc-menu-item",
             ".mat-mdc-list-item",
+            ".cdk-overlay-pane *",
+            "[role='menu'] *",
         ]
         preferred_patterns = [
             r"tải\s*tệp\s*lên",
@@ -2815,6 +2920,79 @@ class GeminiWebAdapter:
 
         return False
 
+    def _set_file_via_upload_text_items(self, page, input_image_path: Path) -> bool:
+        labels = (
+            "Upload files",
+            "Upload file",
+            "Add files",
+            "Add file",
+            "Tải tệp lên",
+            "Tải tệp",
+            "Tải file lên",
+            "Tải file",
+        )
+        targets: list[object] = []
+        seen_targets: set[str] = set()
+        for label in labels:
+            locators = []
+            try:
+                locators.append(page.get_by_text(label, exact=True))
+            except Exception:
+                pass
+            escaped_label = label.replace('"', '\\"')
+            locators.extend(
+                [
+                    page.locator(f'text="{escaped_label}"'),
+                    page.locator(f'[role="menuitem"]:has-text("{escaped_label}")'),
+                    page.locator(f'button:has-text("{escaped_label}")'),
+                    page.locator(f'div:has-text("{escaped_label}")'),
+                    page.locator(f'span:has-text("{escaped_label}")'),
+                ]
+            )
+
+            for locator in locators:
+                try:
+                    count = locator.count()
+                except Exception:
+                    count = 0
+                for index in range(min(count, 8)):
+                    candidate = locator.nth(index)
+                    try:
+                        if not candidate.is_visible():
+                            continue
+                        box = candidate.bounding_box()
+                        key = f"{label}:{round(box['x'])}:{round(box['y'])}:{round(box['width'])}:{round(box['height'])}" if box else f"{label}:{index}"
+                        if key in seen_targets:
+                            continue
+                        seen_targets.add(key)
+                        targets.append(candidate)
+                    except Exception:
+                        continue
+
+        for target in targets:
+            click_targets = [target]
+            for xpath in (
+                "xpath=ancestor-or-self::*[@role='menuitem' or @role='button' or self::button][1]",
+                "xpath=ancestor::*[contains(@class, 'menu') or contains(@class, 'item')][1]",
+            ):
+                try:
+                    click_targets.append(target.locator(xpath))
+                except Exception:
+                    pass
+
+            for click_target in click_targets:
+                try:
+                    if not click_target.is_visible():
+                        continue
+                except Exception:
+                    pass
+                if self._set_file_via_file_chooser_click(page, click_target, input_image_path, timeout_ms=2_500):
+                    return True
+                if self._set_file_via_existing_inputs(page, input_image_path):
+                    return True
+
+        return False
+
     def _set_file_via_file_chooser_click(self, page, target, input_image_path: Path, *, timeout_ms: int = 1_500) -> bool:
         clickers = [
             lambda: target.click(),
@@ -2830,10 +3008,60 @@ class GeminiWebAdapter:
                 page.wait_for_timeout(500)
                 return True
             except Exception:
+                if self._set_file_via_cdp_file_chooser(page, target, input_image_path, timeout_ms=timeout_ms):
+                    return True
                 if self._set_file_via_existing_inputs(page, input_image_path):
                     return True
                 continue
         return False
+
+    def _set_file_via_cdp_file_chooser(self, page, target, input_image_path: Path, *, timeout_ms: int = 1_500) -> bool:
+        try:
+            session = page.context.new_cdp_session(page)
+        except Exception:
+            return False
+
+        opened: dict[str, object] = {}
+
+        def _capture_file_chooser(params: dict) -> None:
+            opened.update(params or {})
+
+        try:
+            session.on("Page.fileChooserOpened", _capture_file_chooser)
+            session.send("Page.setInterceptFileChooserDialog", {"enabled": True})
+            try:
+                target.click(force=True)
+            except Exception:
+                target.evaluate("(el) => el.click()")
+
+            deadline = time.monotonic() + max(timeout_ms / 1000, 0.8)
+            while time.monotonic() < deadline and not opened:
+                page.wait_for_timeout(80)
+
+            backend_node_id = opened.get("backendNodeId")
+            if not backend_node_id:
+                return False
+
+            session.send(
+                "DOM.setFileInputFiles",
+                {
+                    "backendNodeId": backend_node_id,
+                    "files": [str(input_image_path)],
+                },
+            )
+            page.wait_for_timeout(500)
+            return True
+        except Exception:
+            return False
+        finally:
+            try:
+                session.send("Page.setInterceptFileChooserDialog", {"enabled": False})
+            except Exception:
+                pass
+            try:
+                session.detach()
+            except Exception:
+                pass
 
     def _button_text_blob(self, candidate) -> str:
         try:
@@ -2849,6 +3077,58 @@ class GeminiWebAdapter:
         except Exception:
             title = ""
         return " ".join([aria_label, inner_text, title]).strip().lower()
+
+    def _is_upload_menu_button(self, candidate) -> bool:
+        text_blob = self._normalize_ui_text(self._button_text_blob(candidate))
+        menu_tokens = (
+            "open upload file menu",
+            "upload file menu",
+            "open upload menu",
+            "attach file menu",
+            "add files menu",
+        )
+        return any(token in text_blob for token in menu_tokens)
+
+    def _open_upload_menu_once(self, page, button) -> bool:
+        if self._upload_menu_is_open(page):
+            return True
+        try:
+            button.click(force=True)
+        except Exception:
+            try:
+                button.evaluate("(el) => el.click()")
+            except Exception:
+                return False
+
+        deadline = time.monotonic() + 1.8
+        while time.monotonic() < deadline:
+            if self._upload_menu_is_open(page):
+                return True
+            page.wait_for_timeout(80)
+        return False
+
+    def _upload_menu_is_open(self, page) -> bool:
+        selectors = [
+            '[role="menuitem"]:has-text("Upload files")',
+            '[role="menuitem"]:has-text("Upload file")',
+            'text="Upload files"',
+            'text="Upload file"',
+            '[role="menu"]',
+            ".cdk-overlay-pane",
+        ]
+        for selector in selectors:
+            try:
+                locator = page.locator(selector)
+                count = locator.count()
+            except Exception:
+                count = 0
+            for index in range(min(count, 6)):
+                try:
+                    if locator.nth(index).is_visible():
+                        return True
+                except Exception:
+                    continue
+        return False
 
     def _collect_locator_source_urls(self, locator) -> list[str]:
         try:
@@ -2922,11 +3202,86 @@ class GeminiWebAdapter:
         return [str(item).strip() for item in raw_urls if str(item).strip()]
 
     def _is_probable_attachment_button(self, text_blob: str) -> bool:
-        attach_tokens = ["upload", "attach", "image", "photo", "file", "tải", "anh", "ảnh", "hình", "đính", "tệp"]
-        reject_tokens = ["bỏ chọn", "deselect", "công cụ", "toolbox", "tools", "micrô", "microphone", "gửi", "send"]
-        if any(token in text_blob for token in reject_tokens):
+        normalized = self._normalize_ui_text(text_blob)
+        attach_tokens = [
+            "upload",
+            "attach",
+            "attachment",
+            "add file",
+            "add files",
+            "add image",
+            "add photo",
+            "insert image",
+            "image",
+            "photo",
+            "file",
+            "tai",
+            "anh",
+            "hinh",
+            "dinh",
+            "tep",
+        ]
+        reject_tokens = [
+            "bo chon",
+            "deselect",
+            "cong cu",
+            "toolbox",
+            "tools",
+            "micro",
+            "microphone",
+            "voice",
+            "gui",
+            "send",
+            "submit",
+            "model",
+            "mode",
+        ]
+        if any(token in normalized for token in reject_tokens):
             return False
-        return any(token in text_blob for token in attach_tokens)
+        return any(token in normalized for token in attach_tokens)
+
+    def _has_upload_trigger_attrs(self, candidate) -> bool:
+        parts: list[str] = []
+        for attr in (
+            "aria-label",
+            "title",
+            "data-test-id",
+            "data-testid",
+            "class",
+            "jsaction",
+            "xapfileselectortrigger",
+            "xapfileselectortype",
+        ):
+            try:
+                value = candidate.get_attribute(attr)
+            except Exception:
+                value = ""
+            if value:
+                parts.append(value)
+        try:
+            parts.append(candidate.inner_text() or "")
+        except Exception:
+            pass
+
+        normalized = self._normalize_ui_text(" ".join(parts))
+        if not normalized:
+            return False
+        strong_tokens = (
+            "upload",
+            "file",
+            "image",
+            "photo",
+            "attach",
+            "xapfileselector",
+            "local",
+            "tai",
+            "tep",
+            "anh",
+            "hinh",
+            "dinh",
+        )
+        reject_tokens = ("send", "gui", "microphone", "voice", "toolbox", "model", "mode")
+        return any(token in normalized for token in strong_tokens) and not any(token in normalized for token in reject_tokens)
 
     def _find_attachment_buttons(self, page, composer) -> list[object]:
         """
@@ -2934,6 +3289,23 @@ class GeminiWebAdapter:
         Uses both specific ARIA labels and proximity to the prompt composer.
         """
         targeted_selectors = [
+            '[xapfileselectortrigger]',
+            '[data-test-id*="upload" i]',
+            '[data-testid*="upload" i]',
+            '[data-test-id*="file" i]',
+            '[data-testid*="file" i]',
+            '[data-test-id*="image" i]',
+            '[data-testid*="image" i]',
+            'button[aria-label*="file" i]',
+            'button[aria-label*="photo" i]',
+            '[role="button"][aria-label*="upload" i]',
+            '[role="button"][aria-label*="attach" i]',
+            '[role="button"][aria-label*="file" i]',
+            '[role="button"][aria-label*="image" i]',
+            '[role="button"][aria-label*="photo" i]',
+            'button:has(mat-icon:has-text("attach_file"))',
+            'button:has(mat-icon:has-text("add_photo_alternate"))',
+            'button:has(mat-icon:has-text("add"))',
             'button[aria-label*="upload" i]',
             'button[aria-label*="attach" i]',
             'button[aria-label*="add" i]',
@@ -2953,7 +3325,10 @@ class GeminiWebAdapter:
                 count = locators.count()
                 for i in range(count):
                     btn = locators.nth(i)
-                    if btn.is_visible() and self._is_probable_attachment_button(self._button_text_blob(btn)):
+                    if btn.is_visible() and (
+                        self._is_probable_attachment_button(self._button_text_blob(btn))
+                        or self._has_upload_trigger_attrs(btn)
+                    ):
                         candidates.append(btn)
             except Exception:
                 continue
@@ -2982,19 +3357,33 @@ class GeminiWebAdapter:
                     continue
 
                 combined = self._button_text_blob(btn)
+                normalized = self._normalize_ui_text(combined)
                 
-                if any(token in combined for token in send_tokens):
+                if any(token in combined for token in send_tokens) or any(token in normalized for token in ("send", "gui", "submit")):
                     continue
                 
                 score = 0.0
                 if self._is_probable_attachment_button(combined):
                     score += 200.0
+                if self._has_upload_trigger_attrs(btn):
+                    score += 180.0
                 
                 if composer_box:
                     box = btn.bounding_box()
                     if box:
-                        dist = abs(box["x"] - composer_box["x"]) + abs(box["y"] - composer_box["y"])
-                        score += max(0.0, 300.0 - dist)
+                        center_x = box["x"] + box["width"] / 2
+                        center_y = box["y"] + box["height"] / 2
+                        composer_center_x = composer_box["x"] + composer_box["width"] / 2
+                        composer_center_y = composer_box["y"] + composer_box["height"] / 2
+                        dist = abs(center_x - composer_center_x) + abs(center_y - composer_center_y)
+                        score += max(0.0, 420.0 - dist)
+                        if (
+                            box["y"] + box["height"] >= composer_box["y"] - 60
+                            and box["y"] <= composer_box["y"] + composer_box["height"] + 60
+                            and box["width"] <= 96
+                            and box["height"] <= 96
+                        ):
+                            score += 90.0
                 
                 if score > 0:
                     scored.append((score, btn))
@@ -3192,7 +3581,7 @@ class GeminiWebAdapter:
             "os.environ['FLOWGEN_GEM_SCAN_MODE'] = 'child'\n"
             "adapter = GeminiWebAdapter(runtime_root=Path(sys.argv[1]))\n"
             "gems = adapter._list_gems_with_playwright()\n"
-            "payload = json.dumps(gems, ensure_ascii=False)\n"
+            "payload = json.dumps(gems, ensure_ascii=True)\n"
             "sys.stdout.write('\\n__GEM_SCAN_JSON_START__\\n')\n"
             "sys.stdout.write(payload)\n"
             "sys.stdout.write('\\n__GEM_SCAN_JSON_END__\\n')\n"
