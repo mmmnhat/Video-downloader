@@ -222,6 +222,9 @@ export function StoryStudio() {
     useLocalStorage<string | null>("story.selectedStepId", null);
   const [selectedAttemptId, setSelectedAttemptId] =
     useLocalStorage<string | null>("story.selectedAttemptId", null);
+  const selectedMarkerIdRef = useRef<string | null>(selectedMarkerId);
+  const selectedStepIdRef = useRef<string | null>(selectedStepId);
+  const selectedAttemptIdRef = useRef<string | null>(selectedAttemptId);
   const [expandedMarkerIds, setExpandedMarkerIds] = useState<string[]>([]);
   const [sessionRefreshing, setSessionRefreshing] = useState(false);
   const [gemsRefreshing, setGemsRefreshing] = useState(false);
@@ -246,6 +249,18 @@ export function StoryStudio() {
     setActionBusyKey((current) => (current === key ? null : current));
   }, []);
 
+  useEffect(() => {
+    selectedMarkerIdRef.current = selectedMarkerId;
+  }, [selectedMarkerId]);
+
+  useEffect(() => {
+    selectedStepIdRef.current = selectedStepId;
+  }, [selectedStepId]);
+
+  useEffect(() => {
+    selectedAttemptIdRef.current = selectedAttemptId;
+  }, [selectedAttemptId]);
+
   const refreshSummaries = useCallback(async (silent = false) => {
     try {
       const summaries = await listStoryVideos();
@@ -265,17 +280,17 @@ export function StoryStudio() {
         setSelectedVideo(detail);
         setVideoPromptDraft(detail.videoPrompt || "");
         const fallbackMarker =
-          detail.markers.find((marker) => marker.id === selectedMarkerId) ??
+          detail.markers.find((marker) => marker.id === selectedMarkerIdRef.current) ??
           detail.markers.find((marker) => marker.status === "review") ??
           detail.markers[0] ??
           null;
         const fallbackStep =
-          fallbackMarker?.steps.find((step) => step.id === selectedStepId) ??
+          fallbackMarker?.steps.find((step) => step.id === selectedStepIdRef.current) ??
           fallbackMarker?.steps.find((step) => step.status === "review") ??
           fallbackMarker?.steps[0] ??
           null;
         const fallbackAttempt =
-          fallbackStep?.attempts.find((attempt) => attempt.id === selectedAttemptId) ??
+          fallbackStep?.attempts.find((attempt) => attempt.id === selectedAttemptIdRef.current) ??
           fallbackStep?.attempts.at(-1) ??
           null;
 
@@ -297,12 +312,15 @@ export function StoryStudio() {
     } finally {
       if (!options.silent) setDetailLoading(false);
     }
-  }, [selectedAttemptId, selectedMarkerId, selectedStepId, startTransition]);
+  }, [startTransition]);
 
   useEffect(() => {
+    let cancelled = false;
+
     const init = async () => {
       try {
         const bootstrap = await getStoryBootstrap();
+        if (cancelled) return;
         const fallbackVideoId =
           bootstrap.activeVideoId && bootstrap.videoSummaries.some((video) => video.id === bootstrap.activeVideoId)
             ? bootstrap.activeVideoId
@@ -315,21 +333,30 @@ export function StoryStudio() {
         setGlobalPrompt(bootstrap.globalPrompt || "");
         setGlobalPromptDraft(bootstrap.globalPrompt || "");
         setSelectedVideoId(fallbackVideoId);
+        setBootLoading(false);
 
-        const gems = await listStoryGems();
-        setAvailableGems(gems);
-
-        if (fallbackVideoId) {
-          await loadVideoDetail(fallbackVideoId, { silent: true });
-        }
+        void listStoryGems()
+          .then((gems) => {
+            if (!cancelled) {
+              setAvailableGems(gems);
+            }
+          })
+          .catch(() => {
+            // Keep first paint fast; user can retry manually.
+          });
       } catch {
+        if (cancelled) return;
+        setBootLoading(false);
         toast.error("Lỗi khởi tạo Tạo ảnh.");
       } finally {
-        setBootLoading(false);
+        if (cancelled) return;
       }
     };
     init();
-  }, [loadVideoDetail, selectedVideoId, setSelectedVideoId]);
+    return () => {
+      cancelled = true;
+    };
+  }, [setSelectedVideoId]);
 
   useEffect(() => {
     if (selectedVideoId && videoSummaries.some((video) => video.id === selectedVideoId)) {

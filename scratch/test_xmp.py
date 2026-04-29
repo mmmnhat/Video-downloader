@@ -48,5 +48,52 @@ def test_xmp_parsing():
     assert markers[2]['timeSec'] == 6.0 # 150 / 25
     print("Test passed!")
 
+def test_track_marker_parsing():
+    mock_xmp = """
+    <x:xmpmeta xmlns:x="adobe:ns:meta/">
+      <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+        <rdf:Description xmlns:xmpDM="http://ns.adobe.com/xmp/1.0/DynamicMedia/">
+          <xmpDM:duration xmpDM:value="120000" xmpDM:scale="1/1000" />
+          <xmpDM:Tracks>
+            <rdf:Bag>
+              <rdf:li rdf:parseType="Resource">
+                <rdf:Description xmpDM:frameRate="f25">
+                  <xmpDM:markers>
+                    <rdf:Seq>
+                      <rdf:li rdf:parseType="Resource">
+                        <rdf:Description
+                          xmpDM:startTime="150"
+                          xmpDM:name="Track Marker 1"
+                          xmpDM:comment="Nested description" />
+                      </rdf:li>
+                      <rdf:li rdf:parseType="Resource">
+                        <xmpDM:startTime>300</xmpDM:startTime>
+                        <xmpDM:name>Track Marker 2</xmpDM:name>
+                      </rdf:li>
+                    </rdf:Seq>
+                  </xmpDM:markers>
+                </rdf:Description>
+              </rdf:li>
+            </rdf:Bag>
+          </xmpDM:Tracks>
+        </rdf:Description>
+      </rdf:RDF>
+    </x:xmpmeta>
+    """
+
+    markers = xmp_scanner.parse_markers_from_xml(mock_xmp, "track_test.mp4")
+
+    print(f"Found {len(markers)} track markers")
+    for m in markers:
+        print(f" - {m['name']} at {m['timeSec']}s: {m['comment']}")
+
+    assert len(markers) == 2
+    assert markers[0]["name"] == "Track Marker 1"
+    assert markers[0]["timeSec"] == 6.0
+    assert markers[1]["name"] == "Track Marker 2"
+    assert markers[1]["timeSec"] == 12.0
+    print("Track test passed!")
+
 if __name__ == "__main__":
     test_xmp_parsing()
+    test_track_marker_parsing()

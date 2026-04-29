@@ -29,6 +29,7 @@ STORY_EXPORT_ROOT = cache_path("story_pipeline", "exports")
 STORY_CACHE_ROOT = cache_path("story_pipeline")
 MAX_EVENT_BACKLOG = 500
 SESSION_STATUS_TTL_SECONDS = 45.0
+GEMS_CACHE_TTL_SECONDS = 60.0
 
 
 def utc_now() -> str:
@@ -178,6 +179,9 @@ class StoryPipelineManager:
         self._workers: list[threading.Thread] = []
         self._session_status_cache: dict | None = None
         self._session_status_cache_time: float = 0.0
+        self._gems_cache: list[dict] | None = None
+        self._gems_cache_time: float = 0.0
+        self._gems_cache_key: tuple[str, int, str] | None = None
 
         # Reset thu muc hinh anh generated (cache) khi restart app de tranh rác
         shutil.rmtree(story_generated_root(), ignore_errors=True)
@@ -352,6 +356,19 @@ class StoryPipelineManager:
     def list_available_gems(self) -> list[dict]:
         if False: # Removed local preview
             return []
+        with self._lock:
+            cache_key = (
+                self._settings.gemini_base_url,
+                self._settings.gemini_response_timeout_ms,
+                self._settings.gemini_model,
+            )
+            if (
+                self._gems_cache is not None
+                and self._gems_cache_key == cache_key
+                and (time.monotonic() - self._gems_cache_time) < GEMS_CACHE_TTL_SECONDS
+            ):
+                return list(self._gems_cache)
+
         runtime_root = story_gem_scan_runtime_root()
         runtime_root.mkdir(parents=True, exist_ok=True)
         adapter = GeminiWebAdapter(
@@ -362,7 +379,12 @@ class StoryPipelineManager:
             model_name=self._settings.gemini_model,
             debug_selector=False,
         )
-        return adapter.list_gems()
+        gems = adapter.list_gems()
+        with self._lock:
+            self._gems_cache = list(gems)
+            self._gems_cache_time = time.monotonic()
+            self._gems_cache_key = cache_key
+        return gems
 
     def update_settings(self, payload: dict) -> dict:
         with self._lock:
@@ -403,6 +425,9 @@ class StoryPipelineManager:
             )
             self._refresh_adapter_locked()
             self._invalidate_session_status_cache_locked()
+            self._gems_cache = None
+            self._gems_cache_time = 0.0
+            self._gems_cache_key = None
             self._persist_state_locked()
             self._record_event_locked("story.settings.updated", {})
 
@@ -1480,9 +1505,9 @@ class StoryPipelineManager:
             "createdAt": video.created_at,
             "lastUpdatedAt": video.last_updated_at,
             "markerCount": len(video.markers),
-            "stepTotal": sum(len(m.steps) for m in video.markers),
-            "completedSteps": video.completed_steps,
-            "reviewSteps": video.review_steps,
+            "stepTotal": step_total,
+            "completedSteps": completed_steps,
+            "reviewSteps": review_steps,
             "previewPath": video.markers[0].input_frame_path if video.markers else None,
             "resultPreviewPath": result_preview_path,
             "acceptedSteps": accepted_steps_info,
@@ -1591,7 +1616,7 @@ class StoryPipelineManager:
         if isinstance(serialized_videos, list):
             for video_dict in serialized_videos:
                 try:
-                    video = self._deserialize_video_state(video_dict)
+                    video = self._deserialize_video(video_dict)
                     self._videos[video.id] = video
                 except Exception:
                     # Skip corrupted video entries
@@ -1620,7 +1645,7 @@ class StoryPipelineManager:
         if not self._videos:
             return
 
-        self._queued_video_ids.clear()
+        self._queued_marker_ids.clear()
         interruption_message = "Tien trinh bi gian doan khi khoi dong lai ung dung."
 
         for video in self._videos.values():

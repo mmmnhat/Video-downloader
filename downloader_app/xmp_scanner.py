@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -72,7 +73,6 @@ class XmpScanner:
                 videos_without_markers.append(relative_video)
                 continue
 
-            videos_with_markers.append(relative_video)
             # Prepare images for markers
             video_results = {
                 "name": relative_video,
@@ -86,30 +86,53 @@ class XmpScanner:
             frames_dir = folder / "_frames" / file_path.relative_to(folder).with_suffix("")
             frames_dir.mkdir(parents=True, exist_ok=True)
 
+            prepared_markers: list[dict] = []
             for idx, m in enumerate(markers, start=1):
                 frame_filename = f"marker_{idx:03d}_{m['timeSec']:.2f}.jpg"
                 frame_path = frames_dir / frame_filename
 
-                # Capture frame if it doesn't exist
-                if not frame_path.exists():
-                    self.capture_frame(str(file_path), m['timeSec'], str(frame_path))
+                # Capture frame if it doesn't exist yet.
+                # Do not fail the whole folder scan for one marker capture error.
+                if not frame_path.exists() or frame_path.stat().st_size <= 0:
+                    try:
+                        self.capture_frame(str(file_path), m["timeSec"], str(frame_path))
+                    except Exception as exc:
+                        print(f"[DEBUG] Skip marker {idx} for {file_path.name}: {exc}")
 
-                video_results["markers"].append({
+                if not frame_path.exists() or frame_path.stat().st_size <= 0:
+                    # Fallback: reuse previous successful frame to keep marker alignment.
+                    if prepared_markers:
+                        prev_frame = Path(prepared_markers[-1]["input_frame"])
+                        if prev_frame.exists() and prev_frame.stat().st_size > 0:
+                            try:
+                                shutil.copy2(prev_frame, frame_path)
+                            except Exception:
+                                pass
+
+                if not frame_path.exists() or frame_path.stat().st_size <= 0:
+                    continue
+
+                prepared_markers.append({
                     "index": idx,
-                    "name": m['name'],
-                    "comment": m['comment'],
-                    "timestamp_ms": int(m['timeSec'] * 1000),
+                    "name": m["name"],
+                    "comment": m["comment"],
+                    "timestamp_ms": int(m["timeSec"] * 1000),
                     "input_frame": str(frame_path),
-                    "seed_prompt": (m['name'] or f"Marker {idx}").strip(),
+                    "seed_prompt": (m["name"] or f"Marker {idx}").strip(),
                     "steps": [
                         {
-                            "title": (m['name'] or f"Marker {idx}").strip(),
-                            "modifier_prompt": (m['comment'] or "").strip(),
+                            "title": (m["name"] or f"Marker {idx}").strip(),
+                            "modifier_prompt": (m["comment"] or "").strip(),
                         }
                     ],
                 })
 
-            results.append(video_results)
+            if prepared_markers:
+                video_results["markers"] = prepared_markers
+                videos_with_markers.append(relative_video)
+                results.append(video_results)
+            else:
+                videos_without_markers.append(relative_video)
 
         orphan_xmp_files = [
             self._relative_display_path(xmp_path, folder)
@@ -290,8 +313,8 @@ class XmpScanner:
         markers = []
         try:
             # Adobe XMP often has garbage before/after the actual XML
-            # We try to find xmpmeta block, then fallback to rdf:RDF block
-            match = re.search(r"<(?:x:)?xmpmeta.*?</(?:x:)?xmpmeta>", xml_content, re.DOTALL | re.IGNORECASE)
+            # We try to find xmpmeta block, then fallback to rdf:RDF block.
+            match = re.search(r"<(?:[a-zA-Z0-9]+:)?xmpmeta.*?</(?:[a-zA-Z0-9]+:)?xmpmeta>", xml_content, re.DOTALL | re.IGNORECASE)
             if match:
                 clean_xml = match.group(0)
             else:
@@ -310,108 +333,53 @@ class XmpScanner:
             
             # Namespaces
             ns = {
-                'x': 'adobe:ns:meta/',
-                'rdf': 'http://www.w3.org/1999/02/22-rdf-syntax-ns#',
-                'xmpDM': 'http://ns.adobe.com/xmp/1.0/DynamicMedia/',
-                'xmp': 'http://ns.adobe.com/xap/1.0/',
+                "x": "adobe:ns:meta/",
+                "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
+                "xmpDM": "http://ns.adobe.com/xmp/1.0/DynamicMedia/",
+                "xmp": "http://ns.adobe.com/xap/1.0/",
             }
 
-            # 1. Standard Adobe markers (xmpDM:markers or xmp:Markers)
-            marker_list_elements = root.findall(".//xmpDM:markers//rdf:li", ns)
-            if not marker_list_elements:
-                marker_list_elements = root.findall(".//xmp:Markers//rdf:li", ns)
-            
-            # 2. Tracks markers (xmpDM:Tracks -> xmpDM:Track -> xmpDM:markers)
-            if not marker_list_elements:
-                marker_list_elements = root.findall(".//xmpDM:Track/xmpDM:markers/rdf:Seq/rdf:li", ns)
-            
-            # 3. Flexible search for any element that looks like a marker
-            if not marker_list_elements:
-                # Look for li elements that have a startTime either as attribute or child
-                all_li = root.findall(".//rdf:li", ns)
-                for li in all_li:
-                    has_start = any(li.get(f"{{{ns[p]}}}startTime") for p in ["xmpDM", "xmp"])
-                    if not has_start:
-                        has_start = any(li.find(f"{p}:startTime", ns) is not None for p in ["xmpDM", "xmp"])
-                    
-                    if has_start:
-                        marker_list_elements.append(li)
-            
-            if not marker_list_elements:
-                # Final desperate attempt: find ANY element with startTime (even if not in rdf:li)
-                for p in ["xmpDM", "xmp"]:
-                    starts = root.findall(f".//{{{ns[p]}}}startTime", ns) # As attribute? No, findall is for elements
-                    # Try finding elements that HAVE the attribute
-                    for elem in root.iter():
-                        if elem.get(f"{{{ns[p]}}}startTime"):
-                            marker_list_elements.append(elem)
-                        # Or are the startTime element themselves (meaning the parent is the marker)
-                        # But that's handled by finding child elements later.
-                
-                # Deduplicate
-                unique_elems = []
-                seen_id = set()
-                for e in marker_list_elements:
-                    if id(e) not in seen_id:
-                        unique_elems.append(e)
-                        seen_id.add(id(e))
-                marker_list_elements = unique_elems
-            
-            for markers_list in marker_list_elements:
-                # Check for various possible tag names for name, startTime, and comment
-                # They can be in attributes or child elements, and can use different namespaces
-                
-                name = ""
-                start_time_raw = ""
-                comment = ""
-                
-                # 1. Try attributes
-                for prefix in ["xmpDM", "xmp"]:
-                    p_ns = ns[prefix]
-                    if not name:
-                        name = markers_list.get(f"{{{p_ns}}}name", "")
-                    if not start_time_raw:
-                        start_time_raw = markers_list.get(f"{{{p_ns}}}startTime", "")
-                    if not comment:
-                        comment = markers_list.get(f"{{{p_ns}}}comment", "")
-                
-                # 2. Try child elements
-                if not name:
-                    for tag in ["xmpDM:name", "xmp:name", "name"]:
-                        elem = markers_list.find(tag, ns)
-                        if elem is not None:
-                            name = elem.text or ""
-                            break
-                
-                if not start_time_raw or start_time_raw == "0":
-                    for tag in ["xmpDM:startTime", "xmp:startTime", "startTime"]:
-                        elem = markers_list.find(tag, ns)
-                        if elem is not None:
-                            start_time_raw = elem.text or ""
-                            break
-                
-                if not comment:
-                    for tag in ["xmpDM:comment", "xmp:comment", "comment"]:
-                        elem = markers_list.find(tag, ns)
-                        if elem is not None:
-                            comment = elem.text or ""
-                            break
+            duration_seconds = self._extract_duration_seconds(root, ns)
 
-                # Skip if no valid start time found
+            # Prefer marker nodes scoped by track so we can read per-track frameRate.
+            marker_nodes_with_fps: list[tuple[ET.Element, float | None]] = []
+            for track_desc in root.findall(".//xmpDM:Tracks//rdf:Description", ns):
+                fps = self._parse_frame_rate(track_desc.get(f"{{{ns['xmpDM']}}}frameRate", ""))
+                for marker_node in track_desc.findall("./xmpDM:markers/rdf:Seq/rdf:li", ns):
+                    marker_nodes_with_fps.append((marker_node, fps))
+
+            if not marker_nodes_with_fps:
+                marker_nodes_with_fps = [
+                    (marker_node, None)
+                    for marker_node in root.findall(".//xmpDM:markers/rdf:Seq/rdf:li", ns)
+                ]
+                if not marker_nodes_with_fps:
+                    marker_nodes_with_fps = [
+                        (marker_node, None)
+                        for marker_node in root.findall(".//xmp:Markers//rdf:li", ns)
+                    ]
+
+            for marker_node, fps in marker_nodes_with_fps:
+                name = self._extract_marker_field(marker_node, "name", ns)
+                start_time_raw = self._extract_marker_field(marker_node, "startTime", ns)
+                comment = self._extract_marker_field(marker_node, "comment", ns)
                 if not start_time_raw:
                     continue
-                    
-                try:
-                    time_sec = self.parse_adobe_time(start_time_raw)
-                except Exception:
-                    continue
-                
+
+                time_sec = self.parse_adobe_time(start_time_raw, frame_rate=fps)
+                time_sec = self._coerce_time_with_duration(
+                    raw=start_time_raw,
+                    parsed_seconds=time_sec,
+                    duration_seconds=duration_seconds,
+                    frame_rate=fps,
+                )
+
                 markers.append({
                     "videoPath": video_path,
                     "markerIndex": len(markers) + 1,
                     "timeSec": time_sec,
                     "name": name or f"Marker {len(markers) + 1}",
-                    "comment": comment
+                    "comment": comment,
                 })
                 print(f"[DEBUG] Parsed marker: '{name}' at {time_sec}s")
 
@@ -424,7 +392,152 @@ class XmpScanner:
             
         return markers
 
-    def parse_adobe_time(self, time_raw: str) -> float:
+    def _extract_duration_seconds(self, root: ET.Element, ns: dict[str, str]) -> float | None:
+        duration_elem = root.find(".//xmpDM:duration", ns)
+        if duration_elem is None:
+            return None
+        raw_value = str(duration_elem.get(f"{{{ns['xmpDM']}}}value", "")).strip()
+        raw_scale = str(duration_elem.get(f"{{{ns['xmpDM']}}}scale", "")).strip()
+        if not raw_value:
+            return None
+        try:
+            value = float(raw_value)
+        except ValueError:
+            return None
+
+        if raw_scale and "/" in raw_scale:
+            try:
+                numerator_text, denominator_text = raw_scale.split("/", 1)
+                numerator = float(numerator_text.strip() or "0")
+                denominator = float(denominator_text.strip() or "0")
+                if denominator > 0:
+                    return value * (numerator / denominator)
+            except ValueError:
+                pass
+
+        if raw_scale:
+            try:
+                scale = float(raw_scale)
+                return value * scale
+            except ValueError:
+                pass
+
+        return value / 1000.0
+
+    def _parse_frame_rate(self, raw: str) -> float | None:
+        text = str(raw or "").strip().lower()
+        if not text:
+            return None
+        if text.startswith("f"):
+            text = text[1:].strip()
+        if not text:
+            return None
+
+        if "/" in text:
+            try:
+                numerator_text, denominator_text = text.split("/", 1)
+                numerator = float(numerator_text.strip() or "0")
+                denominator = float(denominator_text.strip() or "0")
+                if denominator > 0:
+                    return numerator / denominator
+            except ValueError:
+                return None
+
+        try:
+            fps = float(text)
+        except ValueError:
+            return None
+        if fps <= 0:
+            return None
+        return fps
+
+    def _coerce_time_with_duration(
+        self,
+        *,
+        raw: str,
+        parsed_seconds: float,
+        duration_seconds: float | None,
+        frame_rate: float | None,
+    ) -> float:
+        if duration_seconds is None or duration_seconds <= 0:
+            return max(0.0, parsed_seconds)
+        if parsed_seconds <= duration_seconds + 0.5:
+            return max(0.0, parsed_seconds)
+
+        text = str(raw or "").strip()
+        if not text:
+            return max(0.0, parsed_seconds)
+        if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", text):
+            return max(0.0, parsed_seconds)
+
+        if frame_rate and frame_rate > 0:
+            try:
+                frame_based = float(text) / frame_rate
+                if frame_based <= duration_seconds + 0.5:
+                    return max(0.0, frame_based)
+            except ValueError:
+                pass
+
+        try:
+            ms_based = float(text) / 1000.0
+            if ms_based <= duration_seconds + 0.5:
+                return max(0.0, ms_based)
+        except ValueError:
+            pass
+
+        try:
+            ticks_based = float(text) / self.ticks_per_second
+            if ticks_based <= duration_seconds + 0.5:
+                return max(0.0, ticks_based)
+        except ValueError:
+            pass
+
+        return max(0.0, parsed_seconds)
+
+    def _extract_marker_field(self, marker_node: ET.Element, field_name: str, ns: dict[str, str]) -> str:
+        candidate_namespaces = [ns["xmpDM"]]
+        xmp_ns = ns.get("xmp")
+        if xmp_ns:
+            candidate_namespaces.append(xmp_ns)
+
+        for namespace in candidate_namespaces:
+            direct_attr = marker_node.get(f"{{{namespace}}}{field_name}", "")
+            if direct_attr:
+                return direct_attr.strip()
+
+        for prefix in ("xmpDM", "xmp"):
+            direct_child = marker_node.find(f"{prefix}:{field_name}", ns)
+            if direct_child is not None and direct_child.text:
+                value = direct_child.text.strip()
+                if value:
+                    return value
+
+        nested_desc = marker_node.find(".//rdf:Description", ns)
+        if nested_desc is not None:
+            for namespace in candidate_namespaces:
+                nested_attr = nested_desc.get(f"{{{namespace}}}{field_name}", "")
+                if nested_attr:
+                    return nested_attr.strip()
+
+            for prefix in ("xmpDM", "xmp"):
+                nested_child = nested_desc.find(f"{prefix}:{field_name}", ns)
+                if nested_child is not None and nested_child.text:
+                    value = nested_child.text.strip()
+                    if value:
+                        return value
+
+        wanted = field_name.lower()
+        for elem in marker_node.iter():
+            if not isinstance(elem.tag, str):
+                continue
+            local_name = elem.tag.split("}", 1)[-1].lower()
+            if local_name == wanted and elem.text:
+                value = elem.text.strip()
+                if value:
+                    return value
+        return ""
+
+    def parse_adobe_time(self, time_raw: str, frame_rate: float | None = None) -> float:
         """
         Adobe time can be:
         - Plain number (ticks)
@@ -432,21 +545,60 @@ class XmpScanner:
         """
         if not time_raw:
             return 0.0
-        
-        if 'f' in time_raw:
-            parts = time_raw.split('f')
+
+        raw = str(time_raw).strip()
+        if not raw:
+            return 0.0
+
+        if "/" in raw:
+            parts = [part.strip() for part in raw.split("/", 1)]
+            if len(parts) == 2:
+                try:
+                    value = float(parts[0])
+                    base = float(parts[1])
+                    if base > 0:
+                        return value / base
+                except ValueError:
+                    pass
+
+        f_match = re.fullmatch(r"\s*([0-9]+(?:\.[0-9]+)?)\s*[fF]\s*([0-9]+(?:\.[0-9]+)?)\s*", raw)
+        if f_match:
             try:
-                value = int(parts[0])
-                base = int(parts[1])
-                return value / base
-            except (ValueError, IndexError):
-                return 0.0
-        
+                value = float(f_match.group(1))
+                base = float(f_match.group(2))
+                if base > 0:
+                    return value / base
+            except ValueError:
+                pass
+
+        if ":" in raw or ";" in raw:
+            normalized = raw.replace(";", ":")
+            parts = normalized.split(":")
+            try:
+                if len(parts) == 4:
+                    hh, mm, ss, ff = [float(part.strip() or "0") for part in parts]
+                    return hh * 3600.0 + mm * 60.0 + ss + (ff / 30.0)
+                if len(parts) == 3:
+                    hh, mm, ss = [float(part.strip() or "0") for part in parts]
+                    return hh * 3600.0 + mm * 60.0 + ss
+                if len(parts) == 2:
+                    mm, ss = [float(part.strip() or "0") for part in parts]
+                    return mm * 60.0 + ss
+            except ValueError:
+                pass
+
         try:
-            # Assume ticks
-            return int(time_raw) / self.ticks_per_second
+            numeric = float(raw)
         except ValueError:
             return 0.0
+
+        if frame_rate and frame_rate > 0 and re.fullmatch(r"[0-9]+", raw):
+            return max(0.0, numeric / frame_rate)
+
+        if numeric >= (self.ticks_per_second / 10):
+            return numeric / self.ticks_per_second
+
+        return max(0.0, numeric)
 
     def capture_frame(self, video_path: str, timestamp_sec: float, output_path: str):
         """
@@ -454,29 +606,64 @@ class XmpScanner:
         """
         if not self.ffmpeg_cmd:
             raise RuntimeError("Khong tim thay ffmpeg. Hay dam bao ffmpeg co trong PATH hoac thu muc vendor.")
+        out_path = Path(output_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Command: ffmpeg -ss [time] -i [video] -frames:v 1 -q:v 2 [output]
-        # We use -ss before -i for fast seeking
-        cmd = [
-            self.ffmpeg_cmd,
-            "-y",
-            "-ss", str(timestamp_sec),
-            "-i", video_path,
-            "-frames:v", "1",
-            "-q:v", "2",
-            output_path
-        ]
-        
-        try:
-            # creationflags to hide window on Windows
+        def _run_capture(ts: float) -> tuple[bool, str]:
+            cmd = [
+                self.ffmpeg_cmd,
+                "-y",
+                "-hide_banner",
+                "-loglevel", "error",
+                "-ss", str(max(0.0, ts)),
+                "-i", video_path,
+                "-frames:v", "1",
+                "-update", "1",
+                "-q:v", "2",
+                output_path,
+            ]
+
             kwargs = {}
             if os.name == "nt":
-                kwargs["creationflags"] = 0x08000000 # CREATE_NO_WINDOW
-            
-            subprocess.run(cmd, check=True, capture_output=True, **kwargs)
-        except subprocess.CalledProcessError as e:
-            print(f"[DEBUG] FFmpeg frame capture failed: {e.stderr.decode()}")
-            raise RuntimeError(f"FFmpeg failed to capture frame: {e.stderr.decode()}")
+                kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
+
+            completed = subprocess.run(
+                cmd,
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                **kwargs,
+            )
+            stderr_text = (completed.stderr or "").strip()
+            if completed.returncode != 0:
+                return False, stderr_text
+            if not out_path.exists() or out_path.stat().st_size <= 0:
+                return False, stderr_text or "FFmpeg khong tao duoc frame output."
+            return True, stderr_text
+
+        timestamp_candidates = [float(timestamp_sec), max(0.0, float(timestamp_sec) - 0.2), 0.0]
+        seen: set[float] = set()
+        unique_candidates: list[float] = []
+        for value in timestamp_candidates:
+            rounded = round(value, 3)
+            if rounded in seen:
+                continue
+            seen.add(rounded)
+            unique_candidates.append(value)
+
+        last_error = ""
+        for ts in unique_candidates:
+            ok, err = _run_capture(ts)
+            if ok:
+                return
+            if err:
+                last_error = err
+
+        detail = last_error or "Khong ro nguyen nhan."
+        print(f"[DEBUG] FFmpeg frame capture failed: {detail}")
+        raise RuntimeError(f"FFmpeg failed to capture frame: {detail}")
 
 
 # Singleton instance
