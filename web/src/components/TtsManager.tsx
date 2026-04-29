@@ -24,6 +24,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { SessionStatusAlert } from "@/components/ui/session-status-alert";
 import { TooltipFieldLabel } from "@/components/ui/tooltip-field-label";
+import { VoicePicker } from "@/components/ui/voice-picker";
 import {
   resolveSequenceRangeInput,
   type SequenceRangeMode,
@@ -809,28 +810,13 @@ export default function TtsManager() {
                 Giọng My Voice
               </TooltipFieldLabel>
               <div className="flex items-center gap-2">
-                <Select
+                <VoicePicker
+                  voices={myVoices}
                   value={voiceQuery || ""}
                   onValueChange={setVoiceQuery}
-                >
-                  <SelectTrigger className="h-8 rounded-full bg-muted/20 border-border/70 text-xs flex-1">
-                    <SelectValue placeholder="Chọn giọng đọc..." />
-                  </SelectTrigger>
-                  <SelectContent className="max-h-72">
-                    {voices.map((v) => (
-                      <SelectItem key={v.voiceId} value={v.voiceId}>
-                        <div className="flex items-center gap-2">
-                          {v.previewUrl && (
-                            <div className="size-4 rounded-full overflow-hidden border border-border/50">
-                              <img src={v.previewUrl} alt="" className="size-full object-cover" />
-                            </div>
-                          )}
-                          <span className="truncate">{v.name}</span>
-                        </div>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  disabled={voicesLoading || myVoices.length === 0}
+                  className="h-8 flex-1 rounded-full bg-muted/20 border-border/70 text-xs"
+                />
                 <Button
                   type="button"
                   variant="ghost"

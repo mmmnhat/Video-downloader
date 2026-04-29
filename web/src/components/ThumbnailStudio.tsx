@@ -485,10 +485,10 @@ export default function ThumbnailStudio() {
     })();
   }, []);
 
-  const buttons = bootstrap?.buttons ?? [];
-  const profiles = bootstrap?.profiles ?? [];
+  const buttons = useMemo(() => bootstrap?.buttons ?? [], [bootstrap?.buttons]);
+  const profiles = useMemo(() => bootstrap?.profiles ?? [], [bootstrap?.profiles]);
 
-  const versions = activeProject?.versions ?? [];
+  const versions = useMemo(() => activeProject?.versions ?? [], [activeProject?.versions]);
   const selectedVersion = activeProject?.currentVersion ?? versions[versions.length - 1] ?? null;
 
   const beforeVersion = useMemo(() => {
@@ -498,6 +498,26 @@ export default function ThumbnailStudio() {
     }
     return activeProject.versions[0];
   }, [activeProject, selectedVersion]);
+  const sortedButtons = useMemo(
+    () => buttons.slice().sort((a, b) => Number(Boolean(b.isPinned)) - Number(Boolean(a.isPinned))),
+    [buttons],
+  );
+  const sortedProfiles = useMemo(
+    () => profiles.slice().sort((a, b) => Number(Boolean(b.isPinned)) - Number(Boolean(a.isPinned))),
+    [profiles],
+  );
+  const sortedProjects = useMemo(
+    () =>
+      (bootstrap?.projects ?? [])
+        .slice()
+        .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()),
+    [bootstrap?.projects],
+  );
+  const reversedVersions = useMemo(() => versions.slice().reverse(), [versions]);
+  const versionImages = useMemo(() => versions.filter((v) => v.outputImagePath), [versions]);
+  const selectedImageUrl = selectedVersion?.outputImagePath
+    ? getThumbnailAssetUrl(selectedVersion.outputImagePath)
+    : (activeProject?.base64Image || "");
 
   const applyCanvasGuideToFields = useCallback((buttonId: string, fields: ThumbnailButtonField[]) => {
     if (buttonId !== "extend-wide" || canvasGuide?.mode !== "artboard" || !canvasGuide.ratioLabel) {
@@ -1105,7 +1125,7 @@ export default function ThumbnailStudio() {
                 </div>
                 
                 <div className="grid grid-cols-2 gap-2">
-                  {buttons.sort((a, b) => (b.isPinned ? 1 : 0) - (a.isPinned ? 1 : 0)).map(b => (
+                  {sortedButtons.map(b => (
                     <div key={b.id} className="relative group">
                       <button 
                         draggable="true"
@@ -1116,7 +1136,7 @@ export default function ThumbnailStudio() {
                         onClick={() => {
                           if (mainPanelTab === "canvas") {
                             const newEffect = buildEffectFromButton(b);
-                            setActiveEffects([...activeEffects, newEffect]);
+                            setActiveEffects((current) => [...current, newEffect]);
                             toast.success(`Đã thêm ${b.name}`);
                           } else {
                             handleEditButton(b);
@@ -1159,7 +1179,7 @@ export default function ThumbnailStudio() {
               </TabsContent>
 
               <TabsContent value="profiles" className="m-0 p-4 space-y-3">
-                 {profiles.sort((a, b) => (b.isPinned ? 1 : 0) - (a.isPinned ? 1 : 0)).map(p => (
+                 {sortedProfiles.map(p => (
                    <div key={p.id} className="relative group/prof">
                     <button 
                       onClick={() => {
@@ -1215,7 +1235,7 @@ export default function ThumbnailStudio() {
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
                   <Input placeholder="Tìm dự án..." className="h-9 pl-9 bg-muted/20 border-border/50 rounded-xl" />
                 </div>
-                {bootstrap?.projects?.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()).map(p => (
+                {sortedProjects.map(p => (
                   <div key={p.id} className="relative group">
                     <button
                       onClick={() => void handleSelectProject(p.id)}
@@ -1586,8 +1606,7 @@ export default function ThumbnailStudio() {
                 <div className="h-full flex flex-col">
                     <div className="flex-1 relative">
                       <MaskCanvas 
-                        key={selectedVersion?.id ?? activeProject.id}
-                        imageUrl={selectedVersion?.outputImagePath ? getThumbnailAssetUrl(selectedVersion.outputImagePath) : (activeProject?.base64Image || "")}
+                        imageUrl={selectedImageUrl}
                         onMaskChange={setMaskBase64}
                         onGuideChange={setCanvasGuide}
                         keepViewState={false}
@@ -1636,7 +1655,7 @@ export default function ThumbnailStudio() {
                 </div>
                 <ScrollArea className="flex-1 w-full">
                   <div className="flex flex-row p-2 gap-2 min-w-max">
-                    {versions.slice().reverse().map((v, idx) => (
+                    {reversedVersions.map((v, idx) => (
                       <div
                         key={v.id}
                         onClick={() => void handleSelectVersion(v.id)}
@@ -1698,9 +1717,8 @@ export default function ThumbnailStudio() {
 
         {/* -------------------- GALLERY PREVIEW OVERLAY -------------------- */}
         {galleryPreviewVersionId !== null && activeProject && (() => {
-          const versionImgs = versions.filter(v => v.outputImagePath);
-          const currentGalleryIdx = versionImgs.findIndex(v => v.id === galleryPreviewVersionId);
-          const currentGalleryVersion = versionImgs[currentGalleryIdx];
+          const currentGalleryIdx = versionImages.findIndex(v => v.id === galleryPreviewVersionId);
+          const currentGalleryVersion = versionImages[currentGalleryIdx];
           // Resolve which slot this version belongs to for A/B badge
           const getSlot = (id: string) => {
             if (id === compareVersionAId) return "A";
@@ -1723,7 +1741,7 @@ export default function ThumbnailStudio() {
                 <div className="flex items-center gap-3">
                   <SplitSquareVertical className="size-5 text-primary" />
                   <span className="text-sm font-black uppercase tracking-widest text-white">Gallery · {activeProject.name}</span>
-                  <Badge variant="outline" className="text-[9px] border-white/20 text-white/50">{versionImgs.length} ảnh</Badge>
+                  <Badge variant="outline" className="text-[9px] border-white/20 text-white/50">{versionImages.length} ảnh</Badge>
                 </div>
                 <div className="flex items-center gap-2">
                   {canCompare && (
@@ -1755,7 +1773,7 @@ export default function ThumbnailStudio() {
                   size="icon"
                   className="h-10 w-10 rounded-full bg-white/10 hover:bg-white/20 text-white shrink-0"
                   disabled={currentGalleryIdx <= 0}
-                  onClick={() => currentGalleryIdx > 0 && setGalleryPreviewVersionId(versionImgs[currentGalleryIdx - 1].id)}
+                  onClick={() => currentGalleryIdx > 0 && setGalleryPreviewVersionId(versionImages[currentGalleryIdx - 1].id)}
                 >
                   <ChevronDown className="size-5 rotate-90" />
                 </Button>
@@ -1823,8 +1841,8 @@ export default function ThumbnailStudio() {
                   variant="ghost"
                   size="icon"
                   className="h-10 w-10 rounded-full bg-white/10 hover:bg-white/20 text-white shrink-0"
-                  disabled={currentGalleryIdx >= versionImgs.length - 1}
-                  onClick={() => currentGalleryIdx < versionImgs.length - 1 && setGalleryPreviewVersionId(versionImgs[currentGalleryIdx + 1].id)}
+                  disabled={currentGalleryIdx >= versionImages.length - 1}
+                  onClick={() => currentGalleryIdx < versionImages.length - 1 && setGalleryPreviewVersionId(versionImages[currentGalleryIdx + 1].id)}
                 >
                   <ChevronDown className="size-5 -rotate-90" />
                 </Button>
@@ -1834,7 +1852,7 @@ export default function ThumbnailStudio() {
               <div className="shrink-0 border-t border-white/10 p-4" onClick={e => e.stopPropagation()}>
                 <p className="text-[9px] text-white/30 font-bold uppercase mb-2">Chọn A và B để so sánh · click thumbnail để chọn</p>
                 <div className="flex gap-2 overflow-x-auto pb-1">
-                  {versionImgs.map((v) => {
+                  {versionImages.map((v) => {
                     const slot = getSlot(v.id);
                     return (
                       <button

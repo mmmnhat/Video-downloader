@@ -1,5 +1,5 @@
 {
-  "activeProjectId": "thumb-c8f915fdfd",
+  "activeProjectId": "thumb-5edb963df2",
   "buttons": [
     {
       "id": "change-color",
@@ -11,6 +11,7 @@
       "create_new_chat": true,
       "allow_regenerate": true,
       "summary": "Đổi đúng màu vùng đã chọn mà không làm lệch phần còn lại.",
+      "is_pinned": false,
       "fields": [
         {
           "key": "object",
@@ -48,19 +49,69 @@
       "create_new_chat": true,
       "allow_regenerate": true,
       "summary": "Xóa logo, chữ hoặc chi tiết thừa theo vùng mask đỏ.",
+      "is_pinned": false,
       "fields": []
     },
     {
       "id": "extend-wide",
-      "name": "Extend 16:9",
+      "name": "Extend Canvas",
       "icon": "🖼️",
       "category": "Khung hình",
-      "prompt_template": "Extend this image to a clean 16:9 thumbnail composition.\nPreserve the subject scale, identity, and lighting.\nFill new space naturally for YouTube thumbnail framing.",
+      "prompt_template": "Extend this image to a clean {target_ratio} thumbnail composition.\n{artboard_hint}\nPreserve the subject scale, identity, and lighting.\nFill new space naturally for the new frame while respecting the intended composition.",
       "requires_mask": false,
       "create_new_chat": true,
       "allow_regenerate": true,
-      "summary": "Mở rộng khung hình sang 16:9 để chuẩn bị xuất thumbnail.",
-      "fields": []
+      "summary": "Mở rộng khung hình theo tỉ lệ mong muốn để chuẩn bị xuất thumbnail.",
+      "is_pinned": false,
+      "fields": [
+        {
+          "key": "target_ratio",
+          "label": "Tỉ lệ đích",
+          "type": "select",
+          "value": "16:9",
+          "tooltip": "Chọn tỉ lệ khung hình muốn mở rộng tới.",
+          "options": [
+            "16:9",
+            "4:5",
+            "1:1",
+            "3:4",
+            "2:3",
+            "9:16",
+            "21:9",
+            "custom"
+          ],
+          "min": null,
+          "max": null,
+          "required": true,
+          "visible_if": null
+        },
+        {
+          "key": "custom_ratio",
+          "label": "Tỉ lệ custom",
+          "type": "text",
+          "value": "",
+          "tooltip": "Nhập tỉ lệ tự do, ví dụ 5:4 hoặc 7:10.",
+          "options": [],
+          "min": null,
+          "max": null,
+          "required": false,
+          "visible_if": {
+            "target_ratio": "custom"
+          }
+        },
+        {
+          "key": "artboard_hint",
+          "label": "Ghi chú artboard",
+          "type": "textarea",
+          "value": "Keep the main subject balanced inside the new frame.",
+          "tooltip": "Gợi ý bố cục bổ sung, có thể tự động cập nhật từ tool artboard trên canvas.",
+          "options": [],
+          "min": null,
+          "max": null,
+          "required": false,
+          "visible_if": null
+        }
+      ]
     },
     {
       "id": "shock-face",
@@ -72,6 +123,7 @@
       "create_new_chat": true,
       "allow_regenerate": true,
       "summary": "Đẩy biểu cảm khuôn mặt mạnh hơn nhưng giữ nhận diện nhân vật.",
+      "is_pinned": false,
       "fields": [
         {
           "key": "expression",
@@ -107,12 +159,12 @@
   ],
   "projects": [
     {
-      "id": "thumb-c8f915fdfd",
+      "id": "thumb-5edb963df2",
       "name": "Dự án mới",
-      "folder": "C:\\Users\\ad\\Downloads\\Video download\\cache\\thumbnail_pipeline\\projects\\D_n_m_i",
-      "source_image_path": "C:\\Users\\ad\\Downloads\\Video download\\cache\\thumbnail_pipeline\\projects\\D_n_m_i\\versions\\original\\original.png",
-      "created_at": "2026-04-27T20:42:25Z",
-      "updated_at": "2026-04-27T20:56:14Z",
+      "folder": "D:\\New\\Video-downloader\\cache\\thumbnail_pipeline\\projects\\D_n_m_i-thumb-5edb963df2",
+      "source_image_path": "D:\\New\\Video-downloader\\cache\\thumbnail_pipeline\\projects\\D_n_m_i-thumb-5edb963df2\\versions\\original\\original.png",
+      "created_at": "2026-04-29T06:29:53Z",
+      "updated_at": "2026-04-29T06:30:57Z",
       "selected_version_id": "v1",
       "versions": [
         {
@@ -123,32 +175,129 @@
           "button_name": "Original",
           "fields": {},
           "mask_mode": "none",
-          "created_at": "28/04/2026 03:42",
+          "created_at": "29/04/2026 13:29",
           "status": "history",
-          "source_image_path": "C:\\Users\\ad\\Downloads\\Video download\\cache\\thumbnail_pipeline\\projects\\D_n_m_i\\versions\\original\\original.png",
-          "output_image_path": "C:\\Users\\ad\\Downloads\\Video download\\cache\\thumbnail_pipeline\\projects\\D_n_m_i\\versions\\original\\original.png",
+          "source_image_path": "D:\\New\\Video-downloader\\cache\\thumbnail_pipeline\\projects\\D_n_m_i-thumb-5edb963df2\\versions\\original\\original.png",
+          "output_image_path": "D:\\New\\Video-downloader\\cache\\thumbnail_pipeline\\projects\\D_n_m_i-thumb-5edb963df2\\versions\\original\\original.png",
           "thread_url": null,
           "parent_version_id": null
         },
         {
           "id": "v1",
-          "label": "Version 1 - Đổi màu vật thể",
-          "note": "Tạo chat Gemini mới từ Version 0 - Original",
-          "prompt": "Change only the selected áo to đỏ.\nKeep face, pose, background, lighting, and all unmasked areas unchanged.",
-          "button_name": "Đổi màu vật thể",
+          "label": "Version 1 - Làm mặt sốc hơn",
+          "note": "Gemini said",
+          "prompt": "Make the character expression more shocked, intensity 8/10.\nKeep identity, pose, outfit and background unchanged.",
+          "button_name": "Làm mặt sốc hơn",
           "fields": {
-            "object": "áo",
-            "color": "đỏ"
+            "expression": "shocked",
+            "intensity": 8
           },
-          "mask_mode": "selected",
-          "created_at": "28/04/2026 03:51",
+          "mask_mode": "none",
+          "created_at": "29/04/2026 13:30",
           "status": "current",
-          "source_image_path": "C:\\Users\\ad\\Downloads\\Video download\\cache\\thumbnail_pipeline\\projects\\D_n_m_i\\versions\\original\\original.png",
-          "output_image_path": "C:\\Users\\ad\\Downloads\\Video download\\cache\\thumbnail_pipeline\\projects\\D_n_m_i\\versions\\v1\\normalized.png",
-          "thread_url": "https://gemini.google.com/app",
+          "source_image_path": "D:\\New\\Video-downloader\\cache\\thumbnail_pipeline\\projects\\D_n_m_i-thumb-5edb963df2\\versions\\original\\original.png",
+          "output_image_path": "D:\\New\\Video-downloader\\cache\\thumbnail_pipeline\\projects\\D_n_m_i-thumb-5edb963df2\\versions\\v1\\normalized.jpg",
+          "thread_url": "https://gemini.google.com/app/4614a86042c7e730",
           "parent_version_id": "original"
         }
       ]
+    }
+  ],
+  "profiles": [
+    {
+      "id": "funny_thumbnail",
+      "name": "Funny Thumbnail",
+      "icon": "🔥",
+      "effects": [
+        {
+          "button_id": "extend-wide",
+          "fields": [
+            {
+              "key": "target_ratio",
+              "label": "Tỉ lệ đích",
+              "type": "select",
+              "value": "16:9",
+              "tooltip": "Chọn tỉ lệ khung hình muốn mở rộng tới.",
+              "options": [
+                "16:9",
+                "4:5",
+                "1:1",
+                "3:4",
+                "2:3",
+                "9:16",
+                "21:9",
+                "custom"
+              ],
+              "min": null,
+              "max": null,
+              "required": true,
+              "visible_if": null
+            },
+            {
+              "key": "custom_ratio",
+              "label": "Tỉ lệ custom",
+              "type": "text",
+              "value": "",
+              "tooltip": "Nhập tỉ lệ tự do, ví dụ 5:4 hoặc 7:10.",
+              "options": [],
+              "min": null,
+              "max": null,
+              "required": false,
+              "visible_if": {
+                "target_ratio": "custom"
+              }
+            },
+            {
+              "key": "artboard_hint",
+              "label": "Ghi chú artboard",
+              "type": "textarea",
+              "value": "Keep the main subject balanced inside the new frame.",
+              "tooltip": "Gợi ý bố cục bổ sung, có thể tự động cập nhật từ tool artboard trên canvas.",
+              "options": [],
+              "min": null,
+              "max": null,
+              "required": false,
+              "visible_if": null
+            }
+          ]
+        },
+        {
+          "button_id": "shock-face",
+          "fields": [
+            {
+              "key": "expression",
+              "label": "Biểu cảm",
+              "type": "select",
+              "value": "shocked",
+              "tooltip": "Chọn kiểu biểu cảm muốn đẩy mạnh trên gương mặt.",
+              "options": [
+                "shocked",
+                "scared",
+                "crying",
+                "angry"
+              ],
+              "min": null,
+              "max": null,
+              "required": true,
+              "visible_if": null
+            },
+            {
+              "key": "intensity",
+              "label": "Cường độ",
+              "type": "slider",
+              "value": 8,
+              "tooltip": "Điều chỉnh độ mạnh của biểu cảm từ nhẹ đến rất gắt.",
+              "options": [],
+              "min": 1.0,
+              "max": 10.0,
+              "required": true,
+              "visible_if": null
+            }
+          ]
+        }
+      ],
+      "description": "Combo: Mở rộng + Biểu cảm sốc",
+      "is_pinned": false
     }
   ]
 }

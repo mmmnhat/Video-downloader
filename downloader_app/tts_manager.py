@@ -1032,8 +1032,9 @@ class ElevenLabsAutomation:
         if voice_query.lower() in current_label:
             return
 
+        is_voice_id_query = _looks_like_elevenlabs_voice_id(voice_query)
         voices: list[dict] | None = None
-        if _looks_like_elevenlabs_voice_id(voice_query):
+        if is_voice_id_query:
             voices = self._fetch_available_voices(open_picker=False)
         resolved_query = self._resolve_voice_query(voice_query, voices=voices)
         if resolved_query.lower() in current_label:
@@ -1042,8 +1043,8 @@ class ElevenLabsAutomation:
         self._open_voice_picker(trigger)
 
         selection_queries: list[str] = []
-        query_candidates = [resolved_query]
-        if voice_query != resolved_query and not _looks_like_elevenlabs_voice_id(voice_query):
+        query_candidates = [voice_query, resolved_query] if is_voice_id_query else [resolved_query]
+        if voice_query != resolved_query and not is_voice_id_query:
             query_candidates.append(voice_query)
         for candidate in query_candidates:
             for variant in _voice_query_variants(candidate):
@@ -1332,7 +1333,7 @@ class ElevenLabsAutomation:
         for _ in range(3):
             try:
                 clicked = self._page.evaluate(
-                    """({ queryVariants, queryTokens }) => {
+                    """({ exactQuery, queryVariants, queryTokens }) => {
                         const isVisible = (el) => {
                             if (!el) return false;
                             const rect = el.getBoundingClientRect();
@@ -1340,22 +1341,45 @@ class ElevenLabsAutomation:
                             return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
                         };
                         const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+                        const exactQueries = new Set([exactQuery].filter(Boolean));
+                        const getExactIdMatch = (item) => {
+                            const nodes = [item, ...Array.from(item.querySelectorAll('[data-agent-id], [data-voice-id], [data-value], [data-id], [data-key], [aria-label]'))];
+                            return nodes.some((node) => {
+                                const attrs = [
+                                    node.getAttribute('data-agent-id'),
+                                    node.getAttribute('data-voice-id'),
+                                    node.getAttribute('data-value'),
+                                    node.getAttribute('data-id'),
+                                    node.getAttribute('data-key'),
+                                    node.getAttribute('aria-label'),
+                                ].map(normalize).filter(Boolean);
+                                return attrs.some((value) => exactQueries.has(value));
+                            });
+                        };
                         const items = Array.from(document.querySelectorAll('li, [role="option"], [role="listitem"], [role="menuitem"], [cmdk-item], [data-slot="command-item"], [data-slot="item"]'))
                             .filter((el) => isVisible(el));
                         for (const item of items) {
+                            const overlay = item.querySelector('button[data-type="list-item-trigger-overlay"]');
+                            const target = overlay && isVisible(overlay) ? overlay : item;
+                            if (getExactIdMatch(item)) {
+                                target.click();
+                                return true;
+                            }
                             const text = normalize(item.innerText || item.textContent || '');
                             if (!text) continue;
                             const variantMatch = queryVariants.some((variant) => variant && text.includes(variant));
                             const tokenMatch = queryTokens.length > 0 && queryTokens.every((token) => text.includes(token));
                             if (!variantMatch && !tokenMatch) continue;
-                            const overlay = item.querySelector('button[data-type="list-item-trigger-overlay"]');
-                            const target = overlay && isVisible(overlay) ? overlay : item;
                             target.click();
                             return true;
                         }
                         return false;
                     }""",
-                    {"queryVariants": query_variants, "queryTokens": query_tokens},
+                    {
+                        "exactQuery": normalized_query.lower(),
+                        "queryVariants": query_variants,
+                        "queryTokens": query_tokens,
+                    },
                 )
                 if clicked:
                     self._page.wait_for_timeout(500)

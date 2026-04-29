@@ -21,6 +21,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover"
+import { ScrollArea } from "@/components/ui/scroll-area"
 
 interface VoicePickerProps {
   voices: VoicePickerVoice[]
@@ -90,20 +91,23 @@ function VoicePicker({
         <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0">
           <Command>
             <CommandInput placeholder="Tìm giọng đọc..." />
-            <CommandList>
+            <CommandList className="max-h-none overflow-hidden">
               <CommandEmpty>Không tìm thấy giọng đọc.</CommandEmpty>
-              <CommandGroup>
-                {voices.map((voice) => (
-                  <VoicePickerItem
-                    key={voice.voiceId}
-                    voice={voice}
-                    isSelected={value === voice.voiceId}
-                    onSelect={() => {
-                      onValueChange?.(voice.voiceId!)
-                    }}
-                  />
-                ))}
-              </CommandGroup>
+              <ScrollArea type="always" className="h-72 w-full overflow-hidden">
+                <CommandGroup>
+                  {voices.map((voice) => (
+                    <VoicePickerItem
+                      key={voice.voiceId}
+                      voice={voice}
+                      isSelected={value === voice.voiceId}
+                      onSelect={() => {
+                        onValueChange?.(voice.voiceId!)
+                        setIsOpen?.(false)
+                      }}
+                    />
+                  ))}
+                </CommandGroup>
+              </ScrollArea>
             </CommandList>
           </Command>
         </PopoverContent>

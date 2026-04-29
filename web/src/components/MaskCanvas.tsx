@@ -340,6 +340,7 @@ export default function MaskCanvas({
   const [cyclingGroup, setCyclingGroup] = useState<ToolGroup | null>(null);
   const groupCycleTimerRef = useRef<number | null>(null);
   const dockClickTimerRef = useRef<number | null>(null);
+  const resizeFrameRef = useRef<number | null>(null);
 
   const panStartRef = useRef<Point>({ x: 0, y: 0 });
   const scaleStartRef = useRef({ y: 0, scale: 1 });
@@ -387,7 +388,6 @@ export default function MaskCanvas({
     const container = containerRef.current;
     const canvas = canvasRef.current;
     if (container.clientWidth === 0 || container.clientHeight === 0) {
-      requestAnimationFrame(() => fitToScreen(force));
       return;
     }
 
@@ -396,8 +396,9 @@ export default function MaskCanvas({
     const scaleY = (container.clientHeight - padding) / canvas.height;
     const nextScale = Math.min(scaleX, scaleY, 1);
 
-    setScale(nextScale > 0 ? nextScale : 1);
-    setPan({ x: 0, y: 0 });
+    const targetScale = nextScale > 0 ? nextScale : 1;
+    setScale((current) => (Math.abs(current - targetScale) > 0.001 ? targetScale : current));
+    setPan((current) => (current.x !== 0 || current.y !== 0 ? { x: 0, y: 0 } : current));
     if (force) {
       setHasZoomed(false);
     }
@@ -516,7 +517,13 @@ export default function MaskCanvas({
         setViewRotation(0);
         setFlipX(false);
         setFlipY(false);
-        fitToScreen(true);
+        if (resizeFrameRef.current !== null) {
+          window.cancelAnimationFrame(resizeFrameRef.current);
+        }
+        resizeFrameRef.current = window.requestAnimationFrame(() => {
+          resizeFrameRef.current = null;
+          fitToScreen(true);
+        });
       }
     };
 
@@ -525,15 +532,31 @@ export default function MaskCanvas({
     } else {
       img.onload = handleLoad;
     }
+
+    return () => {
+      img.onload = null;
+    };
   }, [fitToScreen, imageUrl, keepViewState, notifyMaskChangeFrom, replaceHistory, restoreMaskData]);
 
   useEffect(() => {
     if (!containerRef.current || hasZoomed) return;
     const observer = new ResizeObserver(() => {
-      if (!hasZoomed) fitToScreen();
+      if (resizeFrameRef.current !== null) {
+        window.cancelAnimationFrame(resizeFrameRef.current);
+      }
+      resizeFrameRef.current = window.requestAnimationFrame(() => {
+        resizeFrameRef.current = null;
+        if (!hasZoomed) fitToScreen();
+      });
     });
     observer.observe(containerRef.current);
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      if (resizeFrameRef.current !== null) {
+        window.cancelAnimationFrame(resizeFrameRef.current);
+        resizeFrameRef.current = null;
+      }
+    };
   }, [fitToScreen, hasZoomed]);
 
   useEffect(() => {

@@ -3,7 +3,33 @@ from __future__ import annotations
 import os
 import socket
 import sys
+import io
 from pathlib import Path
+
+
+def _configure_stdio() -> None:
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is None:
+            continue
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+                continue
+            except Exception:
+                pass
+        buffer = getattr(stream, "buffer", None)
+        if buffer is None:
+            continue
+        try:
+            setattr(
+                sys,
+                stream_name,
+                io.TextIOWrapper(buffer, encoding="utf-8", errors="replace", line_buffering=True),
+            )
+        except Exception:
+            pass
 
 
 def _project_python() -> Path | None:
@@ -30,7 +56,7 @@ def _prefer_project_python(argv: list[str]) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    import sys
+    _configure_stdio()
     with open("launcher_debug.txt", "a", encoding="utf-8") as f:
         f.write(f"[LAUNCHER] sys.argv: {sys.argv}\n")
     full_argv = list(sys.argv if argv is None else [sys.argv[0], *argv])
@@ -90,7 +116,7 @@ def main(argv: list[str] | None = None) -> int:
             _already_running = True
 
     if _already_running:
-        print(f"[launcher] Server already running at {app_url} — attaching new window.", flush=True)
+        print(f"[launcher] Server already running at {app_url} - attaching new window.", flush=True)
         try:
             from downloader_app.desktop import run_desktop
             return run_desktop(app_url)
