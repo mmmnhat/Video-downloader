@@ -2041,21 +2041,36 @@ class GeminiWebAdapter:
                 )
                 return
         page.wait_for_timeout(200)
-        self._dismiss_transient_overlays(page)
+        self._close_mode_menu(page)
 
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             page.wait_for_timeout(200)
             current_label = self._read_mode_picker_label(page)
             if self._mode_label_matches(current_label, desired_label):
-                self._dismiss_transient_overlays(page)
+                self._close_mode_menu(page)
                 return
 
         print(
             f"[DEBUG] Gemini mode `{desired_label}` was not confirmed after selection; continue with current default mode.",
             flush=True,
         )
-        self._dismiss_transient_overlays(page)
+        self._close_mode_menu(page)
+
+    def _close_mode_menu(self, page) -> None:
+        for _ in range(3):
+            if not self._has_transient_overlay(page):
+                return
+            try:
+                page.keyboard.press("Escape")
+            except Exception:
+                pass
+            page.wait_for_timeout(160)
+        try:
+            page.mouse.click(24, 24)
+            page.wait_for_timeout(160)
+        except Exception:
+            pass
 
     def _find_mode_picker_button(self, page):
         selectors = [
@@ -2590,46 +2605,47 @@ class GeminiWebAdapter:
         return any(token in text_blob for token in stop_tokens)
 
     def _dismiss_transient_overlays(self, page) -> None:
+        if not self._has_transient_overlay(page):
+            return
+
+        try:
+            page.keyboard.press("Escape")
+        except Exception:
+            pass
+        page.wait_for_timeout(180)
+        if not self._has_transient_overlay(page):
+            return
+
+        try:
+            page.mouse.click(24, 24)
+            page.wait_for_timeout(180)
+        except Exception:
+            pass
+
+    def _has_transient_overlay(self, page) -> bool:
         overlay_selectors = [
             "[role='menu']",
             "[role='listbox']",
+            "[role='dialog']",
             ".mat-mdc-menu-panel",
             ".cdk-overlay-pane",
+            ".cdk-overlay-container",
         ]
 
-        for _ in range(2):
-            overlay_visible = False
-            for selector in overlay_selectors:
-                locator = page.locator(selector)
+        for selector in overlay_selectors:
+            locator = page.locator(selector)
+            try:
+                count = locator.count()
+            except Exception:
+                count = 0
+            for index in range(min(count, 8)):
+                candidate = locator.nth(index)
                 try:
-                    count = locator.count()
+                    if candidate.is_visible():
+                        return True
                 except Exception:
-                    count = 0
-                for index in range(min(count, 8)):
-                    candidate = locator.nth(index)
-                    try:
-                        if candidate.is_visible():
-                            overlay_visible = True
-                            break
-                    except Exception:
-                        continue
-                if overlay_visible:
-                    break
-
-            if not overlay_visible:
-                return
-
-            try:
-                page.keyboard.press("Escape")
-            except Exception:
-                pass
-            try:
-                picker = page.locator('button[data-test-id="bard-mode-menu-button"][aria-expanded="true"]').first
-                if picker.count() > 0:
-                    picker.click(force=True)
-            except Exception:
-                pass
-            page.wait_for_timeout(180)
+                    continue
+        return False
 
     def _find_prompt_target(self, page):
         selectors = [
