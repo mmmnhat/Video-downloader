@@ -1042,9 +1042,40 @@ class ElevenLabsAutomation:
 
         self._open_voice_picker(trigger)
 
+        if is_voice_id_query:
+            last_error: ElevenLabsError | None = None
+            try:
+                self._select_voice_picker_option(voice_query, allow_text_fallback=False)
+                return
+            except ElevenLabsError as exc:
+                last_error = exc
+
+            search_input = self._find_voice_search_input()
+            search_queries = [voice_query]
+            if resolved_query and resolved_query != voice_query:
+                search_queries.append(resolved_query)
+
+            for selection_query in search_queries:
+                if search_input is not None:
+                    self._fill_voice_search(search_input, selection_query)
+                try:
+                    self._select_voice_picker_option(
+                        selection_query,
+                        allow_text_fallback=selection_query != voice_query,
+                        exact_text=selection_query != voice_query,
+                    )
+                    return
+                except ElevenLabsError as exc:
+                    last_error = exc
+                    continue
+
+            if last_error is not None:
+                raise last_error
+            raise ElevenLabsError(f"Khong tim thay voice `{resolved_query}` trong ElevenLabs picker.")
+
         selection_queries: list[str] = []
-        query_candidates = [voice_query, resolved_query] if is_voice_id_query else [resolved_query]
-        if voice_query != resolved_query and not is_voice_id_query:
+        query_candidates = [resolved_query]
+        if voice_query != resolved_query:
             query_candidates.append(voice_query)
         for candidate in query_candidates:
             for variant in _voice_query_variants(candidate):
@@ -1063,21 +1094,7 @@ class ElevenLabsAutomation:
         search_input = self._find_voice_search_input()
         for selection_query in selection_queries:
             if search_input is not None:
-                try:
-                    search_input.scroll_into_view_if_needed()
-                    search_input.click()
-                    search_input.fill("")
-                    self._page.keyboard.press("Control+A")
-                    self._page.keyboard.press("Backspace")
-                    self._page.wait_for_timeout(200)
-                    search_input.press_sequentially(selection_query, delay=40)
-                    self._page.wait_for_timeout(700)
-                except Exception as exc:
-                    print(f"[TTS] Warning: Failed to interact with search input for `{selection_query}`: {exc}", flush=True)
-                    try:
-                        self._page.keyboard.type(selection_query, delay=30)
-                    except Exception:
-                        pass
+                self._fill_voice_search(search_input, selection_query)
             try:
                 self._select_voice_picker_option(selection_query)
                 return
@@ -1323,7 +1340,13 @@ class ElevenLabsAutomation:
 
         raise ElevenLabsError(f"Khong tim thay option `{normalized_query}` trong ElevenLabs picker.")
 
-    def _select_voice_picker_option(self, query: str) -> None:
+    def _select_voice_picker_option(
+        self,
+        query: str,
+        *,
+        allow_text_fallback: bool = True,
+        exact_text: bool = False,
+    ) -> None:
         assert self._page is not None
         normalized_query = query.strip()
         if not normalized_query:
@@ -1333,7 +1356,7 @@ class ElevenLabsAutomation:
         for _ in range(3):
             try:
                 clicked = self._page.evaluate(
-                    """({ exactQuery, queryVariants, queryTokens }) => {
+                    """({ exactQuery, queryVariants, queryTokens, allowTextFallback, exactText }) => {
                         const isVisible = (el) => {
                             if (!el) return false;
                             const rect = el.getBoundingClientRect();
@@ -1341,6 +1364,11 @@ class ElevenLabsAutomation:
                             return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
                         };
                         const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+                        const normalizeLines = (value) => (value || '')
+                            .replace(/\\u00a0/g, ' ')
+                            .split(/\\n+/)
+                            .map((line) => normalize(line))
+                            .filter(Boolean);
                         const exactQueries = new Set([exactQuery].filter(Boolean));
                         const getExactIdMatch = (item) => {
                             const nodes = [item, ...Array.from(item.querySelectorAll('[data-agent-id], [data-voice-id], [data-value], [data-id], [data-key], [aria-label]'))];
@@ -1356,6 +1384,11 @@ class ElevenLabsAutomation:
                                 return attrs.some((value) => exactQueries.has(value));
                             });
                         };
+                        const getExactTextMatch = (item) => {
+                            const lines = normalizeLines(item.innerText || item.textContent || '');
+                            const text = normalize(item.innerText || item.textContent || '');
+                            return lines[0] === exactQuery || text === exactQuery;
+                        };
                         const items = Array.from(document.querySelectorAll('li, [role="option"], [role="listitem"], [role="menuitem"], [cmdk-item], [data-slot="command-item"], [data-slot="item"]'))
                             .filter((el) => isVisible(el));
                         for (const item of items) {
@@ -1364,6 +1397,14 @@ class ElevenLabsAutomation:
                             if (getExactIdMatch(item)) {
                                 target.click();
                                 return true;
+                            }
+                            if (!allowTextFallback) continue;
+                            if (exactText) {
+                                if (getExactTextMatch(item)) {
+                                    target.click();
+                                    return true;
+                                }
+                                continue;
                             }
                             const text = normalize(item.innerText || item.textContent || '');
                             if (!text) continue;
@@ -1379,6 +1420,8 @@ class ElevenLabsAutomation:
                         "exactQuery": normalized_query.lower(),
                         "queryVariants": query_variants,
                         "queryTokens": query_tokens,
+                        "allowTextFallback": allow_text_fallback,
+                        "exactText": exact_text,
                     },
                 )
                 if clicked:
@@ -1742,6 +1785,29 @@ class ElevenLabsAutomation:
             except Exception:
                 continue
         return None
+
+    def _fill_voice_search(self, search_input, query: str) -> None:
+        assert self._page is not None
+        selection_query = query.strip()
+        if not selection_query:
+            return
+        try:
+            search_input.scroll_into_view_if_needed()
+            search_input.click()
+            search_input.fill("")
+            modifier = "Meta+A" if sys.platform == "darwin" else "Control+A"
+            self._page.keyboard.press(modifier)
+            self._page.keyboard.press("Backspace")
+            self._page.wait_for_timeout(200)
+            search_input.press_sequentially(selection_query, delay=40)
+            self._page.wait_for_timeout(700)
+        except Exception as exc:
+            print(f"[TTS] Warning: Failed to interact with search input for `{selection_query}`: {exc}", flush=True)
+            try:
+                self._page.keyboard.type(selection_query, delay=30)
+                self._page.wait_for_timeout(700)
+            except Exception:
+                pass
 
     def _resolve_voice_query(self, query: str, voices: list[dict] | None = None) -> str:
         voice_query = query.strip()
