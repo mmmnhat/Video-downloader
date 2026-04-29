@@ -1018,11 +1018,12 @@ class ElevenLabsAutomation:
         self._select_visible_option(model_query)
         self._wait_for_idle_ui()
 
-    def select_voice(self, query: str) -> None:
+    def select_voice(self, query: str, expected_name: str | None = None) -> None:
         if not query.strip():
             return
         assert self._page is not None
         voice_query = query.strip()
+        preferred_voice_name = (expected_name or "").strip()
         self._ensure_settings_tab_open()
         trigger = self._locate_voice_trigger()
         if trigger is None:
@@ -1031,12 +1032,16 @@ class ElevenLabsAutomation:
         current_label = (trigger.inner_text() or "").strip().lower()
         if voice_query.lower() in current_label:
             return
+        if preferred_voice_name and preferred_voice_name.lower() in current_label:
+            return
 
         is_voice_id_query = _looks_like_elevenlabs_voice_id(voice_query)
         voices: list[dict] | None = None
         if is_voice_id_query:
             voices = self._fetch_available_voices(open_picker=False)
         resolved_query = self._resolve_voice_query(voice_query, voices=voices)
+        if preferred_voice_name:
+            resolved_query = preferred_voice_name
         if resolved_query.lower() in current_label:
             return
 
@@ -1044,16 +1049,18 @@ class ElevenLabsAutomation:
 
         if is_voice_id_query:
             last_error: ElevenLabsError | None = None
-            try:
-                self._select_voice_picker_option(voice_query, allow_text_fallback=False)
-                return
-            except ElevenLabsError as exc:
-                last_error = exc
+            if not resolved_query or resolved_query == voice_query:
+                try:
+                    self._select_voice_picker_option(voice_query, allow_text_fallback=False)
+                    return
+                except ElevenLabsError as exc:
+                    last_error = exc
 
             search_input = self._find_voice_search_input()
-            search_queries = [voice_query]
+            search_queries = []
             if resolved_query and resolved_query != voice_query:
                 search_queries.append(resolved_query)
+            search_queries.append(voice_query)
 
             for selection_query in search_queries:
                 if search_input is not None:
@@ -1061,8 +1068,8 @@ class ElevenLabsAutomation:
                 try:
                     self._select_voice_picker_option(
                         selection_query,
-                        allow_text_fallback=selection_query != voice_query,
-                        exact_text=selection_query != voice_query,
+                        allow_text_fallback=selection_query == resolved_query,
+                        exact_text=selection_query == resolved_query,
                     )
                     return
                 except ElevenLabsError as exc:
@@ -2838,11 +2845,12 @@ class TtsManager:
                     batch = self._require_batch(batch_id)
                     model_family = batch.model_family
                     voice_query = batch.voice_id or batch.voice_name or batch.voice_query
+                    voice_name = batch.voice_name
                 for setup_attempt in range(1, 4):
                     try:
                         automation.ensure_authenticated()
                         automation.select_model(model_family)
-                        automation.select_voice(voice_query)
+                        automation.select_voice(voice_query, expected_name=voice_name)
                         break
                     except Exception as exc:  # noqa: BLE001
                         _tts_debug(
