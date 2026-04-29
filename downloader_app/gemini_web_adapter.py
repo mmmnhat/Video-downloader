@@ -2268,18 +2268,29 @@ class GeminiWebAdapter:
         self._ensure_prompt_submission_ready(page, target, clean_prompt)
         self._dismiss_transient_overlays(page)
         sent = self._click_send_button(page, target)
+        if sent and self._wait_for_prompt_submission(page, target, clean_prompt):
+            return
         if not sent:
+            if self._is_generation_in_progress(page):
+                self._clear_lingering_prompt_after_send(page, target, clean_prompt)
+                return
             page.wait_for_timeout(300)
             self._ensure_prompt_submission_ready(page, target, clean_prompt)
             self._dismiss_transient_overlays(page)
             sent = self._click_send_button(page, target)
+            if sent and self._wait_for_prompt_submission(page, target, clean_prompt):
+                return
         if not sent:
             page.keyboard.press("Enter")
+            if self._wait_for_prompt_submission(page, target, clean_prompt):
+                return
+        if not self._wait_for_prompt_submission(page, target, clean_prompt):
+            raise GeminiWebError("Gemini chua nhan prompt sau khi bam gui.")
 
     def _type_rich_text_prompt(self, page, target, prompt: str) -> None:
         # Try JS injection first for speed and reliability in headless/background
         if self._set_rich_text_prompt(target, prompt):
-            # Still trigger one keyboard event to ensure the "Send" button notices the change
+            # Nudge the editor state without appending the prompt a second time.
             try:
                 target.focus()
                 page.keyboard.press("End")
@@ -2287,21 +2298,21 @@ class GeminiWebAdapter:
                 page.keyboard.press("Backspace")
             except Exception:
                 pass
-            
-            if self._prompt_text_matches(target, prompt):
+
+            if self._prompt_text_matches(target, prompt) or self._prompt_text_contains_once(target, prompt):
                 return
 
-        # Fallback to standard typing
+        # Fallback to direct text insertion, but always replace the editor contents first.
+        # Do not use keyboard.type(prompt) here: multiline prompts contain "\n",
+        # and Gemini can treat Enter key events as "send" before the full prompt is inserted.
+        self._clear_prompt_with_keyboard(page, target)
         try:
             target.focus()
-            page.keyboard.type(prompt, delay=15)
+            page.keyboard.insert_text(prompt)
         except Exception:
-            try:
-                page.keyboard.insert_text(prompt)
-            except Exception:
-                pass
+            self._set_rich_text_prompt(target, prompt)
 
-        if self._prompt_text_matches(target, prompt):
+        if self._prompt_text_matches(target, prompt) or self._prompt_text_contains_once(target, prompt):
             return
 
         # Final attempt via JS if typing failed
@@ -2341,11 +2352,97 @@ class GeminiWebAdapter:
         expected_text = self._normalize_prompt_text(prompt)
         return current_text == expected_text
 
+    def _prompt_text_contains_once(self, target, prompt: str) -> bool:
+        current_text = self._read_prompt_text(target)
+        expected_text = self._normalize_prompt_text(prompt)
+        if not expected_text:
+            return False
+        return current_text.count(expected_text) == 1 and len(current_text) <= len(expected_text) + 160
+
+    def _clear_prompt_with_keyboard(self, page, target) -> None:
+        modifier = "Meta+A" if sys.platform == "darwin" else "Control+A"
+        try:
+            target.focus()
+            target.click()
+            page.keyboard.press(modifier)
+            page.keyboard.press("Backspace")
+            page.wait_for_timeout(80)
+        except Exception:
+            pass
+
+    def _clear_lingering_prompt_after_send(self, page, target, prompt: str) -> None:
+        if not (self._prompt_text_matches(target, prompt) or self._prompt_text_contains_once(target, prompt)):
+            return
+        try:
+            target.evaluate(
+                """
+                (el) => {
+                  if (!el) return;
+                  if ('value' in el) {
+                    el.value = '';
+                  } else if (el.innerText !== undefined) {
+                    el.innerText = '';
+                  } else {
+                    el.textContent = '';
+                  }
+                  el.dispatchEvent(new Event('input', { bubbles: true }));
+                  el.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+                """
+            )
+        except Exception:
+            self._clear_prompt_with_keyboard(page, target)
+
     def _set_rich_text_prompt(self, target, prompt: str) -> bool:
         try:
             target.evaluate(
-                "(el, val) => { if (el.innerText !== undefined) { el.innerText = val; } else { el.textContent = val; } el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); }",
-                prompt
+                """
+                (el, val) => {
+                  if (!el) return false;
+                  el.focus();
+
+                  const setText = () => {
+                    if ('value' in el) {
+                      el.value = val;
+                      return true;
+                    }
+
+                    const selection = window.getSelection?.();
+                    if (el.isContentEditable && selection && document.queryCommandSupported?.('insertText')) {
+                      const range = document.createRange();
+                      range.selectNodeContents(el);
+                      selection.removeAllRanges();
+                      selection.addRange(range);
+                      if (document.execCommand('insertText', false, val)) {
+                        return true;
+                      }
+                    }
+
+                    if (el.innerText !== undefined) {
+                      el.innerText = val;
+                    } else {
+                      el.textContent = val;
+                    }
+                    return true;
+                  };
+
+                  setText();
+                  try {
+                    el.dispatchEvent(new InputEvent('input', {
+                      bubbles: true,
+                      cancelable: true,
+                      inputType: 'insertText',
+                      data: val,
+                    }));
+                  } catch (_error) {
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                  }
+                  el.dispatchEvent(new Event('change', { bubbles: true }));
+                  el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Unidentified' }));
+                  return true;
+                }
+                """,
+                prompt,
             )
             return True
         except Exception:
@@ -2355,6 +2452,10 @@ class GeminiWebAdapter:
         deadline = time.monotonic() + 12
         while time.monotonic() < deadline:
             self._dismiss_transient_overlays(page)
+            if self._is_generation_in_progress(page):
+                return
+            if not (self._prompt_text_matches(target, prompt) or self._prompt_text_contains_once(target, prompt)):
+                self._set_rich_text_prompt(target, prompt)
             if self._is_send_button_enabled(page):
                 return
             try:
@@ -2374,6 +2475,57 @@ class GeminiWebAdapter:
         if self._is_send_button_enabled(page):
             return
         raise GeminiWebError("Nut gui Gemini van bi khoa sau khi nhap prompt.")
+
+    def _is_generation_in_progress(self, page) -> bool:
+        stop_selectors = [
+            'button[aria-label*="stop" i]',
+            'button[aria-label*="dừng" i]',
+            'button[aria-label*="ngừng" i]',
+            '[role="button"][aria-label*="stop" i]',
+            '[role="button"][aria-label*="dừng" i]',
+            'button[data-testid*="stop" i]',
+            'button[class*="stop" i]',
+        ]
+        for selector in stop_selectors:
+            locator = page.locator(selector)
+            try:
+                count = locator.count()
+            except Exception:
+                count = 0
+            for index in range(min(count, 8)):
+                button = locator.nth(index)
+                try:
+                    if button.is_visible() and not button.is_disabled():
+                        return True
+                except Exception:
+                    continue
+
+        buttons = page.locator("button, [role='button']")
+        try:
+            count = buttons.count()
+        except Exception:
+            count = 0
+        for index in range(min(count, 120)):
+            button = buttons.nth(index)
+            try:
+                if not button.is_visible() or button.is_disabled():
+                    continue
+                if self._is_stop_or_cancel_button(button):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _wait_for_prompt_submission(self, page, target, prompt: str) -> bool:
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            if self._is_generation_in_progress(page):
+                self._clear_lingering_prompt_after_send(page, target, prompt)
+                return True
+            if not (self._prompt_text_matches(target, prompt) or self._prompt_text_contains_once(target, prompt)):
+                return True
+            page.wait_for_timeout(200)
+        return False
 
     def _is_send_button_enabled(self, page) -> bool:
         send_selectors = [

@@ -264,6 +264,7 @@ class ThumbnailPipelineManager:
         self._active_project_id: str | None = None
         self._profiles: list[ThumbnailProfile] = []
         self._adapter: GeminiWebAdapter | None = None
+        self._running_project_ids: set[str] = set()
         self._load_state()
         if not self._profiles:
             self._profiles = [
@@ -310,6 +311,8 @@ class ThumbnailPipelineManager:
 
     def get_bootstrap(self) -> dict:
         with self._lock:
+            if self._repair_all_projects_missing_outputs_locked():
+                self._persist_locked()
             return {
                 "buttons": [self._serialize_button(button) for button in self._buttons],
                 "projects": [self._serialize_project_summary(project) for project in self._projects.values()],
@@ -380,7 +383,10 @@ class ThumbnailPipelineManager:
     def select_project(self, project_id: str) -> dict:
         with self._lock:
             project = self._require_project(project_id)
+            repaired = self._repair_project_missing_outputs_locked(project)
             self._active_project_id = project.id
+            if repaired:
+                project.updated_at = utc_now()
             self._persist_locked()
             return self._serialize_project_detail(project)
 
@@ -682,114 +688,137 @@ class ThumbnailPipelineManager:
 
         mask_base64 = str(payload.get("mask_base64", "")).strip()
         canvas_guide = payload.get("canvas_guide") or {}
+        generation_claimed = False
 
         with self._lock:
             project = self._require_project(project_id)
             selected_version = self._require_version(project, project.selected_version_id)
+            selected_version = self._repair_missing_selected_version_locked(project, selected_version)
+            source_path = Path(selected_version.output_image_path).expanduser().resolve()
+            if not source_path.exists():
+                raise ThumbnailPipelineError(f"Không tìm thấy ảnh input của version hiện tại: {source_path}")
             button = self._require_button(button_id)
             prompt = payload.get("prompt_override") or self._build_prompt(button, field_values)
-            next_version = self._create_next_version_locked(
-                project=project,
-                parent_version=selected_version,
-                button=button,
+            if project.id in self._running_project_ids:
+                raise ThumbnailPipelineError("Project này đang tạo ảnh. Vui lòng chờ lượt hiện tại hoàn tất.")
+            self._running_project_ids.add(project.id)
+            generation_claimed = True
+            try:
+                next_version = self._create_next_version_locked(
+                    project=project,
+                    parent_version=selected_version,
+                    button=button,
+                    prompt=prompt,
+                    field_values=field_values,
+                    mask_mode=mask_mode,
+                    selected_mode=selected_mode,
+                    regenerate_mode=regenerate_mode,
+                    is_regenerate=is_regenerate,
+                )
+            except Exception:
+                self._running_project_ids.discard(project.id)
+                generation_claimed = False
+                raise
+
+        output_dir = Path(next_version.output_image_path).parent
+
+        try:
+            input_image_for_gemini = source_path
+            if mask_base64 or canvas_guide:
+                import base64
+                import io
+                Image = require_pillow()
+
+                try:
+                    base_img = Image.open(source_path).convert("RGBA")
+                    working_img = base_img
+                    working_mask = None
+
+                    if mask_base64:
+                        if "," in mask_base64:
+                            mask_base64 = mask_base64.split(",")[1]
+                        mask_data = base64.b64decode(mask_base64)
+                        working_mask = Image.open(io.BytesIO(mask_data)).convert("RGBA")
+                        if working_mask.size != working_img.size:
+                            working_mask = working_mask.resize(working_img.size, Image.Resampling.LANCZOS)
+
+                    guide_mode = str(canvas_guide.get("mode", "")).strip().lower()
+                    guide_rect = _coerce_guide_rect(canvas_guide) if isinstance(canvas_guide, dict) else None
+                    if guide_mode in {"crop", "artboard"} and guide_rect:
+                        x, y, width, height = guide_rect
+                        left = int(round(x))
+                        top = int(round(y))
+                        right = int(round(x + width))
+                        bottom = int(round(y + height))
+
+                        if guide_mode == "crop":
+                            left = max(0, min(left, working_img.width - 1))
+                            top = max(0, min(top, working_img.height - 1))
+                            right = max(left + 1, min(right, working_img.width))
+                            bottom = max(top + 1, min(bottom, working_img.height))
+                            working_img = working_img.crop((left, top, right, bottom))
+                            if working_mask is not None:
+                                working_mask = working_mask.crop((left, top, right, bottom))
+                        else:
+                            target_width = max(1, int(round(width)))
+                            target_height = max(1, int(round(height)))
+                            artboard = Image.new("RGBA", (target_width, target_height), (0, 0, 0, 0))
+                            artboard.alpha_composite(working_img, (-left, -top))
+                            working_img = artboard
+                            if working_mask is not None:
+                                mask_artboard = Image.new("RGBA", (target_width, target_height), (0, 0, 0, 0))
+                                mask_artboard.alpha_composite(working_mask, (-left, -top))
+                                working_mask = mask_artboard
+
+                    if working_mask is not None:
+                        working_img = Image.alpha_composite(working_img, working_mask)
+
+                    prepared_source_path = output_dir / "prepared_input.png"
+                    working_img.save(prepared_source_path, "PNG")
+                    input_image_for_gemini = prepared_source_path
+                except Exception as e:
+                    print(f"[DEBUG] Failed to prepare guided input: {e}")
+
+            preview_path = output_dir / "preview.jpg"
+            normalized_path = output_dir / "normalized.jpg"
+            thread_url = None
+
+            adapter = self._get_adapter()
+            result = adapter.generate(
                 prompt=prompt,
-                field_values=field_values,
-                mask_mode=mask_mode,
-                selected_mode=selected_mode,
-                regenerate_mode=regenerate_mode,
-                is_regenerate=is_regenerate,
+                input_image_path=input_image_for_gemini,
+                preview_path=preview_path,
+                normalized_path=normalized_path,
+                context={
+                    "mode": "regenerate" if is_regenerate else "auto",
+                    "threadUrl": thread_url,
+                    "buttonName": button.name,
+                    "projectId": project.id,
+                    "versionId": next_version.id,
+                },
             )
 
-        source_path = Path(selected_version.output_image_path).expanduser().resolve()
-        output_dir = Path(next_version.output_image_path).parent
-        
-        input_image_for_gemini = source_path
-        if mask_base64 or canvas_guide:
-            import base64
-            import io
-            Image = require_pillow()
-
-            try:
-                base_img = Image.open(source_path).convert("RGBA")
-                working_img = base_img
-                working_mask = None
-
-                if mask_base64:
-                    if "," in mask_base64:
-                        mask_base64 = mask_base64.split(",")[1]
-                    mask_data = base64.b64decode(mask_base64)
-                    working_mask = Image.open(io.BytesIO(mask_data)).convert("RGBA")
-                    if working_mask.size != working_img.size:
-                        working_mask = working_mask.resize(working_img.size, Image.Resampling.LANCZOS)
-
-                guide_mode = str(canvas_guide.get("mode", "")).strip().lower()
-                guide_rect = _coerce_guide_rect(canvas_guide) if isinstance(canvas_guide, dict) else None
-                if guide_mode in {"crop", "artboard"} and guide_rect:
-                    x, y, width, height = guide_rect
-                    left = int(round(x))
-                    top = int(round(y))
-                    right = int(round(x + width))
-                    bottom = int(round(y + height))
-
-                    if guide_mode == "crop":
-                        left = max(0, min(left, working_img.width - 1))
-                        top = max(0, min(top, working_img.height - 1))
-                        right = max(left + 1, min(right, working_img.width))
-                        bottom = max(top + 1, min(bottom, working_img.height))
-                        working_img = working_img.crop((left, top, right, bottom))
-                        if working_mask is not None:
-                            working_mask = working_mask.crop((left, top, right, bottom))
-                    else:
-                        target_width = max(1, int(round(width)))
-                        target_height = max(1, int(round(height)))
-                        artboard = Image.new("RGBA", (target_width, target_height), (0, 0, 0, 0))
-                        artboard.alpha_composite(working_img, (-left, -top))
-                        working_img = artboard
-                        if working_mask is not None:
-                            mask_artboard = Image.new("RGBA", (target_width, target_height), (0, 0, 0, 0))
-                            mask_artboard.alpha_composite(working_mask, (-left, -top))
-                            working_mask = mask_artboard
-
-                if working_mask is not None:
-                    working_img = Image.alpha_composite(working_img, working_mask)
-
-                prepared_source_path = output_dir / "prepared_input.png"
-                working_img.save(prepared_source_path, "PNG")
-                input_image_for_gemini = prepared_source_path
-            except Exception as e:
-                print(f"[DEBUG] Failed to prepare guided input: {e}")
-
-        preview_path = output_dir / "preview.jpg"
-        normalized_path = output_dir / "normalized.jpg"
-        thread_url = None
-
-        adapter = self._get_adapter()
-        result = adapter.generate(
-            prompt=prompt,
-            input_image_path=input_image_for_gemini,
-            preview_path=preview_path,
-            normalized_path=normalized_path,
-            context={
-                "mode": "regenerate" if is_regenerate else "auto",
-                "threadUrl": thread_url,
-                "buttonName": button.name,
-                "projectId": project.id,
-                "versionId": next_version.id,
-            },
-        )
-
-        with self._lock:
-            project = self._require_project(project_id)
-            stored_version = self._require_version(project, next_version.id)
-            stored_version.output_image_path = result.normalized_path
-            stored_version.source_image_path = selected_version.output_image_path
-            stored_version.thread_url = result.thread_url
-            if result.response_text:
-                stored_version.note = result.response_text
-            project.selected_version_id = stored_version.id
-            project.updated_at = utc_now()
-            self._persist_locked()
-            return self._serialize_project_detail(project)
+            with self._lock:
+                project = self._require_project(project_id)
+                stored_version = self._require_version(project, next_version.id)
+                stored_version.output_image_path = result.normalized_path
+                stored_version.source_image_path = selected_version.output_image_path
+                stored_version.thread_url = result.thread_url
+                if result.response_text:
+                    stored_version.note = result.response_text
+                project.selected_version_id = stored_version.id
+                project.updated_at = utc_now()
+                self._persist_locked()
+                return self._serialize_project_detail(project)
+        except Exception as exc:
+            self._rollback_failed_generation(project_id, next_version.id, selected_version.id)
+            if isinstance(exc, ThumbnailPipelineError):
+                raise
+            raise ThumbnailPipelineError(str(exc)) from exc
+        finally:
+            if generation_claimed:
+                with self._lock:
+                    self._running_project_ids.discard(project_id)
 
     def export_image(self, payload: dict) -> dict:
         project_id = str(payload.get("project_id", "")).strip()
@@ -864,7 +893,88 @@ class ThumbnailPipelineManager:
             project = self._projects.get(project_id)
             if project is None:
                 return None
+            if self._repair_project_missing_outputs_locked(project):
+                project.updated_at = utc_now()
+                self._persist_locked()
             return self._serialize_project_detail(project)
+
+    def _repair_all_projects_missing_outputs_locked(self) -> bool:
+        changed = False
+        for project in self._projects.values():
+            if self._repair_project_missing_outputs_locked(project):
+                project.updated_at = utc_now()
+                changed = True
+        return changed
+
+    def _repair_project_missing_outputs_locked(self, project: ThumbnailProject) -> bool:
+        valid_versions = [
+            version
+            for version in project.versions
+            if Path(version.output_image_path).expanduser().exists()
+        ]
+        if len(valid_versions) == len(project.versions):
+            return False
+        if not valid_versions:
+            return False
+
+        selected = next((version for version in valid_versions if version.id == project.selected_version_id), None)
+        if selected is None:
+            selected = valid_versions[-1]
+
+        project.versions = valid_versions
+        project.selected_version_id = selected.id
+        for version in project.versions:
+            if version.id == selected.id:
+                version.status = "current"
+            elif version.status == "current":
+                version.status = "history"
+        return True
+
+    def _repair_missing_selected_version_locked(
+        self,
+        project: ThumbnailProject,
+        selected_version: ThumbnailVersion,
+    ) -> ThumbnailVersion:
+        selected_path = Path(selected_version.output_image_path).expanduser()
+        if selected_path.exists():
+            return selected_version
+
+        if not self._repair_project_missing_outputs_locked(project):
+            return selected_version
+
+        fallback = self._require_version(project, project.selected_version_id)
+        self._persist_locked()
+        return fallback
+
+    def _rollback_failed_generation(self, project_id: str, failed_version_id: str, restore_version_id: str) -> None:
+        with self._lock:
+            project = self._projects.get(project_id)
+            if project is None:
+                return
+
+            failed_version = next((version for version in project.versions if version.id == failed_version_id), None)
+            if failed_version is not None:
+                project.versions = [version for version in project.versions if version.id != failed_version_id]
+
+            restore_version = next((version for version in project.versions if version.id == restore_version_id), None)
+            if restore_version is None:
+                restore_version = next(
+                    (
+                        version
+                        for version in reversed(project.versions)
+                        if Path(version.output_image_path).expanduser().exists()
+                    ),
+                    None,
+                )
+            if restore_version is None:
+                self._persist_locked()
+                return
+
+            project.selected_version_id = restore_version.id
+            for version in project.versions:
+                version.status = "current" if version.id == restore_version.id else "history"
+            project.updated_at = utc_now()
+            self._persist_locked()
 
     def _create_next_version_locked(
         self,
