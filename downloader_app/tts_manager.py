@@ -1122,11 +1122,72 @@ class ElevenLabsAutomation:
         assert self._page is not None
         editor = self._page.locator('[data-testid="tts-editor"]').first
         editor.wait_for(state="visible")
+        self._page.evaluate(
+            """(value) => {
+                const root = document.querySelector('[data-testid="tts-editor"]');
+                if (!root) return { ok: false, reason: 'editor-not-found', text: '' };
+
+                const emit = (el, inputType = 'insertText') => {
+                    el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType, data: value }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                };
+
+                const textControls = [
+                    root.matches('textarea,input') ? root : null,
+                    ...Array.from(root.querySelectorAll('textarea,input')),
+                ].filter(Boolean);
+                for (const control of textControls) {
+                    const proto = control.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+                    const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+                    if (setter) setter.call(control, value);
+                    else control.value = value;
+                    emit(control);
+                    return { ok: true, mode: 'form-control', text: control.value || '' };
+                }
+
+                const editable = root.matches('[contenteditable="true"], [contenteditable="plaintext-only"]')
+                    ? root
+                    : root.querySelector('[contenteditable="true"], [contenteditable="plaintext-only"], .ProseMirror, [role="textbox"]');
+                if (editable) {
+                    editable.focus();
+                    const range = document.createRange();
+                    range.selectNodeContents(editable);
+                    const selection = window.getSelection();
+                    selection.removeAllRanges();
+                    selection.addRange(range);
+                    document.execCommand('insertText', false, value);
+                    emit(editable);
+                    return { ok: true, mode: 'contenteditable', text: editable.innerText || editable.textContent || '' };
+                }
+
+                root.focus?.();
+                const range = document.createRange();
+                range.selectNodeContents(root);
+                const selection = window.getSelection();
+                selection.removeAllRanges();
+                selection.addRange(range);
+                document.execCommand('insertText', false, value);
+                emit(root);
+                return { ok: true, mode: 'root-text', text: root.innerText || root.textContent || '' };
+            }""",
+            text,
+        )
+        self._page.wait_for_timeout(200)
+        verified_text = editor.evaluate("(el) => (el.innerText || el.textContent || el.value || '').trim()")
+        if str(verified_text).strip() == text.strip():
+            return
+
         editor.click()
         modifier = "Meta+A" if sys.platform == "darwin" else "Control+A"
-        self._page.keyboard.press(modifier)
-        self._page.keyboard.press("Backspace")
+        for _ in range(3):
+            self._page.keyboard.press(modifier)
+            self._page.keyboard.press("Backspace")
+            self._page.wait_for_timeout(100)
         self._page.keyboard.type(text, delay=5)
+        self._page.wait_for_timeout(200)
+        final_text = editor.evaluate("(el) => (el.innerText || el.textContent || el.value || '').trim()")
+        if str(final_text).strip() != text.strip():
+            raise ElevenLabsError("Khong xoa sach duoc noi dung cu trong ElevenLabs editor.")
 
     def generate_and_download(self, output_path: Path) -> None:
         self.generate_and_download_many([output_path])
