@@ -1,65 +1,58 @@
-# Flowgen Studio — Video Downloader, TTS & AI Generative Studio v1.3.0
+# ImageCraft Studio — Video Downloader & StoryStudio AI v1.3.0 "Titanium"
 
-Ứng dụng hỗ trợ tải video đa nền tảng, tạo nội dung hàng loạt với TTS (Text-to-Speech) và chỉnh sửa/tạo ảnh tự động sử dụng AI (Gemini) với giao diện cao cấp.
+Ứng dụng tối thượng hỗ trợ tải video đa nền tảng, quản lý TTS và hệ thống **Thumbnail Studio AI** thế hệ mới. Trải nghiệm quy trình sáng tạo chuyên nghiệp với giao diện ImageCraft cao cấp.
 
-## ✨ Điểm mới nổi bật trong phiên bản v1.3.0
+## ✨ Điểm mới trong v1.3.0 "Titanium Edition"
 
-### 🎨 Kiến trúc & Giao diện (Aesthetics)
-- **Giao diện 2 cột thông minh (Story Studio)**: Tối ưu hóa không gian làm việc với giao diện chia 2 cột, hỗ trợ quản lý quy trình tạo video, kịch bản và ảnh một cách trực quan.
-- **Dark Pro Design**: Thiết kế giao diện cao cấp sử dụng font chữ **Syne** và **JetBrains Mono**, tối giản các đường viền rườm rà.
-- **Thanh trạng thái & Điều khiển**: Tích hợp các chấm trạng thái (green dots) và nút điều khiển luồng thế hệ mới (Pause/Resume/Stop) cho hệ thống tạo kịch bản/ảnh.
+### 🎨 Trải nghiệm Canvas Đỉnh cao (Pro Canvas Experience)
+- **Interactive Masking**: Hỗ trợ bộ công cụ vẽ (Brush/Eraser) trực tiếp trên Canvas với khả năng thay đổi kích thước cọ vẽ linh hoạt.
+- **Dynamic Resizing**: Hệ thống điểm neo (Anchor Points) thông minh cho phép kéo giãn, thu phóng Artboard, Crop và các Shape (Rect/Ellipse) một cách trực quan.
+- **Keyboard Power User**: Hệ thống phím tắt toàn diện dành cho Pro:
+  - `V` (Pointer), `B` (Brush), `E` (Eraser), `C` (Crop), `A` (Artboard).
+  - `R` (Rect), `O` (Ellipse), `T` (Transform).
+  - `[` / `]` để chỉnh size cọ.
+  - `Ctrl/Cmd + Z / Y` cho Undo/Redo vô hạn.
 
-### 🖼️ Thumbnail Studio - Trải nghiệm Canvas tương tác
-- **Công cụ Mask & Khung (Frame/Crop/Artboard)**: Vẽ khung, cắt ảnh và tạo Artboard ngay trên canvas bằng chuột.
-- **Tương tác thông minh**: Thêm điểm neo (anchor points) ở các góc/cạnh cho phép thay đổi kích thước linh hoạt các thành phần vẽ (Shape/Crop/Artboard) với tọa độ chính xác tuyệt đối.
-- **Phím tắt chuyên nghiệp (Keyboard Shortcuts)**: Tăng tốc độ chỉnh sửa với hệ thống phím tắt (V: Di chuyển, B: Brush, E: Tẩy, C: Crop, A: Artboard, T: Transform, [, ]: Chỉnh cỡ cọ vẽ, Delete: Xóa, Ctrl/Cmd + Z: Hoàn tác).
-- **History Navigator & A/B Testing**: So sánh phiên bản Thumbnail (A/B testing) và xem lại thanh lịch sử làm việc mượt mà.
+### 🛠 Thumbnail Studio Workflow
+- **Action Builder 2.0**: Tự định nghĩa các nút chức năng với tham số động (Slider, Select, Input). Prompt tự động sinh ra dựa trên logic template thông minh.
+- **Pipeline Visualization**: Hình dung toàn bộ chuỗi hiệu ứng (Expand -> Face Swap -> Color Grade) qua giao diện Profile Runner.
+- **Version Branching**: Lưu trữ và so sánh các phiên bản ảnh (A/B testing) trực quan qua dải History Strip.
+- **High-Speed Export**: Xuất ảnh HD/FHD siêu tốc, tự động phân loại theo dự án.
 
-### 🛠️ Story Studio & Image Generation Pipeline
-- **Quản lý phiên bản ảnh Gemini**: Chỉnh sửa (Refine) prompt trực tiếp với AI thay vì chỉ tạo mới. Quản lý thư mục chứa file, lọc các ảnh không ưng ý.
-- **Giám sát trình duyệt & Headless Mode**: Thêm nút bật/tắt chế độ Headless cho việc gọi API ẩn danh, giúp hạn chế rác bộ nhớ và tối ưu tài nguyên máy tính.
-- **Đồng bộ hóa luồng (Pipeline Orchestration)**: Tích hợp và khắc phục lỗi nghẽn luồng giữa giao diện Web UI (React) và bộ xử lý Playwright (Python).
+### 🎨 Ngôn ngữ thiết kế ImageCraft
+- **Titanium Dark UI**: Giao diện tối chuyên nghiệp sử dụng font **Syne** (Heading) và **JetBrains Mono** (Data).
+- **Glassmorphism Controls**: Các thanh công cụ và Dock điều khiển nổi (Floating Dock) với hiệu ứng làm mờ kính cao cấp.
+- **Micro-interactions**: Phản hồi xúc giác qua các hiệu ứng chuyển cảnh, hover và trạng thái xử lý ảnh thời gian thực.
 
-### 🎙️ Quản lý TTS & Giọng đọc
-- Tính năng làm mới danh sách giọng đọc (Rescan Voices).
-- Đơn giản hóa cài đặt gốc và thống nhất các giao diện con thành một luồng (pipeline) liền mạch.
+## 🚀 Trạng thái hiện tại
 
-## 🚀 Trạng thái phát triển
+### ✅ Đã hoàn thiện
+- Quy trình tạo Thumbnail từ Clipboard (Zero-click start).
+- Vẽ Mask và định vị khung ảnh (Artboard/Crop) linh hoạt vượt ngoài biên.
+- Hệ thống phím tắt Pro và Undo/Redo toàn diện.
+- Thư viện Quick Actions (Face, BG, General, Magic).
+- Quản lý lịch sử và nhánh phiên bản ảnh.
 
-### Tính năng cốt lõi (Đã hoàn thành)
-- Tải video từ nhiều nền tảng (Video Downloader).
-- Quản lý chiến dịch, tạo cấu trúc kịch bản và tự động hóa TTS.
-- Studio tạo ảnh và chỉnh sửa (Thumbnail Studio) kết hợp vẽ Canvas + Prompt AI.
-- Hệ thống Plugin & Script Action tùy chỉnh theo thư viện.
+### 🛠 Lộ trình v1.4.0
+- **Real-time SSE Monitoring**: Theo dõi Gemini xử lý từng layer theo thời gian thực.
+- **Layer Manager**: Quản lý các lớp đối tượng chuyên sâu như Photoshop.
+- **Bulk Profile Runner**: Áp dụng cùng lúc một Profile cho hàng loạt ảnh.
 
-### Kế hoạch v1.4.x
-- **Real-time SSE**: Cập nhật tiến trình AI tạo ảnh theo từng giây thay vì chờ đến khi xong.
-- **Nâng cấp Mask Painting**: Hoàn thiện thuật toán làm mượt viền khi vẽ Brush.
-- **Video Assembly**: Ghép nối tự động các phân đoạn ảnh, video và TTS thành sản phẩm cuối cùng.
+## 🛠 Hướng dẫn chạy
 
-## 💻 Hướng dẫn chạy ứng dụng
-
-1. **Khởi động Môi trường & Backend (Python)**:
+1. **Chạy ứng dụng chính**:
    ```bash
-   # Cài đặt (lần đầu)
-   pip install -r requirements.txt
-   
-   # Khởi chạy server và UI
-   ./.venv/bin/python main.py
+   python main.py
    ```
-
 2. **Phát triển Frontend (Dev mode)**:
    ```bash
    cd web
-   npm install
    npm run dev
    ```
-
-3. **Build Frontend cho Production**:
+3. **Đóng gói sản phẩm**:
    ```bash
-   cd web
    npm run build
    ```
 
 ---
-Phát triển bởi **mmmnhat** · 2026 · **Flowgen Studio Edition**
+Phát triển bởi **mmmnhat** · 2026 · **ImageCraft Premium Edition**
