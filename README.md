@@ -76,6 +76,10 @@
    cd web
    npm run dev
    ```
+3. **Đóng gói sản phẩm**:
+   ```bash
+   python auto_build.py
+   ```
 
 ---
 Phát triển bởi **mmmnhat** · 2026 · **ImageCraft Premium Edition**
