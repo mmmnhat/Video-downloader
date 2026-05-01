@@ -1,0 +1,23 @@
+
+> video-downloader-web@0.0.0 build
+> tsc -b && vite build
+
+src/components/ThumbnailStudio.tsx(2397,18): error TS2657: JSX expressions must have one parent element.
+src/components/ThumbnailStudio.tsx(2424,28): error TS17002: Expected corresponding JSX closing tag for 'FieldGroup'.
+src/components/ThumbnailStudio.tsx(2470,20): error TS1005: ')' expected.
+src/components/ThumbnailStudio.tsx(2470,22): error TS17002: Expected corresponding JSX closing tag for 'div'.
+src/components/ThumbnailStudio.tsx(2471,20): error TS17002: Expected corresponding JSX closing tag for 'ScrollArea'.
+src/components/ThumbnailStudio.tsx(2472,17): error TS1381: Unexpected token. Did you mean `{'}'}` or `&rbrace;`?
+src/components/ThumbnailStudio.tsx(2473,18): error TS17002: Expected corresponding JSX closing tag for 'Card'.
+src/components/ThumbnailStudio.tsx(2474,14): error TS1005: ')' expected.
+src/components/ThumbnailStudio.tsx(2474,16): error TS17002: Expected corresponding JSX closing tag for 'main'.
+src/components/ThumbnailStudio.tsx(2475,13): error TS17002: Expected corresponding JSX closing tag for 'div'.
+src/components/ThumbnailStudio.tsx(2476,11): error TS1005: ';' expected.
+src/components/ThumbnailStudio.tsx(2779,3): error TS1128: Declaration or statement expected.
+src/components/ThumbnailStudio.tsx(2782,14): error TS1005: ';' expected.
+src/components/ThumbnailStudio.tsx(2783,23): error TS1005: ',' expected.
+src/components/ThumbnailStudio.tsx(2965,10): error TS1128: Declaration or statement expected.
+src/components/ThumbnailStudio.tsx(2966,7): error TS1128: Declaration or statement expected.
+src/components/ThumbnailStudio.tsx(2967,5): error TS1109: Expression expected.
+src/components/ThumbnailStudio.tsx(2968,3): error TS1109: Expression expected.
+src/components/ThumbnailStudio.tsx(2969,1): error TS1128: Declaration or statement expected.

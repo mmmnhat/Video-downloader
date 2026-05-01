@@ -16,10 +16,26 @@ from downloader_app.runtime import app_path, cache_path
 THUMBNAIL_STATE_FILE = app_path("thumbnail_projects_state.json")
 THUMBNAIL_CACHE_ROOT = cache_path("thumbnail_pipeline")
 THUMBNAIL_PROJECTS_ROOT = THUMBNAIL_CACHE_ROOT / "projects"
+THUMBNAIL_BUTTON_PRESET_KIND = "thumbnail-button-preset"
+THUMBNAIL_PROFILE_PRESET_KIND = "thumbnail-profile-preset"
+THUMBNAIL_PRESET_VERSION = 1
+THUMBNAIL_REQUIRED_TOOL_GROUPS = {"paint", "frame", "shape"}
+THUMBNAIL_LEGACY_TOOL_MAP = {
+    "brush": "paint",
+    "eraser": "paint",
+    "crop": "frame",
+    "artboard": "frame",
+    "rect": "shape",
+    "ellipse": "shape",
+}
 
 
 def thumbnail_runtime_root() -> Path:
     return THUMBNAIL_CACHE_ROOT / "gemini_runtime"
+
+
+def thumbnail_gem_scan_runtime_root() -> Path:
+    return THUMBNAIL_CACHE_ROOT / "gem_scan_runtime"
 
 
 def thumbnail_projects_root() -> Path:
@@ -36,6 +52,18 @@ def utc_now() -> str:
 
 def display_time() -> str:
     return datetime.now().strftime("%d/%m/%Y %H:%M")
+
+
+def normalize_required_tools(values: list[str] | tuple[str, ...] | None) -> list[str]:
+    normalized: list[str] = []
+    for raw_value in values or []:
+        value = str(raw_value).strip().lower()
+        if not value:
+            continue
+        mapped = THUMBNAIL_LEGACY_TOOL_MAP.get(value, value)
+        if mapped in THUMBNAIL_REQUIRED_TOOL_GROUPS and mapped not in normalized:
+            normalized.append(mapped)
+    return normalized
 
 
 class ThumbnailPipelineError(RuntimeError):
@@ -93,6 +121,7 @@ class ThumbnailButton:
     create_new_chat: bool
     allow_regenerate: bool
     summary: str
+    required_tools: list[str] = field(default_factory=list)
     is_pinned: bool = False
     fields: list[ThumbnailButtonField] = field(default_factory=list)
 
@@ -141,6 +170,14 @@ class ThumbnailProject:
     versions: list[ThumbnailVersion] = field(default_factory=list)
 
 
+@dataclass
+class ThumbnailSettings:
+    gemini_headless: bool = False
+    gemini_base_url: str = GEMINI_DEFAULT_URL
+    gemini_response_timeout_ms: int = 120_000
+    gemini_model: str = "flash"
+
+
 def default_buttons() -> list[ThumbnailButton]:
     return [
         ThumbnailButton(
@@ -153,6 +190,7 @@ def default_buttons() -> list[ThumbnailButton]:
             create_new_chat=True,
             allow_regenerate=True,
             summary="Đổi đúng màu vùng đã chọn mà không làm lệch phần còn lại.",
+            required_tools=["paint"],
             fields=[
                 ThumbnailButtonField(
                     key="object",
@@ -180,6 +218,7 @@ def default_buttons() -> list[ThumbnailButton]:
             create_new_chat=True,
             allow_regenerate=True,
             summary="Xóa logo, chữ hoặc chi tiết thừa theo vùng mask đỏ.",
+            required_tools=["paint"],
         ),
         ThumbnailButton(
             id="extend-wide",
@@ -191,6 +230,7 @@ def default_buttons() -> list[ThumbnailButton]:
             create_new_chat=True,
             allow_regenerate=True,
             summary="Mở rộng khung hình theo tỉ lệ mong muốn để chuẩn bị xuất thumbnail.",
+            required_tools=["frame"],
             fields=[
                 ThumbnailButtonField(
                     key="target_ratio",
@@ -259,6 +299,7 @@ class ThumbnailPipelineManager:
         self._runtime_root = thumbnail_runtime_root()
         self._debug_root = thumbnail_debug_root()
         self._lock = threading.RLock()
+        self._settings = ThumbnailSettings()
         self._projects: dict[str, ThumbnailProject] = {}
         self._buttons: list[ThumbnailButton] = default_buttons()
         self._active_project_id: str | None = None
@@ -314,6 +355,7 @@ class ThumbnailPipelineManager:
             if self._repair_all_projects_missing_outputs_locked():
                 self._persist_locked()
             return {
+                "settings": asdict(self._settings),
                 "buttons": [self._serialize_button(button) for button in self._buttons],
                 "projects": [self._serialize_project_summary(project) for project in self._projects.values()],
                 "activeProjectId": self._active_project_id,
@@ -323,9 +365,48 @@ class ThumbnailPipelineManager:
                     "backend": "gemini_web",
                     "dependencies_ready": True,
                     "authenticated": True,
-                    "baseUrl": GEMINI_DEFAULT_URL,
+                    "baseUrl": self._settings.gemini_base_url,
                 },
             }
+
+    def list_available_gems(self) -> list[dict]:
+        with self._lock:
+            runtime_root = thumbnail_gem_scan_runtime_root()
+            runtime_root.mkdir(parents=True, exist_ok=True)
+            adapter = GeminiWebAdapter(
+                runtime_root=runtime_root,
+                headless=True,
+                base_url=self._settings.gemini_base_url,
+                response_timeout_ms=self._settings.gemini_response_timeout_ms,
+                model_name=self._settings.gemini_model,
+                debug_selector=False,
+                max_tabs=1,
+            )
+        return adapter.list_gems()
+
+    def update_settings(self, payload: dict) -> dict:
+        with self._lock:
+            gemini_headless = _bool_value(
+                payload.get("gemini_headless", self._settings.gemini_headless),
+                default=self._settings.gemini_headless,
+            )
+            gemini_base_url = str(payload.get("gemini_base_url", self._settings.gemini_base_url)).strip() or self._settings.gemini_base_url
+            timeout_raw = payload.get("gemini_response_timeout_ms", self._settings.gemini_response_timeout_ms)
+            try:
+                gemini_response_timeout_ms = int(timeout_raw)
+            except (TypeError, ValueError):
+                raise ThumbnailPipelineError("gemini_response_timeout_ms không hợp lệ.")
+            gemini_model = str(payload.get("gemini_model", self._settings.gemini_model)).strip() or self._settings.gemini_model
+
+            self._settings = ThumbnailSettings(
+                gemini_headless=gemini_headless,
+                gemini_base_url=gemini_base_url,
+                gemini_response_timeout_ms=max(20_000, min(300_000, gemini_response_timeout_ms)),
+                gemini_model=gemini_model,
+            )
+            self._refresh_adapter_locked()
+            self._persist_locked()
+            return asdict(self._settings)
 
     def create_project(self, *, name: str, folder: str, source_image_path: str) -> dict:
         source_path = Path(source_image_path).expanduser().resolve()
@@ -480,6 +561,7 @@ class ThumbnailPipelineManager:
             create_new_chat=True,
             allow_regenerate=bool(payload.get("allowRegenerate", True)),
             summary=str(payload.get("summary", "")).strip() or "Nút tùy biến do user tạo.",
+            required_tools=normalize_required_tools(payload.get("requiredTools")),
             fields=[self._deserialize_button_field(field) for field in (payload.get("fields") or [])],
         )
         if not button.prompt_template:
@@ -541,6 +623,76 @@ class ThumbnailPipelineManager:
                     self._persist_locked()
                     return self._serialize_profile(p)
             raise ThumbnailPipelineError(f"Không tìm thấy profile: {profile_id}")
+
+    def export_button_preset(self, button_id: str) -> dict:
+        with self._lock:
+            button = self._require_button(button_id)
+            button_payload = self._serialize_preset_button(button)
+            preset_name = sanitize_file_stem(button.name).strip() or button.id
+            return {
+                "button": self._serialize_button(button),
+                "suggestedFileName": f"button-preset-{preset_name}.json",
+                "payload": {
+                    "kind": THUMBNAIL_BUTTON_PRESET_KIND,
+                    "version": THUMBNAIL_PRESET_VERSION,
+                    "exportedAt": utc_now(),
+                    "buttons": [button_payload],
+                },
+            }
+
+    def import_button_preset(self, payload: dict) -> list[dict]:
+        button_payloads = self._extract_button_preset_payloads(payload)
+        imported_buttons = [self.create_button(button_payload) for button_payload in button_payloads]
+        return imported_buttons
+
+    def export_profile_preset(self, profile_id: str) -> dict:
+        with self._lock:
+            profile = self._require_profile(profile_id)
+            button_map = {button.id: button for button in self._buttons}
+            missing_button_ids = [
+                effect.button_id
+                for effect in profile.effects
+                if effect.button_id not in button_map
+            ]
+            if missing_button_ids:
+                missing_text = ", ".join(sorted(set(missing_button_ids)))
+                raise ThumbnailPipelineError(f"Profile đang tham chiếu button không tồn tại: {missing_text}")
+
+            profile_payload = self._serialize_preset_profile(profile)
+            dependency_button_ids: list[str] = []
+            for effect in profile.effects:
+                if effect.button_id not in dependency_button_ids:
+                    dependency_button_ids.append(effect.button_id)
+            dependency_buttons = [
+                self._serialize_preset_button(button_map[button_id])
+                for button_id in dependency_button_ids
+            ]
+            preset_name = sanitize_file_stem(profile.name).strip() or profile.id
+            return {
+                "profile": self._serialize_profile(profile),
+                "buttons": [self._serialize_button(button_map[button_id]) for button_id in dependency_button_ids],
+                "suggestedFileName": f"profile-preset-{preset_name}.json",
+                "payload": {
+                    "kind": THUMBNAIL_PROFILE_PRESET_KIND,
+                    "version": THUMBNAIL_PRESET_VERSION,
+                    "exportedAt": utc_now(),
+                    "buttons": dependency_buttons,
+                    "profile": profile_payload,
+                },
+            }
+
+    def import_profile_preset(self, payload: dict) -> dict:
+        preset_payload = self._extract_profile_preset_payload(payload)
+        button_payloads = self._extract_button_preset_payloads(preset_payload)
+        imported_buttons = [self.create_button(button_payload) for button_payload in button_payloads]
+        profile_payload = preset_payload.get("profile")
+        if not isinstance(profile_payload, dict):
+            raise ThumbnailPipelineError("Preset profile không hợp lệ.")
+        profile = self.create_profile(profile_payload)
+        return {
+            "profile": profile,
+            "buttons": imported_buttons,
+        }
 
     def run_profile(self, payload: dict) -> dict:
         project_id = str(payload.get("project_id", "")).strip()
@@ -1058,6 +1210,12 @@ class ThumbnailPipelineManager:
                 return button
         raise ThumbnailPipelineError("Không tìm thấy button thumbnail.")
 
+    def _require_profile(self, profile_id: str) -> ThumbnailProfile:
+        for profile in self._profiles:
+            if profile.id == profile_id:
+                return profile
+        raise ThumbnailPipelineError("Không tìm thấy profile thumbnail.")
+
     def _serialize_project_summary(self, project: ThumbnailProject) -> dict:
         return {
             "id": project.id,
@@ -1126,6 +1284,7 @@ class ThumbnailPipelineManager:
         payload.pop("create_new_chat")
         payload["createNewChat"] = True
         payload["allowRegenerate"] = payload.pop("allow_regenerate")
+        payload["requiredTools"] = normalize_required_tools(payload.pop("required_tools", []))
         payload["isPinned"] = payload.pop("is_pinned")
         normalized_fields = []
         for field in payload["fields"]:
@@ -1149,6 +1308,16 @@ class ThumbnailPipelineManager:
                 for effect in profile.effects
             ],
         }
+
+    def _serialize_preset_button(self, button: ThumbnailButton) -> dict:
+        payload = self._serialize_button(button)
+        payload.pop("isPinned", None)
+        return payload
+
+    def _serialize_preset_profile(self, profile: ThumbnailProfile) -> dict:
+        payload = self._serialize_profile(profile)
+        payload.pop("isPinned", None)
+        return payload
 
     def _serialize_fields(self, fields: list[ThumbnailButtonField]) -> list[dict]:
         normalized_fields = []
@@ -1241,12 +1410,56 @@ class ThumbnailPipelineManager:
             )
         return effects
 
+    def _extract_button_preset_payloads(self, payload: dict) -> list[dict]:
+        if not isinstance(payload, dict):
+            raise ThumbnailPipelineError("Preset button không hợp lệ.")
+
+        if "buttons" in payload:
+            button_payloads = payload.get("buttons")
+            if not isinstance(button_payloads, list):
+                raise ThumbnailPipelineError("Danh sách button trong preset không hợp lệ.")
+            normalized = [item for item in button_payloads if isinstance(item, dict)]
+            if not normalized:
+                raise ThumbnailPipelineError("Preset button không có dữ liệu hợp lệ.")
+            return normalized
+
+        if "button" in payload and isinstance(payload.get("button"), dict):
+            return [payload["button"]]
+
+        if "promptTemplate" in payload or "prompt_template" in payload:
+            return [payload]
+
+        raise ThumbnailPipelineError("Không nhận diện được preset button.")
+
+    def _extract_profile_preset_payload(self, payload: dict) -> dict:
+        if not isinstance(payload, dict):
+            raise ThumbnailPipelineError("Preset profile không hợp lệ.")
+
+        if "profile" in payload and isinstance(payload.get("profile"), dict):
+            normalized = dict(payload)
+            button_payloads = payload.get("buttons", [])
+            if button_payloads is None:
+                button_payloads = []
+            if not isinstance(button_payloads, list):
+                raise ThumbnailPipelineError("Danh sách button phụ trợ trong preset profile không hợp lệ.")
+            normalized["buttons"] = [item for item in button_payloads if isinstance(item, dict)]
+            return normalized
+
+        if "effects" in payload or "items" in payload:
+            return {
+                "profile": payload,
+                "buttons": [],
+            }
+
+        raise ThumbnailPipelineError("Không nhận diện được preset profile.")
+
     def _persist_locked(self) -> None:
         data = {
             "activeProjectId": self._active_project_id,
             "buttons": [asdict(button) for button in self._buttons],
             "projects": [asdict(project) for project in self._projects.values()],
             "profiles": [asdict(profile) for profile in self._profiles],
+            "settings": asdict(self._settings),
         }
         self._state_file.parent.mkdir(parents=True, exist_ok=True)
         self._state_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1262,6 +1475,23 @@ class ThumbnailPipelineManager:
         except Exception:
             return
 
+        settings = raw.get("settings", {})
+        if isinstance(settings, dict):
+            timeout_raw = settings.get("gemini_response_timeout_ms", self._settings.gemini_response_timeout_ms)
+            try:
+                timeout_ms = int(timeout_raw)
+            except (TypeError, ValueError):
+                timeout_ms = self._settings.gemini_response_timeout_ms
+            self._settings = ThumbnailSettings(
+                gemini_headless=_bool_value(
+                    settings.get("gemini_headless", self._settings.gemini_headless),
+                    default=self._settings.gemini_headless,
+                ),
+                gemini_base_url=str(settings.get("gemini_base_url", self._settings.gemini_base_url)).strip() or self._settings.gemini_base_url,
+                gemini_response_timeout_ms=max(20_000, min(300_000, timeout_ms)),
+                gemini_model=str(settings.get("gemini_model", self._settings.gemini_model)).strip() or self._settings.gemini_model,
+            )
+
         self._active_project_id = raw.get("activeProjectId")
         self._buttons = [
             ThumbnailButton(
@@ -1274,6 +1504,7 @@ class ThumbnailPipelineManager:
                 create_new_chat=True,
                 allow_regenerate=bool(item.get("allow_regenerate", item.get("allowRegenerate", True))),
                 summary=str(item.get("summary", "")).strip(),
+                required_tools=normalize_required_tools(item.get("required_tools", item.get("requiredTools", []))),
                 is_pinned=bool(item.get("is_pinned", item.get("isPinned", False))),
                 fields=[
                     ThumbnailButtonField(
@@ -1371,6 +1602,8 @@ class ThumbnailPipelineManager:
                     button.name = builtin.name
                 if not button.summary or button.summary == "Mở rộng khung hình sang 16:9 để chuẩn bị xuất thumbnail.":
                     button.summary = builtin.summary
+            if not button.required_tools:
+                button.required_tools = list(builtin.required_tools)
 
             button.fields = merged_fields
             merged_buttons.append(button)
@@ -1382,21 +1615,38 @@ class ThumbnailPipelineManager:
 
         self._buttons = merged_buttons
 
+    def _refresh_adapter_locked(self) -> None:
+        self._adapter = None
+
     def _get_adapter(self) -> GeminiWebAdapter:
         with self._lock:
             if self._adapter is None:
                 self._runtime_root.mkdir(parents=True, exist_ok=True)
                 self._adapter = GeminiWebAdapter(
                     runtime_root=self._runtime_root,
-                    headless=False,
-                    base_url=GEMINI_DEFAULT_URL,
-                    response_timeout_ms=120_000,
-                    model_name="gemini-2.5-flash",
+                    headless=self._settings.gemini_headless,
+                    base_url=self._settings.gemini_base_url,
+                    response_timeout_ms=self._settings.gemini_response_timeout_ms,
+                    model_name=self._settings.gemini_model,
                     debug_selector=True,
                     debug_root=self._debug_root,
                     max_tabs=1,
                 )
             return self._adapter
+
+
+def _bool_value(value: object, *, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "y", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "n", "off"}:
+            return False
+    return default
 
 
 thumbnail_pipeline = ThumbnailPipelineManager()

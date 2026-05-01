@@ -24,6 +24,7 @@ from downloader_app.browser_session import browser_session
 from downloader_app.cache_manager import CacheManagerError, cache_manager
 from downloader_app.google_auth import GoogleAuthError, google_oauth
 from downloader_app.jobs import manager
+from downloader_app.jobs import sanitize_file_stem
 from downloader_app.runtime import bundled_path
 from downloader_app.sheets import SheetParseError, normalize_sequence_range
 from downloader_app.story_pipeline import StoryPipelineError, story_pipeline
@@ -81,6 +82,10 @@ class AppHandler(BaseHTTPRequestHandler):
 
         if path == "/api/story/gems":
             self._send_json(story_pipeline.list_available_gems())
+            return
+
+        if path == "/api/thumbnail/gems":
+            self._send_json(thumbnail_pipeline.list_available_gems())
             return
 
         if path == "/api/story/session/status":
@@ -326,6 +331,14 @@ class AppHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
 
+        if path == "/api/thumbnail/settings":
+            try:
+                payload = self._read_json_body()
+                self._send_json(thumbnail_pipeline.update_settings(payload))
+            except (json.JSONDecodeError, ThumbnailPipelineError) as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
         if path == "/api/thumbnail/projects":
             try:
                 payload = self._read_json_body()
@@ -366,11 +379,71 @@ class AppHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
 
+        if path == "/api/thumbnail/buttons/import":
+            try:
+                file_path = self._choose_file(
+                    title="Nhập preset button",
+                    file_filter="JSON files (*.json);;All files (*)",
+                    filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+                )
+                payload = json.loads(Path(file_path).read_text(encoding="utf-8"))
+                self._send_json({
+                    "path": file_path,
+                    "buttons": thumbnail_pipeline.import_button_preset(payload),
+                })
+            except (json.JSONDecodeError, OSError, RuntimeError, ThumbnailPipelineError) as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/thumbnail/buttons/export":
+            try:
+                payload = self._read_json_body()
+                export_data = thumbnail_pipeline.export_button_preset(str(payload.get("id", "")).strip())
+                destination_dir = str(payload.get("destination_dir", "")).strip()
+                if destination_dir:
+                    suggested_name = str(export_data.get("suggestedFileName", "button-preset.json")).strip() or "button-preset.json"
+                    target_path = str(Path(destination_dir).expanduser() / suggested_name)
+                    export_data["path"] = self._write_json_file(target_path, export_data["payload"])
+                self._send_json(export_data)
+            except (json.JSONDecodeError, OSError, RuntimeError, ThumbnailPipelineError) as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
         if path == "/api/thumbnail/profiles":
             try:
                 payload = self._read_json_body()
                 self._send_json(thumbnail_pipeline.create_profile(payload), status=HTTPStatus.CREATED)
             except (json.JSONDecodeError, ThumbnailPipelineError) as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/thumbnail/profiles/import":
+            try:
+                file_path = self._choose_file(
+                    title="Nhập preset profile",
+                    file_filter="JSON files (*.json);;All files (*)",
+                    filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+                )
+                payload = json.loads(Path(file_path).read_text(encoding="utf-8"))
+                self._send_json({
+                    "path": file_path,
+                    **thumbnail_pipeline.import_profile_preset(payload),
+                })
+            except (json.JSONDecodeError, OSError, RuntimeError, ThumbnailPipelineError) as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/thumbnail/profiles/export":
+            try:
+                payload = self._read_json_body()
+                export_data = thumbnail_pipeline.export_profile_preset(str(payload.get("id", "")).strip())
+                destination_dir = str(payload.get("destination_dir", "")).strip()
+                if destination_dir:
+                    suggested_name = str(export_data.get("suggestedFileName", "profile-preset.json")).strip() or "profile-preset.json"
+                    target_path = str(Path(destination_dir).expanduser() / suggested_name)
+                    export_data["path"] = self._write_json_file(target_path, export_data["payload"])
+                self._send_json(export_data)
+            except (json.JSONDecodeError, OSError, RuntimeError, ThumbnailPipelineError) as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
 
@@ -1390,6 +1463,118 @@ class AppHandler(BaseHTTPRequestHandler):
         if not browser_path:
             raise RuntimeError("Khong nhan duoc duong dan browser.")
         return browser_path
+
+    def _choose_file(
+        self,
+        *,
+        title: str,
+        file_filter: str,
+        filetypes: list[tuple[str, str]],
+    ) -> str:
+        from downloader_app.runtime import get_ui_bridge
+
+        bridge = get_ui_bridge()
+        if bridge and hasattr(bridge, "choose_file"):
+            try:
+                file_path = bridge.choose_file(
+                    title=title,
+                    file_filter=file_filter,
+                )
+                if not file_path:
+                    raise RuntimeError("Khong chon duoc tep.")
+                return file_path
+            except Exception as exc:
+                print(f"Bridge choose_file error: {exc}")
+
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+        except Exception as exc:
+            raise RuntimeError("Khong mo duoc file picker.") from exc
+
+        root = tk.Tk()
+        root.withdraw()
+        root.update_idletasks()
+        try:
+            root.attributes("-topmost", True)
+        except Exception:
+            pass
+
+        try:
+            file_path = filedialog.askopenfilename(
+                title=title,
+                filetypes=filetypes,
+            )
+        finally:
+            root.destroy()
+
+        if not file_path:
+            raise RuntimeError("Khong nhan duoc duong dan tep.")
+        return file_path
+
+    def _save_file(
+        self,
+        *,
+        title: str,
+        default_name: str,
+        file_filter: str,
+        filetypes: list[tuple[str, str]],
+    ) -> str:
+        from downloader_app.runtime import get_ui_bridge
+
+        normalized_name = sanitize_file_stem(default_name).strip() or "preset"
+        if not normalized_name.lower().endswith(".json"):
+            normalized_name = f"{normalized_name}.json"
+
+        bridge = get_ui_bridge()
+        if bridge and hasattr(bridge, "save_file"):
+            try:
+                file_path = bridge.save_file(
+                    title=title,
+                    default_path=normalized_name,
+                    file_filter=file_filter,
+                )
+                if not file_path:
+                    raise RuntimeError("Khong chon duoc noi luu tep.")
+                return file_path
+            except Exception as exc:
+                print(f"Bridge save_file error: {exc}")
+
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+        except Exception as exc:
+            raise RuntimeError("Khong mo duoc save dialog.") from exc
+
+        root = tk.Tk()
+        root.withdraw()
+        root.update_idletasks()
+        try:
+            root.attributes("-topmost", True)
+        except Exception:
+            pass
+
+        try:
+            file_path = filedialog.asksaveasfilename(
+                title=title,
+                initialfile=normalized_name,
+                defaultextension=".json",
+                filetypes=filetypes,
+            )
+        finally:
+            root.destroy()
+
+        if not file_path:
+            raise RuntimeError("Khong nhan duoc duong dan tep.")
+        return file_path
+
+    def _write_json_file(self, file_path: str, payload: object) -> str:
+        target_path = Path(file_path).expanduser()
+        if target_path.suffix.lower() != ".json":
+            target_path = target_path.with_suffix(".json")
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return str(target_path)
 
     def _choose_image(self) -> str:
         from downloader_app.runtime import get_ui_bridge

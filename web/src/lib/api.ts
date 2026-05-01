@@ -396,6 +396,18 @@ export type ThumbnailButtonField = {
   visibleIf?: string | Record<string, any> | null;
 };
 
+export type ThumbnailRequiredTool =
+  | "paint"
+  | "frame"
+  | "shape";
+
+export type ThumbnailSettings = {
+  gemini_headless: boolean;
+  gemini_base_url: string;
+  gemini_response_timeout_ms: number;
+  gemini_model: string;
+};
+
 export type ThumbnailButton = {
   id: string;
   name: string;
@@ -406,6 +418,7 @@ export type ThumbnailButton = {
   createNewChat: boolean;
   allowRegenerate: boolean;
   summary: string;
+  requiredTools?: ThumbnailRequiredTool[];
   fields: ThumbnailButtonField[];
   isPinned?: boolean;
 };
@@ -422,6 +435,32 @@ export type ThumbnailProfile = {
   effects: ThumbnailProfileEffect[];
   description: string;
   isPinned?: boolean;
+};
+
+export type ThumbnailButtonPresetImportResult = {
+  path: string;
+  buttons: ThumbnailButton[];
+};
+
+export type ThumbnailButtonPresetExportResult = {
+  button: ThumbnailButton;
+  payload: Record<string, unknown>;
+  suggestedFileName: string;
+  path?: string;
+};
+
+export type ThumbnailProfilePresetImportResult = {
+  path: string;
+  profile: ThumbnailProfile;
+  buttons: ThumbnailButton[];
+};
+
+export type ThumbnailProfilePresetExportResult = {
+  profile: ThumbnailProfile;
+  buttons: ThumbnailButton[];
+  payload: Record<string, unknown>;
+  suggestedFileName: string;
+  path?: string;
 };
 
 export async function createThumbnailProfile(payload: {
@@ -451,6 +490,23 @@ export async function togglePinThumbnailProfile(id: string) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ id }),
+  });
+}
+
+export async function importThumbnailProfilePreset() {
+  return requestJson<ThumbnailProfilePresetImportResult>("/api/thumbnail/profiles/import", {
+    method: "POST",
+  });
+}
+
+export async function exportThumbnailProfilePreset(payload: { id: string; destinationDir?: string }) {
+  return requestJson<ThumbnailProfilePresetExportResult>("/api/thumbnail/profiles/export", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      id: payload.id,
+      destination_dir: payload.destinationDir,
+    }),
   });
 }
 
@@ -521,6 +577,7 @@ export type ThumbnailProjectDetail = ThumbnailProjectSummary & {
 };
 
 export type ThumbnailBootstrapPayload = {
+  settings: ThumbnailSettings;
   buttons: ThumbnailButton[];
   projects: ThumbnailProjectSummary[];
   activeProjectId: string | null;
@@ -541,8 +598,18 @@ export class ApiError extends Error {
   }
 }
 
+export function resolveApiUrl(url: string) {
+  if (/^https?:\/\//i.test(url)) {
+    return url;
+  }
+  if (typeof window !== "undefined" && window.location.protocol === "file:") {
+    return `http://127.0.0.1:8765${url}`;
+  }
+  return url;
+}
+
 async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(url, options);
+  const response = await fetch(resolveApiUrl(url), options);
   const text = await response.text();
   const payload = text ? (JSON.parse(text) as Record<string, unknown>) : {};
 
@@ -960,7 +1027,7 @@ export async function updateStorySettings(settings: Partial<StorySettings>) {
 export function getStoryAssetUrl(path: string) {
   if (!path) return "";
   const encoded = encodeURIComponent(path);
-  return `/api/story/file?path=${encoded}`;
+  return resolveApiUrl(`/api/story/file?path=${encoded}`);
 }
 
 export async function getStorySessionStatus(refresh = false) {
@@ -1039,6 +1106,18 @@ export async function getThumbnailBootstrap() {
   return requestJson<ThumbnailBootstrapPayload>("/api/thumbnail/bootstrap");
 }
 
+export async function updateThumbnailSettings(settings: Partial<ThumbnailSettings>) {
+  return requestJson<ThumbnailSettings>("/api/thumbnail/settings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(settings),
+  });
+}
+
+export async function listThumbnailGems() {
+  return requestJson<{ name: string; url: string }[]>("/api/thumbnail/gems");
+}
+
 export async function getThumbnailProject(projectId: string) {
   return requestJson<ThumbnailProjectDetail>(`/api/thumbnail/projects/${projectId}`);
 }
@@ -1079,6 +1158,7 @@ export async function createThumbnailButton(payload: {
   createNewChat: boolean;
   allowRegenerate: boolean;
   summary?: string;
+  requiredTools?: ThumbnailRequiredTool[];
   fields: ThumbnailButtonField[];
 }) {
   return requestJson<ThumbnailButton>("/api/thumbnail/buttons", {
@@ -1101,6 +1181,23 @@ export async function togglePinThumbnailButton(id: string) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ id }),
+  });
+}
+
+export async function importThumbnailButtonPreset() {
+  return requestJson<ThumbnailButtonPresetImportResult>("/api/thumbnail/buttons/import", {
+    method: "POST",
+  });
+}
+
+export async function exportThumbnailButtonPreset(payload: { id: string; destinationDir?: string }) {
+  return requestJson<ThumbnailButtonPresetExportResult>("/api/thumbnail/buttons/export", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      id: payload.id,
+      destination_dir: payload.destinationDir,
+    }),
   });
 }
 
@@ -1226,5 +1323,5 @@ export async function clearThumbnailCache() {
 
 export function getThumbnailAssetUrl(path: string) {
   if (!path) return "";
-  return `/api/thumbnail/file?path=${encodeURIComponent(path)}`;
+  return resolveApiUrl(`/api/thumbnail/file?path=${encodeURIComponent(path)}`);
 }

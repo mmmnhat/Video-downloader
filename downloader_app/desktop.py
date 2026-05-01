@@ -15,18 +15,29 @@ class UIBridge(QObject):
     # Signal to trigger folder picker on main thread
     _choose_folder_signal = pyqtSignal()
     _choose_browser_signal = pyqtSignal()
+    _choose_file_signal = pyqtSignal()
+    _save_file_signal = pyqtSignal()
 
     def __init__(self, parent_window: QMainWindow):
         super().__init__()
         self.parent_window = parent_window
         self._last_folder = ""
         self._last_browser = ""
+        self._last_file = ""
         self._event = threading.Event()
         self._choose_folder_signal.connect(self._do_choose_folder)
         self._choose_browser_signal.connect(self._do_choose_browser)
+        self._choose_file_signal.connect(self._do_choose_file)
+        self._save_file_signal.connect(self._do_save_file)
         
         self.qsettings = QSettings("Nhat", "VideoDownloader")
         self._recent_folder = self.qsettings.value("recent_folder", "")
+        self._pending_file_title = "Chọn tệp"
+        self._pending_file_directory = ""
+        self._pending_file_filter = "All files (*)"
+        self._pending_save_title = "Lưu tệp"
+        self._pending_save_path = ""
+        self._pending_save_filter = "All files (*)"
 
     def choose_folder(self) -> str:
         """Called from any thread. Blocks until user chooses a folder."""
@@ -44,6 +55,36 @@ class UIBridge(QObject):
         self._choose_browser_signal.emit()
         self._event.wait()
         return self._last_browser
+
+    def choose_file(
+        self,
+        title: str = "Chọn tệp",
+        directory: str = "",
+        file_filter: str = "All files (*)",
+    ) -> str:
+        self._last_file = ""
+        self._pending_file_title = title
+        self._pending_file_directory = directory
+        self._pending_file_filter = file_filter
+        self._event.clear()
+        self._choose_file_signal.emit()
+        self._event.wait()
+        return self._last_file
+
+    def save_file(
+        self,
+        title: str = "Lưu tệp",
+        default_path: str = "",
+        file_filter: str = "All files (*)",
+    ) -> str:
+        self._last_file = ""
+        self._pending_save_title = title
+        self._pending_save_path = default_path
+        self._pending_save_filter = file_filter
+        self._event.clear()
+        self._save_file_signal.emit()
+        self._event.wait()
+        return self._last_file
 
     @pyqtSlot()
     def _do_choose_folder(self):
@@ -80,6 +121,40 @@ class UIBridge(QObject):
                     "Applications (*.exe *.app *.App);;All files (*)",
                 )
             self._last_browser = browser_path
+        finally:
+            self._event.set()
+
+    @pyqtSlot()
+    def _do_choose_file(self):
+        try:
+            start_dir = self._pending_file_directory or self._recent_folder
+            file_path, _ = QFileDialog.getOpenFileName(
+                self.parent_window,
+                self._pending_file_title,
+                start_dir,
+                self._pending_file_filter,
+            )
+            if file_path:
+                self._recent_folder = str(Path(file_path).expanduser().parent)
+                self.qsettings.setValue("recent_folder", self._recent_folder)
+            self._last_file = file_path
+        finally:
+            self._event.set()
+
+    @pyqtSlot()
+    def _do_save_file(self):
+        try:
+            start_path = self._pending_save_path or self._recent_folder
+            file_path, _ = QFileDialog.getSaveFileName(
+                self.parent_window,
+                self._pending_save_title,
+                start_path,
+                self._pending_save_filter,
+            )
+            if file_path:
+                self._recent_folder = str(Path(file_path).expanduser().parent)
+                self.qsettings.setValue("recent_folder", self._recent_folder)
+            self._last_file = file_path
         finally:
             self._event.set()
 
