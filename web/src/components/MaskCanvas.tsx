@@ -431,6 +431,7 @@ export default function MaskCanvas({
  const [guide, setGuide] = useState<CanvasGuide | null>(null);
  const [shapes, setShapes] = useState<CanvasShape[]>([]);
  const [selectedShapeId, setSelectedShapeId] = useState<string | null>(null);
+ const [cursorPoint, setCursorPoint] = useState<Point | null>(null);
 
  const [history, setHistory] = useState<HistorySnapshot[]>([]);
  const [historyIndex, setHistoryIndex] = useState(-1);
@@ -465,6 +466,7 @@ export default function MaskCanvas({
  const activeFrameTool = tool === "crop" || tool === "artboard" ? tool : frameTool;
  const activeShapeTool = tool === "rect" || tool === "ellipse" ? tool : shapeTool;
  const activeRatio = selectedRatio.width / selectedRatio.height;
+ const showBrushCursor = tool === "brush" || tool === "eraser";
 
  useEffect(() => {
   guideRef.current = guide;
@@ -671,6 +673,12 @@ export default function MaskCanvas({
   onGuideChange?.(guide);
  }, [guide, onGuideChange]);
 
+ useEffect(() => {
+  if (!showBrushCursor) {
+   setCursorPoint(null);
+  }
+ }, [showBrushCursor]);
+
  const handleUndo = () => {
   if (historyIndexRef.current <= 0) return;
   const nextIndex = historyIndexRef.current - 1;
@@ -854,6 +862,7 @@ export default function MaskCanvas({
 
  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
   if (tool === "pan" || e.button === 1 || e.button === 2) {
+   setCursorPoint(null);
    setIsPanning(true);
    panStartRef.current = { x: e.clientX - pan.x, y: e.clientY - pan.y };
    setHasZoomed(true);
@@ -861,6 +870,7 @@ export default function MaskCanvas({
   }
 
   if (tool === "scale") {
+   setCursorPoint(null);
    setIsScaling(true);
    scaleStartRef.current = { y: e.clientY, scale };
    setHasZoomed(true);
@@ -871,6 +881,7 @@ export default function MaskCanvas({
   if (!workspacePoint) return;
 
   if (tool === "crop" || tool === "artboard") {
+   setCursorPoint(null);
    const currentGuide = guideRef.current;
    if (currentGuide && currentGuide.mode === tool) {
     const handle = getHandleAtPoint(workspacePoint, currentGuide.rect, scale);
@@ -907,6 +918,7 @@ export default function MaskCanvas({
   }
 
   if (tool === "rect" || tool === "ellipse") {
+   setCursorPoint(null);
    const hitShape = findTopmostShapeAtPoint(workspacePoint);
    if (hitShape) {
     setSelectedShapeId(hitShape.id);
@@ -946,6 +958,7 @@ export default function MaskCanvas({
   const point = getImagePoint(e);
   if (!point || !canvasRef.current) return;
 
+  setCursorPoint(point);
   setIsDrawing(true);
   lastPosRef.current = point;
   const ctx = canvasRef.current.getContext("2d");
@@ -956,6 +969,7 @@ export default function MaskCanvas({
 
  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
   if (isPanning) {
+   setCursorPoint(null);
    setPan({
     x: e.clientX - panStartRef.current.x,
     y: e.clientY - panStartRef.current.y,
@@ -964,12 +978,14 @@ export default function MaskCanvas({
   }
 
   if (isScaling) {
+   setCursorPoint(null);
    const delta = (scaleStartRef.current.y - e.clientY) * 0.004;
    setScale(clamp(scaleStartRef.current.scale + delta, MIN_SCALE, MAX_SCALE));
    return;
   }
 
   if (overlayInteraction) {
+   setCursorPoint(null);
    const workspacePoint = getWorkspacePoint(e);
    if (!workspacePoint) return;
 
@@ -1041,6 +1057,9 @@ export default function MaskCanvas({
   }
 
   const point = getImagePoint(e);
+  if (showBrushCursor) {
+   setCursorPoint(point);
+  }
   if (!point || !isDrawing || !lastPosRef.current || !canvasRef.current) return;
   const ctx = canvasRef.current.getContext("2d");
   if (!ctx) return;
@@ -1061,6 +1080,11 @@ export default function MaskCanvas({
   ctx.closePath();
   ctx.restore();
   lastPosRef.current = point;
+ };
+
+ const handlePointerLeave = () => {
+  handlePointerUp();
+  setCursorPoint(null);
  };
 
  const handlePointerUp = () => {
@@ -1819,55 +1843,73 @@ export default function MaskCanvas({
 
    <div
     ref={containerRef}
-    className="relative flex flex-1 items-center justify-center overflow-hidden"
+    className="relative flex min-h-0 flex-1 overflow-hidden"
     onPointerDown={handlePointerDown}
     onPointerMove={handlePointerMove}
     onPointerUp={handlePointerUp}
-    onPointerLeave={handlePointerUp}
+    onPointerLeave={handlePointerLeave}
     onWheel={handleWheel}
     style={{ touchAction: "none" }}
    >
-    <div
-     className="relative transition-transform duration-75 ease-out"
-     style={{
-      transform: `translate(${pan.x}px, ${pan.y}px) scale(${scale})`,
-     }}
-    >
+    <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
      <div
-      ref={stageRef}
-      className="relative shrink-0"
+      className="relative transition-transform duration-75 ease-out"
       style={{
-       width: imageSize.width || undefined,
-       height: imageSize.height || undefined,
-       transform: `rotate(${viewRotation}deg) scale(${flipX ? -1 : 1}, ${flipY ? -1 : 1})`,
-       transformOrigin: "center center",
+       transform: `translate(${pan.x}px, ${pan.y}px) scale(${scale})`,
       }}
      >
-      <img
-       ref={imageRef}
-       src={imageUrl}
-       className="pointer-events-none block max-w-none"
+      <div
+       ref={stageRef}
+       className="relative shrink-0"
        style={{
         width: imageSize.width || undefined,
         height: imageSize.height || undefined,
+        transform: `rotate(${viewRotation}deg) scale(${flipX ? -1 : 1}, ${flipY ? -1 : 1})`,
+        transformOrigin: "center center",
        }}
-       alt="Canvas background"
-       onError={() => console.error("Failed to load image:", imageUrl)}
-      />
-      <canvas
-       ref={canvasRef}
-       className={cn(
-        "absolute left-0 top-0 block",
-        tool === "pan" ? "cursor-grab active:cursor-grabbing" : "cursor-crosshair",
-       )}
-       style={{
-        width: imageSize.width || undefined,
-        height: imageSize.height || undefined,
-       }}
-      />
-      {renderGuideOverlay(previewGuide)}
-      {shapes.map((shape) => renderShapeOverlay(shape, shape.id === selectedShapeId))}
-      {previewShape ? renderShapeOverlay(previewShape, false, true) : null}
+      >
+       <img
+        ref={imageRef}
+        src={imageUrl}
+        className="pointer-events-none block max-w-none"
+        style={{
+         width: imageSize.width || undefined,
+         height: imageSize.height || undefined,
+        }}
+        alt="Canvas background"
+        onError={() => console.error("Failed to load image:", imageUrl)}
+       />
+       <canvas
+        ref={canvasRef}
+        className={cn(
+         "absolute left-0 top-0 block",
+         tool === "pan"
+          ? "cursor-grab active:cursor-grabbing"
+          : showBrushCursor
+           ? "cursor-none"
+           : "cursor-crosshair",
+        )}
+        style={{
+         width: imageSize.width || undefined,
+         height: imageSize.height || undefined,
+        }}
+       />
+       {showBrushCursor && cursorPoint ? (
+        <div
+         className="pointer-events-none absolute rounded-full border border-white/90 bg-white/10 shadow-sm"
+         style={{
+          left: cursorPoint.x - brushSize / 2,
+          top: cursorPoint.y - brushSize / 2,
+          width: brushSize,
+          height: brushSize,
+          boxShadow: "0 0 0 1px rgba(0, 0, 0, 0.55)",
+         }}
+        />
+       ) : null}
+       {renderGuideOverlay(previewGuide)}
+       {shapes.map((shape) => renderShapeOverlay(shape, shape.id === selectedShapeId))}
+       {previewShape ? renderShapeOverlay(previewShape, false, true) : null}
+      </div>
      </div>
     </div>
    </div>

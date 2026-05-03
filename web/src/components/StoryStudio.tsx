@@ -184,7 +184,11 @@ const VideoThumb = React.memo(({ path, alt, className, onClick }: { path: string
 
 VideoThumb.displayName = "VideoThumb";
 
-export function StoryStudio() {
+type StoryStudioProps = {
+ isActive?: boolean;
+};
+
+export function StoryStudio({ isActive = true }: StoryStudioProps) {
  const [selectedExportKeys, setSelectedExportKeys] = useState<Set<string>>(new Set());
  const [exportingCollection, setExportingCollection] = useState(false);
  const [bootLoading, setBootLoading] = useState(true);
@@ -232,6 +236,7 @@ export function StoryStudio() {
  const [showRefinePrompt, setShowRefinePrompt] = useState(false);
  const [refinePromptDraft, setRefinePromptDraft] = useState("");
  const [previewDialogPath, setPreviewDialogPath] = useState<string | null>(null);
+ const hasBootstrappedRef = useRef(false);
 
  const [, startTransition] = useTransition();
 
@@ -315,6 +320,9 @@ export function StoryStudio() {
  }, [startTransition]);
 
  useEffect(() => {
+  if (!isActive || hasBootstrappedRef.current) return;
+  hasBootstrappedRef.current = true;
+
   let cancelled = false;
 
   const init = async () => {
@@ -335,17 +343,20 @@ export function StoryStudio() {
     setSelectedVideoId(fallbackVideoId);
     setBootLoading(false);
 
-    void listStoryGems()
-     .then((gems) => {
-      if (!cancelled) {
-       setAvailableGems(gems);
-      }
-     })
-     .catch(() => {
-      // Keep first paint fast; user can retry manually.
-     });
+    if ((bootstrap.settings.gemini_base_url || GEMINI_DEFAULT_URL) !== GEMINI_DEFAULT_URL) {
+     void listStoryGems()
+      .then((gems) => {
+       if (!cancelled) {
+        setAvailableGems(gems);
+       }
+      })
+      .catch(() => {
+       // Keep first paint fast; user can retry manually.
+      });
+    }
    } catch {
     if (cancelled) return;
+    hasBootstrappedRef.current = false;
     setBootLoading(false);
     toast.error("Lỗi khởi tạo Tạo ảnh.");
    } finally {
@@ -356,7 +367,22 @@ export function StoryStudio() {
   return () => {
    cancelled = true;
   };
- }, [setSelectedVideoId]);
+ }, [isActive, setSelectedVideoId]);
+
+ const currentGemSelection = settingsDraft?.gemini_base_url?.trim() || GEMINI_DEFAULT_URL;
+ const gemOptions = useMemo(() => {
+  const next = [...availableGems];
+  if (
+   currentGemSelection !== GEMINI_DEFAULT_URL
+   && !next.some((gem) => gem.url === currentGemSelection)
+  ) {
+   next.unshift({
+    name: "Gem hiện tại",
+    url: currentGemSelection,
+   });
+  }
+  return next;
+ }, [availableGems, currentGemSelection]);
 
  useEffect(() => {
   if (selectedVideoId && videoSummaries.some((video) => video.id === selectedVideoId)) {
@@ -795,7 +821,7 @@ export function StoryStudio() {
              </SelectTrigger>
              <SelectContent>
               <SelectItem value={GEMINI_DEFAULT_URL}>Gemini mặc định</SelectItem>
-              {availableGems.map(gem => (
+              {gemOptions.map(gem => (
                <SelectItem key={gem.url} value={gem.url}>{gem.name}</SelectItem>
               ))}
              </SelectContent>

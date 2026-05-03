@@ -794,7 +794,11 @@ function VersionComparator({
  );
 }
 
-export default function ThumbnailStudio() {
+type ThumbnailStudioProps = {
+ isActive?: boolean;
+};
+
+export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProps) {
  const [bootLoading, setBootLoading] = useState(true);
  const [submitting, setSubmitting] = useState(false);
  const submittingRef = useRef(false);
@@ -812,6 +816,7 @@ export default function ThumbnailStudio() {
  // Gallery preview: null = closed, string = versionId currently being previewed
  const [galleryPreviewVersionId, setGalleryPreviewVersionId] = useState<string | null>(null);
  const [canvasGuide, setCanvasGuide] = useState<CanvasGuide | null>(null);
+ const hasBootstrappedRef = useRef(false);
  // Free-pick comparison: A and B are version IDs chosen by the user
  const [compareVersionAId, setCompareVersionAId] = useState<string | null>(null);
  const [compareVersionBId, setCompareVersionBId] = useState<string | null>(null);
@@ -908,25 +913,43 @@ export default function ThumbnailStudio() {
  }, [activeProject]);
 
  useEffect(() => {
+  if (!isActive || hasBootstrappedRef.current) return;
+  hasBootstrappedRef.current = true;
+
+  let cancelled = false;
   void (async () => {
    setBootLoading(true);
    try {
     const payload = await getThumbnailBootstrap();
+    if (cancelled) return;
     startTransition(() => {
      setBootstrap(payload);
      setThumbnailSettingsDraft(payload.settings);
      setActiveProject(payload.activeProject);
     });
-    void listThumbnailGems()
-     .then((gems) => setAvailableGems(gems))
-     .catch(() => undefined);
+    if ((payload.settings.gemini_base_url || THUMBNAIL_DEFAULT_GEM_URL) !== THUMBNAIL_DEFAULT_GEM_URL) {
+     void listThumbnailGems()
+      .then((gems) => {
+       if (!cancelled) {
+        setAvailableGems(gems);
+       }
+      })
+      .catch(() => undefined);
+    }
    } catch (error) {
+    hasBootstrappedRef.current = false;
+    if (cancelled) return;
     toast.error(getErrorMessage(error));
    } finally {
-    setBootLoading(false);
+    if (!cancelled) {
+     setBootLoading(false);
+    }
    }
   })();
- }, []);
+  return () => {
+   cancelled = true;
+  };
+ }, [isActive, startTransition]);
 
  const handleRefreshGems = useCallback(async () => {
   try {
@@ -961,6 +984,21 @@ export default function ThumbnailStudio() {
    toast.error(getErrorMessage(error));
   }
  }, [thumbnailSettingsDraft]);
+ const currentGemSelection = thumbnailSettingsDraft?.gemini_base_url?.trim() || THUMBNAIL_DEFAULT_GEM_URL;
+ const gemOptions = useMemo(() => {
+  const next = [...availableGems];
+  if (
+   currentGemSelection !== THUMBNAIL_DEFAULT_GEM_URL
+   && !next.some((gem) => gem.url === currentGemSelection)
+  ) {
+   next.unshift({
+    name: "Gem hiện tại",
+    url: currentGemSelection,
+   });
+  }
+  return next;
+ }, [availableGems, currentGemSelection]);
+
  const thumbnailGeminiSettingsPanel = thumbnailSettingsDraft ? (
   <div className="rounded-2xl border border-border/50 bg-card/70 p-5 shadow-sm">
    <FieldGroup className="gap-5">
@@ -978,7 +1016,7 @@ export default function ThumbnailStudio() {
        </SelectTrigger>
        <SelectContent>
         <SelectItem value={THUMBNAIL_DEFAULT_GEM_URL}>Gemini mặc định</SelectItem>
-        {availableGems.map((gem) => (
+        {gemOptions.map((gem) => (
          <SelectItem key={gem.url} value={gem.url}>
           {gem.name}
          </SelectItem>

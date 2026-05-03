@@ -2114,10 +2114,7 @@ class GeminiWebAdapter:
 
         option = self._find_mode_menu_option(page, desired_label)
         if option is None:
-            try:
-                page.keyboard.press("Escape")
-            except Exception:
-                pass
+            self._close_mode_menu(page, picker_button=picker_button)
             print(
                 f"[DEBUG] Gemini mode option `{desired_label}` not found; continue with current default mode.",
                 flush=True,
@@ -2130,29 +2127,30 @@ class GeminiWebAdapter:
             try:
                 option.click(force=True)
             except Exception as exc:
+                self._close_mode_menu(page, picker_button=picker_button)
                 print(
                     f"[DEBUG] Gemini mode option `{desired_label}` click failed; continue with current default mode: {exc}",
                     flush=True,
                 )
                 return
         page.wait_for_timeout(200)
-        self._close_mode_menu(page)
+        self._close_mode_menu(page, picker_button=picker_button)
 
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             page.wait_for_timeout(200)
             current_label = self._read_mode_picker_label(page)
             if self._mode_label_matches(current_label, desired_label):
-                self._close_mode_menu(page)
+                self._close_mode_menu(page, picker_button=picker_button)
                 return
 
         print(
             f"[DEBUG] Gemini mode `{desired_label}` was not confirmed after selection; continue with current default mode.",
             flush=True,
         )
-        self._close_mode_menu(page)
+        self._close_mode_menu(page, picker_button=picker_button)
 
-    def _close_mode_menu(self, page) -> None:
+    def _close_mode_menu(self, page, picker_button=None) -> None:
         for _ in range(3):
             if not self._has_transient_overlay(page):
                 return
@@ -2161,9 +2159,16 @@ class GeminiWebAdapter:
             except Exception:
                 pass
             page.wait_for_timeout(160)
+        if picker_button is not None and self._has_transient_overlay(page):
+            try:
+                picker_button.click(force=True)
+                page.wait_for_timeout(160)
+            except Exception:
+                pass
         try:
-            page.mouse.click(24, 24)
-            page.wait_for_timeout(160)
+            if self._has_transient_overlay(page):
+                page.mouse.click(24, 24)
+                page.wait_for_timeout(160)
         except Exception:
             pass
 
@@ -2289,34 +2294,45 @@ class GeminiWebAdapter:
     def _normalize_ui_text(self, value: str) -> str:
         text = unicodedata.normalize("NFKD", str(value or ""))
         text = "".join(char for char in text if not unicodedata.combining(char))
+        # Tiếng Việt: đ/Đ không được decompose bởi NFKD nên cần replace thủ công
+        text = text.replace("đ", "d").replace("Đ", "D")
         return re.sub(r"\s+", " ", text).strip().lower()
 
     def _upload_input_image(self, page, input_image_path: Path) -> None:
-        if self._set_file_via_existing_inputs(page, input_image_path):
+        baseline_uploaded_keys = self._collect_uploaded_preview_keys(page)
+
+        if self._set_file_via_existing_inputs(page, input_image_path, baseline_uploaded_keys):
             return
 
         composer = self._find_prompt_target(page)
         attach_buttons = self._find_attachment_buttons(page, composer)
         for button in attach_buttons:
+            # Nếu không phải menu button: thử mở file chooser trước
             if not self._is_upload_menu_button(button):
                 try:
-                    if self._set_file_via_file_chooser_click(page, button, input_image_path):
+                    if self._set_file_via_file_chooser_click(
+                        page,
+                        button,
+                        input_image_path,
+                        baseline_uploaded_keys=baseline_uploaded_keys,
+                    ):
                         return
                 except Exception:
                     pass
 
+            # Thử mở upload menu (dùng cho cả menu button lấn button thường không có file chooser)
             if self._open_upload_menu_once(page, button):
-                if self._set_file_via_upload_menu_items(page, input_image_path):
+                if self._set_file_via_upload_menu_items(page, input_image_path, baseline_uploaded_keys):
                     return
 
-            if self._set_file_via_existing_inputs(page, input_image_path):
+            if self._set_file_via_existing_inputs(page, input_image_path, baseline_uploaded_keys):
                 return
-            if self._set_file_via_hidden_upload_triggers(page, input_image_path):
+            if self._set_file_via_hidden_upload_triggers(page, input_image_path, baseline_uploaded_keys):
                 return
 
-        if self._set_file_via_upload_menu_items(page, input_image_path):
+        if self._set_file_via_upload_menu_items(page, input_image_path, baseline_uploaded_keys):
             return
-        if self._set_file_via_hidden_upload_triggers(page, input_image_path):
+        if self._set_file_via_hidden_upload_triggers(page, input_image_path, baseline_uploaded_keys):
             return
 
         if self._page_requires_sign_in(page):
@@ -2801,7 +2817,155 @@ class GeminiWebAdapter:
 
         return best
 
-    def _set_file_via_existing_inputs(self, page, input_image_path: Path) -> bool:
+    def _confirm_uploaded_preview(
+        self,
+        page,
+        baseline_uploaded_keys: set[str] | None,
+    ) -> bool:
+        if baseline_uploaded_keys is None:
+            return True
+        deadline = time.monotonic() + 3.5
+        stable_key: str | None = None
+        stable_count = 0
+        while time.monotonic() < deadline:
+            candidates = self._collect_uploaded_preview_candidates(page)
+            new_candidates = [candidate for candidate in candidates if candidate.key not in baseline_uploaded_keys]
+            if new_candidates:
+                latest = new_candidates[-1]
+                if latest.key == stable_key:
+                    stable_count += 1
+                else:
+                    stable_key = latest.key
+                    stable_count = 1
+                if stable_count >= 2:
+                    return True
+            page.wait_for_timeout(250)
+        return False
+
+    def _set_file_via_associated_input(
+        self,
+        page,
+        target,
+        input_image_path: Path,
+        baseline_uploaded_keys: set[str] | None = None,
+    ) -> bool:
+        target_handle = None
+        candidate_handle = None
+        try:
+            target_handle = target.element_handle(timeout=800)
+            if target_handle is None:
+                return False
+
+            candidate_handle = target_handle.evaluate_handle(
+                """
+                (el) => {
+                  const isFileInput = (node) => {
+                    if (!(node instanceof HTMLInputElement)) return false;
+                    if ((node.type || '').toLowerCase() === 'file') return true;
+                    const accept = (node.getAttribute('accept') || '').toLowerCase();
+                    return accept.includes('image') || accept.includes('jpeg') || accept.includes('png');
+                  };
+
+                  const scoreInput = (input, triggerRect) => {
+                    if (!isFileInput(input) || !input.isConnected || input.disabled) return -Infinity;
+                    const accept = (input.getAttribute('accept') || '').toLowerCase();
+                    let score = 1000;
+                    if (accept.includes('image')) score += 240;
+                    if (accept.includes('png') || accept.includes('jpeg') || accept.includes('jpg')) score += 120;
+
+                    try {
+                      const rect = input.getBoundingClientRect();
+                      const cx = triggerRect.left + (triggerRect.width / 2);
+                      const cy = triggerRect.top + (triggerRect.height / 2);
+                      const ix = rect.left + (rect.width / 2);
+                      const iy = rect.top + (rect.height / 2);
+                      score -= Math.min(Math.hypot(cx - ix, cy - iy), 1200);
+                    } catch (_error) {
+                      score -= 400;
+                    }
+
+                    if (input.closest('user-query-file-preview, user-query-file-carousel, .file-preview-container')) {
+                      score -= 600;
+                    }
+                    return score;
+                  };
+
+                  const pickBest = (inputs, triggerRect) => {
+                    let best = null;
+                    let bestScore = -Infinity;
+                    for (const input of inputs) {
+                      const score = scoreInput(input, triggerRect);
+                      if (score > bestScore) {
+                        bestScore = score;
+                        best = input;
+                      }
+                    }
+                    return best;
+                  };
+
+                  const triggerRect = el.getBoundingClientRect();
+                  const directCandidates = [];
+
+                  if (isFileInput(el)) directCandidates.push(el);
+                  if (el instanceof HTMLLabelElement) {
+                    directCandidates.push(...el.querySelectorAll('input'));
+                  }
+                  const labelFor = el.getAttribute?.('for');
+                  if (labelFor) {
+                    const linked = document.getElementById(labelFor);
+                    if (linked) directCandidates.push(linked);
+                  }
+                  const closestLabel = el.closest?.('label');
+                  if (closestLabel) {
+                    directCandidates.push(...closestLabel.querySelectorAll('input'));
+                  }
+
+                  let ancestor = el;
+                  for (let depth = 0; depth < 5 && ancestor; depth += 1) {
+                    ancestor = ancestor.parentElement;
+                    if (!ancestor) break;
+                    directCandidates.push(...ancestor.querySelectorAll('input'));
+                  }
+
+                  const directMatch = pickBest(directCandidates, triggerRect);
+                  if (directMatch) return directMatch;
+
+                  const root = el.getRootNode?.();
+                  if (root && 'querySelectorAll' in root) {
+                    const rootMatch = pickBest(Array.from(root.querySelectorAll('input')), triggerRect);
+                    if (rootMatch) return rootMatch;
+                  }
+
+                  return pickBest(Array.from(document.querySelectorAll('input')), triggerRect);
+                }
+                """
+            )
+            input_handle = candidate_handle.as_element() if candidate_handle is not None else None
+            if input_handle is None:
+                return False
+            input_handle.set_input_files(str(input_image_path))
+            page.wait_for_timeout(450)
+            return self._confirm_uploaded_preview(page, baseline_uploaded_keys)
+        except Exception:
+            return False
+        finally:
+            try:
+                if candidate_handle is not None:
+                    candidate_handle.dispose()
+            except Exception:
+                pass
+            try:
+                if target_handle is not None:
+                    target_handle.dispose()
+            except Exception:
+                pass
+
+    def _set_file_via_existing_inputs(
+        self,
+        page,
+        input_image_path: Path,
+        baseline_uploaded_keys: set[str] | None = None,
+    ) -> bool:
         file_inputs = page.locator('input[type="file"], input[accept*="image" i], input[accept*="jpeg" i], input[accept*="png" i]')
         try:
             count = file_inputs.count()
@@ -2812,12 +2976,18 @@ class GeminiWebAdapter:
             try:
                 file_inputs.nth(index).set_input_files(str(input_image_path))
                 page.wait_for_timeout(450)
-                return True
+                if self._confirm_uploaded_preview(page, baseline_uploaded_keys):
+                    return True
             except Exception:
                 continue
         return False
 
-    def _set_file_via_hidden_upload_triggers(self, page, input_image_path: Path) -> bool:
+    def _set_file_via_hidden_upload_triggers(
+        self,
+        page,
+        input_image_path: Path,
+        baseline_uploaded_keys: set[str] | None = None,
+    ) -> bool:
         selectors = [
             '[data-test-id*="upload" i]',
             '[data-testid*="upload" i]',
@@ -2839,13 +3009,27 @@ class GeminiWebAdapter:
                 count = 0
 
             for index in reversed(range(min(count, 40))):
-                if self._set_file_via_file_chooser_click(page, locator.nth(index), input_image_path, timeout_ms=1_000):
+                candidate = locator.nth(index)
+                if self._set_file_via_associated_input(page, candidate, input_image_path, baseline_uploaded_keys):
+                    return True
+                if self._set_file_via_file_chooser_click(
+                    page,
+                    candidate,
+                    input_image_path,
+                    timeout_ms=1_000,
+                    baseline_uploaded_keys=baseline_uploaded_keys,
+                ):
                     return True
 
         return False
 
-    def _set_file_via_upload_menu_items(self, page, input_image_path: Path) -> bool:
-        if self._set_file_via_upload_text_items(page, input_image_path):
+    def _set_file_via_upload_menu_items(
+        self,
+        page,
+        input_image_path: Path,
+        baseline_uploaded_keys: set[str] | None = None,
+    ) -> bool:
+        if self._set_file_via_upload_text_items(page, input_image_path, baseline_uploaded_keys):
             return True
 
         candidates: list[tuple[float, object]] = []
@@ -2861,14 +3045,22 @@ class GeminiWebAdapter:
         preferred_patterns = [
             r"tải\s*tệp\s*lên",
             r"thêm\s*tệp",
+            r"tải\s*file\s*lên",
+            r"from\s+this\s+device",
             r"upload",
             r"from\s+computer",
             r"local\s+file",
-            r"ảnh",
-            r"image",
-            r"photo",
+            r"my\s+computer",
+            r"this\s+device",
+            r"browse",
+            r"may\s+tinh",
+            r"máy\s+tính",
+            r"thiết\s*bị",
         ]
         reject_patterns = [
+            r"google\s*photos?",
+            r"\bphotos?\b",
+            r"\balbum\b",
             r"drive",
             r"notebooklm",
             r"nhập\s*mã",
@@ -2902,8 +3094,10 @@ class GeminiWebAdapter:
                     for pattern in preferred_patterns:
                         if re.search(pattern, text_blob, flags=re.IGNORECASE):
                             score += 120.0
-                    if "ảnh" in text_blob or "image" in text_blob or "photo" in text_blob:
-                        score += 30.0
+                    if re.search(r"from\s+computer|from\s+this\s+device|local\s+file|my\s+computer|browse", text_blob, flags=re.IGNORECASE):
+                        score += 180.0
+                    if re.search(r"tải\s*(tệp|file)\s*lên|máy\s*tính|may\s*tinh|thiết\s*bị", text_blob, flags=re.IGNORECASE):
+                        score += 180.0
                     if score <= 0:
                         continue
 
@@ -2913,23 +3107,42 @@ class GeminiWebAdapter:
 
         candidates.sort(key=lambda item: item[0], reverse=True)
         for _, item in candidates[:8]:
-            if self._set_file_via_file_chooser_click(page, item, input_image_path, timeout_ms=1_500):
+            if self._set_file_via_file_chooser_click(
+                page,
+                item,
+                input_image_path,
+                timeout_ms=1_500,
+                baseline_uploaded_keys=baseline_uploaded_keys,
+            ):
                 return True
-            if self._set_file_via_existing_inputs(page, input_image_path):
+            if self._set_file_via_existing_inputs(page, input_image_path, baseline_uploaded_keys):
                 return True
 
         return False
 
-    def _set_file_via_upload_text_items(self, page, input_image_path: Path) -> bool:
+    def _set_file_via_upload_text_items(
+        self,
+        page,
+        input_image_path: Path,
+        baseline_uploaded_keys: set[str] | None = None,
+    ) -> bool:
         labels = (
             "Upload files",
             "Upload file",
             "Add files",
             "Add file",
+            "Upload from computer",
+            "Upload from this device",
+            "From computer",
+            "From this device",
+            "Browse",
             "Tải tệp lên",
             "Tải tệp",
             "Tải file lên",
             "Tải file",
+            "Từ máy tính",
+            "Từ thiết bị này",
+            "Từ thiết bị",
         )
         targets: list[object] = []
         seen_targets: set[str] = set()
@@ -2986,14 +3199,47 @@ class GeminiWebAdapter:
                         continue
                 except Exception:
                     pass
-                if self._set_file_via_file_chooser_click(page, click_target, input_image_path, timeout_ms=2_500):
+                if self._set_file_via_associated_input(page, click_target, input_image_path, baseline_uploaded_keys):
                     return True
-                if self._set_file_via_existing_inputs(page, input_image_path):
+                if self._set_file_via_file_chooser_click(
+                    page,
+                    click_target,
+                    input_image_path,
+                    timeout_ms=2_500,
+                    baseline_uploaded_keys=baseline_uploaded_keys,
+                ):
+                    return True
+                if self._set_file_via_existing_inputs(page, input_image_path, baseline_uploaded_keys):
                     return True
 
         return False
 
-    def _set_file_via_file_chooser_click(self, page, target, input_image_path: Path, *, timeout_ms: int = 1_500) -> bool:
+    def _set_file_via_file_chooser_click(
+        self,
+        page,
+        target,
+        input_image_path: Path,
+        *,
+        timeout_ms: int = 1_500,
+        baseline_uploaded_keys: set[str] | None = None,
+    ) -> bool:
+        if not self._headless:
+            if self._set_file_via_associated_input(page, target, input_image_path, baseline_uploaded_keys):
+                return True
+            try:
+                target.click(force=True)
+            except Exception:
+                try:
+                    target.evaluate("(el) => el.click()")
+                except Exception:
+                    return False
+            page.wait_for_timeout(250)
+            if self._set_file_via_associated_input(page, target, input_image_path, baseline_uploaded_keys):
+                return True
+            if self._set_file_via_existing_inputs(page, input_image_path, baseline_uploaded_keys):
+                return True
+            return False
+
         clickers = [
             lambda: target.click(),
             lambda: target.click(force=True),
@@ -3006,16 +3252,31 @@ class GeminiWebAdapter:
                 chooser = chooser_info.value
                 chooser.set_files(str(input_image_path))
                 page.wait_for_timeout(500)
-                return True
-            except Exception:
-                if self._set_file_via_cdp_file_chooser(page, target, input_image_path, timeout_ms=timeout_ms):
+                if self._confirm_uploaded_preview(page, baseline_uploaded_keys):
                     return True
-                if self._set_file_via_existing_inputs(page, input_image_path):
+            except Exception:
+                if self._set_file_via_cdp_file_chooser(
+                    page,
+                    target,
+                    input_image_path,
+                    timeout_ms=timeout_ms,
+                    baseline_uploaded_keys=baseline_uploaded_keys,
+                ):
+                    return True
+                if self._set_file_via_existing_inputs(page, input_image_path, baseline_uploaded_keys):
                     return True
                 continue
         return False
 
-    def _set_file_via_cdp_file_chooser(self, page, target, input_image_path: Path, *, timeout_ms: int = 1_500) -> bool:
+    def _set_file_via_cdp_file_chooser(
+        self,
+        page,
+        target,
+        input_image_path: Path,
+        *,
+        timeout_ms: int = 1_500,
+        baseline_uploaded_keys: set[str] | None = None,
+    ) -> bool:
         try:
             session = page.context.new_cdp_session(page)
         except Exception:
@@ -3050,7 +3311,7 @@ class GeminiWebAdapter:
                 },
             )
             page.wait_for_timeout(500)
-            return True
+            return self._confirm_uploaded_preview(page, baseline_uploaded_keys)
         except Exception:
             return False
         finally:
@@ -3081,11 +3342,18 @@ class GeminiWebAdapter:
     def _is_upload_menu_button(self, candidate) -> bool:
         text_blob = self._normalize_ui_text(self._button_text_blob(candidate))
         menu_tokens = (
+            # English
             "open upload file menu",
             "upload file menu",
             "open upload menu",
             "attach file menu",
             "add files menu",
+            # Vietnamese (Gemini UI tiếng Việt)
+            "mo trinh don tai tep len",   # Mở trình đơn tải tệp lên
+            "trinh don tai tep",           # trình đơn tải tệp
+            "mo trinh don dinh kem",       # Mở trình đơn đính kém
+            "mo menu tai len",             # Mở menu tải lên
+            "mo menu tai tep",             # Mở menu tải tệp
         )
         return any(token in text_blob for token in menu_tokens)
 
@@ -3111,8 +3379,15 @@ class GeminiWebAdapter:
         selectors = [
             '[role="menuitem"]:has-text("Upload files")',
             '[role="menuitem"]:has-text("Upload file")',
+            '[role="menuitem"]:has-text("Tải tệp lên")',
+            '[role="menuitem"]:has-text("Tải file lên")',
+            '[role="menuitem"]:has-text("Từ máy tính")',
+            '[role="menuitem"]:has-text("Từ thiết bị này")',
             'text="Upload files"',
             'text="Upload file"',
+            'text="Tải tệp lên"',
+            'text="Tải file lên"',
+            'text="Từ máy tính"',
             '[role="menu"]',
             ".cdk-overlay-pane",
         ]
@@ -3224,9 +3499,12 @@ class GeminiWebAdapter:
         reject_tokens = [
             "bo chon",
             "deselect",
-            "cong cu",
+            "cong cu",       # công cụ (tool)
+            "tao hinh anh",  # tạo hình ảnh (image generation)
+            "nhan de dung",  # nhấn để dùng công cụ
             "toolbox",
             "tools",
+            "tool",
             "micro",
             "microphone",
             "voice",
@@ -3280,7 +3558,7 @@ class GeminiWebAdapter:
             "hinh",
             "dinh",
         )
-        reject_tokens = ("send", "gui", "microphone", "voice", "toolbox", "model", "mode")
+        reject_tokens = ("send", "gui", "microphone", "voice", "toolbox", "model", "mode", "cong cu", "tao hinh anh", "nhan de dung")
         return any(token in normalized for token in strong_tokens) and not any(token in normalized for token in reject_tokens)
 
     def _find_attachment_buttons(self, page, composer) -> list[object]:

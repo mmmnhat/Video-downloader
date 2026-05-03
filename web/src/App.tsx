@@ -1685,7 +1685,7 @@ function App() {
          </Card>
         }
        >
-        <ThumbnailStudio />
+        <ThumbnailStudio isActive={currentView === "thumbnail"} />
        </Suspense>
      </main>
 
@@ -1707,7 +1707,7 @@ function App() {
          </Card>
         }
        >
-        <StoryStudio />
+        <StoryStudio isActive={currentView === "story"} />
        </Suspense>
      </main>
 

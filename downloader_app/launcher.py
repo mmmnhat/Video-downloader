@@ -77,17 +77,17 @@ def main(argv: list[str] | None = None) -> int:
     app_url = f"http://{host}:{port}"
 
     # --- Singleton guard ---
-    # Probe the server port before starting. If it is already bound, another
-    # instance of the app is already running.  In that case, attach a new
-    # desktop window to the existing server instead of spawning a second
-    # Python + HTTP-server process (which would raise an OSError anyway).
+    # Detect a live server by connecting to the port instead of bind().
+    # bind() can report a false positive for a short time after shutdown due
+    # to TIME_WAIT, which makes the desktop window attach to a server that no
+    # longer exists.
     _already_running = False
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as _probe:
-        _probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
+        _probe.settimeout(0.5)
         try:
-            _probe.bind((host, port))
+            _already_running = _probe.connect_ex((host, port)) == 0
         except OSError:
-            _already_running = True
+            _already_running = False
 
     if _already_running:
         print(f"[launcher] Server already running at {app_url} — attaching new window.", flush=True)

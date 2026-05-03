@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import threading
+import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -20,6 +21,7 @@ THUMBNAIL_BUTTON_PRESET_KIND = "thumbnail-button-preset"
 THUMBNAIL_PROFILE_PRESET_KIND = "thumbnail-profile-preset"
 THUMBNAIL_PRESET_VERSION = 1
 THUMBNAIL_REQUIRED_TOOL_GROUPS = {"paint", "frame", "shape"}
+THUMBNAIL_GEMS_CACHE_TTL_SECONDS = 60.0
 THUMBNAIL_LEGACY_TOOL_MAP = {
     "brush": "paint",
     "eraser": "paint",
@@ -306,6 +308,9 @@ class ThumbnailPipelineManager:
         self._profiles: list[ThumbnailProfile] = []
         self._adapter: GeminiWebAdapter | None = None
         self._running_project_ids: set[str] = set()
+        self._gems_cache: list[dict] | None = None
+        self._gems_cache_time: float = 0.0
+        self._gems_cache_key: tuple[str, int, str] | None = None
         self._load_state()
         if not self._profiles:
             self._profiles = [
@@ -371,6 +376,17 @@ class ThumbnailPipelineManager:
 
     def list_available_gems(self) -> list[dict]:
         with self._lock:
+            cache_key = (
+                self._settings.gemini_base_url,
+                self._settings.gemini_response_timeout_ms,
+                self._settings.gemini_model,
+            )
+            if (
+                self._gems_cache is not None
+                and self._gems_cache_key == cache_key
+                and (time.monotonic() - self._gems_cache_time) < THUMBNAIL_GEMS_CACHE_TTL_SECONDS
+            ):
+                return list(self._gems_cache)
             runtime_root = thumbnail_gem_scan_runtime_root()
             runtime_root.mkdir(parents=True, exist_ok=True)
             adapter = GeminiWebAdapter(
@@ -382,7 +398,12 @@ class ThumbnailPipelineManager:
                 debug_selector=False,
                 max_tabs=1,
             )
-        return adapter.list_gems()
+        gems = adapter.list_gems()
+        with self._lock:
+            self._gems_cache = list(gems)
+            self._gems_cache_time = time.monotonic()
+            self._gems_cache_key = cache_key
+        return gems
 
     def update_settings(self, payload: dict) -> dict:
         with self._lock:
@@ -404,6 +425,9 @@ class ThumbnailPipelineManager:
                 gemini_response_timeout_ms=max(20_000, min(300_000, gemini_response_timeout_ms)),
                 gemini_model=gemini_model,
             )
+            self._gems_cache = None
+            self._gems_cache_time = 0.0
+            self._gems_cache_key = None
             self._refresh_adapter_locked()
             self._persist_locked()
             return asdict(self._settings)
