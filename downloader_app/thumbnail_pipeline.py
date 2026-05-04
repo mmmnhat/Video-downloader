@@ -1622,6 +1622,13 @@ class ThumbnailPipelineManager:
                 gemini_base_url=str(settings.get("gemini_base_url", self._settings.gemini_base_url)).strip() or self._settings.gemini_base_url,
                 gemini_response_timeout_ms=max(20_000, min(300_000, timeout_ms)),
                 gemini_model=str(settings.get("gemini_model", self._settings.gemini_model)).strip() or self._settings.gemini_model,
+                app_theme=str(settings.get("app_theme", self._settings.app_theme)).strip() or self._settings.app_theme,
+                canvas_bg_type=str(settings.get("canvas_bg_type", self._settings.canvas_bg_type)).strip() or self._settings.canvas_bg_type,
+                canvas_bg_color=str(settings.get("canvas_bg_color", self._settings.canvas_bg_color)).strip() or self._settings.canvas_bg_color,
+                canvas_bg_image=str(settings.get("canvas_bg_image", self._settings.canvas_bg_image)),
+                canvas_bg_fit=str(settings.get("canvas_bg_fit", self._settings.canvas_bg_fit)).strip() or self._settings.canvas_bg_fit,
+                canvas_bg_opacity=float(settings.get("canvas_bg_opacity", self._settings.canvas_bg_opacity)),
+                canvas_bg_brightness=float(settings.get("canvas_bg_brightness", self._settings.canvas_bg_brightness)),
             )
 
         self._active_project_id = raw.get("activeProjectId")

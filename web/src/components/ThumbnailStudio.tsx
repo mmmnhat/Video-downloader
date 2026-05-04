@@ -3220,8 +3220,8 @@ async function requestExportFolder() {
           Xem tất cả
          </Button>
         )}
-        <div className="flex-1 w-full overflow-x-auto scrollbar-hide py-1">
-          <div className="flex min-w-max flex-row items-center gap-4 px-6 py-6 h-full">
+        <div className="flex-1 w-full overflow-x-auto scrollbar-hide py-0.5">
+          <div className="flex min-w-max flex-row items-center gap-4 px-6 py-4 h-full">
             {/* History Versions */}
 
           {versions.slice().reverse().map((v) => (
@@ -3646,18 +3646,16 @@ async function requestExportFolder() {
                </Button>
               </div>
               {!collapsedEffects.has(eff.id) && (
-               <ScrollArea className="max-h-[18rem]">
-                <div className="space-y-4 p-4">
-                 {eff.fields.map(field => (
-                  <ThumbnailFieldRenderer
-                   key={field.key}
-                   field={field}
-                   allFields={eff.fields}
-                   onChange={(val) => handleEffectFieldChange(eff.id, field.key, val)}
-                  />
-                 ))}
-                </div>
-               </ScrollArea>
+               <div className="space-y-4 p-4 border-t border-border/10">
+                {eff.fields.map(field => (
+                 <ThumbnailFieldRenderer
+                  key={field.key}
+                  field={field}
+                  allFields={eff.fields}
+                  onChange={(val) => handleEffectFieldChange(eff.id, field.key, val)}
+                 />
+                ))}
+               </div>
               )}
              </div>
             )
