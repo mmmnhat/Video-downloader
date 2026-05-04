@@ -828,17 +828,17 @@ function VersionComparator({
  }, [updateSlider]);
 
  return (
-  <div className="fixed inset-0 z-50 bg-black/92 backdrop-blur-md flex flex-col items-center justify-center p-6 gap-5">
+  <div className="fixed inset-0 z-50 bg-background/95 backdrop-blur-md flex flex-col items-center justify-center p-6 gap-5">
    {/* Header */}
    <div className="flex items-center justify-between w-full max-w-5xl">
     <div className="flex items-center gap-3">
      <SplitSquareVertical className="size-5 text-primary" />
-     <span className="text-sm font-black  text-white">So sánh phiên bản</span>
-     <div className="rounded-full bg-white/10 px-2.5 py-1 text-xs font-semibold  text-white/60">Kéo thanh để so sánh</div>
+     <span className="text-sm font-black text-foreground">So sánh phiên bản</span>
+     <div className="rounded-full bg-muted/50 px-2.5 py-1 text-xs font-semibold text-muted-foreground">Kéo thanh để so sánh</div>
     </div>
     <button
      onClick={onClose}
-     className="size-9 flex items-center justify-center rounded-xl bg-white/10 hover:bg-white/20 text-white transition-all hover:scale-105"
+     className="size-9 flex items-center justify-center rounded-xl bg-muted/50 hover:bg-muted text-foreground transition-all hover:scale-105"
     >
      <X className="size-5" />
     </button>
@@ -847,7 +847,7 @@ function VersionComparator({
    {/* Comparator canvas */}
    <div
     ref={containerRef}
-    className="relative w-full max-w-5xl rounded-2xl overflow-hidden border border-white/10 shadow-2xl select-none"
+    className="relative w-full max-w-5xl rounded-2xl overflow-hidden border border-border/50 shadow-2xl select-none"
     style={{ aspectRatio: "16/9", cursor: "col-resize" }}
     onMouseDown={(e) => { startDrag(e.clientX); e.preventDefault(); }}
     onTouchStart={(e) => { startDrag(e.touches[0].clientX); }}
@@ -3208,7 +3208,7 @@ async function requestExportFolder() {
 
       {/* -------------------- CENTER COLUMN: HISTORY (CAROUSEL) -------------------- */}
       {activeProject && (
-       <Card className="relative flex min-h-[8rem] flex-col overflow-hidden border-border/70 bg-background/40 shadow-sm backdrop-blur-md lg:h-32">
+       <Card className="relative flex min-h-[9.5rem] flex-col border-border/70 bg-background/40 shadow-sm backdrop-blur-md lg:h-36">
         {versions.filter(v => v.outputImagePath).length >= 2 && (
          <Button
           variant="ghost"
@@ -3220,8 +3220,8 @@ async function requestExportFolder() {
           Xem tất cả
          </Button>
         )}
-        <div className="flex-1 w-full overflow-x-auto overflow-y-hidden scrollbar-hide">
-          <div className="flex min-w-max flex-row items-center gap-3 px-4 py-4 h-full">
+        <div className="flex-1 w-full overflow-x-auto scrollbar-hide py-1">
+          <div className="flex min-w-max flex-row items-center gap-4 px-6 py-6 h-full">
             {/* History Versions */}
 
           {versions.slice().reverse().map((v) => (
@@ -3413,7 +3413,7 @@ async function requestExportFolder() {
        {/* Thumbnail strip with A/B labels */}
        <div className="shrink-0 border-t border-border/50 p-4" onClick={e => e.stopPropagation()}>
         <p className="mb-2 text-xs font-semibold text-muted-foreground">Chọn A và B để so sánh · click thumbnail để chọn</p>
-        <div className="flex gap-2 overflow-x-auto pb-1">
+        <div className="flex gap-3 overflow-x-auto py-4 px-2 scrollbar-hide">
          {versionImgs.map((v) => {
           const slot = getSlot(v.id);
           return (

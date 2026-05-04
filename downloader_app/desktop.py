@@ -30,8 +30,8 @@ class UIBridge(QObject):
         self._choose_file_signal.connect(self._do_choose_file)
         self._save_file_signal.connect(self._do_save_file)
         
-        self.qsettings = QSettings("Nhat", "VideoDownloader")
-        self._recent_folder = self.qsettings.value("recent_folder", "")
+        self.qsettings = QSettings()
+        self._recent_folder = self.qsettings.value("recent_folder", "", type=str)
         self._pending_file_title = "Chọn tệp"
         self._pending_file_directory = ""
         self._pending_file_filter = "All files (*)"
@@ -163,7 +163,7 @@ class DesktopWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Video Downloader")
         
-        self.qsettings = QSettings("Nhat", "VideoDownloader")
+        self.qsettings = QSettings()
         geometry = self.qsettings.value("geometry")
         state = self.qsettings.value("windowState")
         if geometry is not None:
