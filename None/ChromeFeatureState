@@ -1,0 +1,1 @@
+{"disable-features":"DialMediaRouteProvider,IsolateOrigins,OptimizationHints,Translate,site-per-process","enable-features":"NetworkService,NetworkServiceInProcess","force-fieldtrial-params":"","force-fieldtrials":"*SeedFileTrial/Default"}
