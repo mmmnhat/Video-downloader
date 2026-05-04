@@ -8,27 +8,34 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Protocol
 
-from downloader_app.gemini_web_adapter import GEMINI_DEFAULT_URL, GeminiWebAdapter
+from downloader_app.gemini_web_adapter import (
+    GEMINI_DEFAULT_URL,
+    GeminiWebAdapter,
+    GeminiWebError,
+    check_gemini_session,
+    open_gemini_login_window,
+)
 from downloader_app.jobs import sanitize_file_stem
 from downloader_app.runtime import app_path, cache_path
 
 
 THUMBNAIL_STATE_FILE = app_path("thumbnail_projects_state.json")
+THUMBNAIL_BUTTONS_FILE = app_path("thumbnail_custom_buttons.json")
 THUMBNAIL_CACHE_ROOT = cache_path("thumbnail_pipeline")
 THUMBNAIL_PROJECTS_ROOT = THUMBNAIL_CACHE_ROOT / "projects"
 THUMBNAIL_BUTTON_PRESET_KIND = "thumbnail-button-preset"
 THUMBNAIL_PROFILE_PRESET_KIND = "thumbnail-profile-preset"
 THUMBNAIL_PRESET_VERSION = 1
-THUMBNAIL_REQUIRED_TOOL_GROUPS = {"paint", "frame", "shape"}
+THUMBNAIL_REQUIRED_TOOL_GROUPS = {"brush", "eraser", "crop", "artboard", "rect", "ellipse"}
 THUMBNAIL_GEMS_CACHE_TTL_SECONDS = 60.0
 THUMBNAIL_LEGACY_TOOL_MAP = {
-    "brush": "paint",
-    "eraser": "paint",
-    "crop": "frame",
-    "artboard": "frame",
-    "rect": "shape",
-    "ellipse": "shape",
+    "paint": "brush",
+    "frame": "artboard",
+    "shape": "rect",
+    "pointer": "brush",
+    "transform": "artboard",
 }
 
 
@@ -37,7 +44,7 @@ def thumbnail_runtime_root() -> Path:
 
 
 def thumbnail_gem_scan_runtime_root() -> Path:
-    return THUMBNAIL_CACHE_ROOT / "gem_scan_runtime"
+    return thumbnail_runtime_root()
 
 
 def thumbnail_projects_root() -> Path:
@@ -66,6 +73,16 @@ def normalize_required_tools(values: list[str] | tuple[str, ...] | None) -> list
         if mapped in THUMBNAIL_REQUIRED_TOOL_GROUPS and mapped not in normalized:
             normalized.append(mapped)
     return normalized
+
+
+def _bool_value(value: any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if str(value).lower() in ("true", "1", "yes"):
+        return True
+    if str(value).lower() in ("false", "0", "no"):
+        return False
+    return default
 
 
 class ThumbnailPipelineError(RuntimeError):
@@ -110,6 +127,7 @@ class ThumbnailButtonField:
     max: float | None = None
     required: bool = True
     visible_if: str | dict | None = None
+    bind_to_canvas: str | None = None
 
 
 @dataclass
@@ -291,6 +309,40 @@ def default_buttons() -> list[ThumbnailButton]:
                 ),
             ],
         ),
+        ThumbnailButton(
+            id="enhance-image",
+            name="Nâng cấp ảnh (Enhance)",
+            icon="✨",
+            category="Chất lượng",
+            prompt_template="Enhance the overall quality of this image. Improve sharpness, lighting, and detail while keeping the content and subject identical.",
+            requires_mask=False,
+            create_new_chat=True,
+            allow_regenerate=True,
+            summary="Cải thiện độ nét, ánh sáng và chi tiết cho ảnh.",
+            fields=[],
+        ),
+        ThumbnailButton(
+            id="change-body",
+            name="Thay đổi vóc dáng",
+            icon="💪",
+            category="Nhân vật",
+            prompt_template="Modify the body shape of the subject in the masked area to be more {shape}. Keep identity, face, and unmasked areas completely unchanged.",
+            requires_mask=True,
+            create_new_chat=True,
+            allow_regenerate=True,
+            summary="Điều chỉnh vóc dáng (cơ bắp, thon gọn...) cho nhân vật.",
+            required_tools=["paint"],
+            fields=[
+                ThumbnailButtonField(
+                    key="shape",
+                    label="Dáng người",
+                    type="select",
+                    value="fit",
+                    options=["fit", "muscular", "slim", "curvy"],
+                    tooltip="Chọn vóc dáng mong muốn cho nhân vật.",
+                ),
+            ],
+        ),
     ]
 
 
@@ -305,7 +357,11 @@ class ThumbnailPipelineManager:
         self._projects: dict[str, ThumbnailProject] = {}
         self._buttons: list[ThumbnailButton] = default_buttons()
         self._active_project_id: str | None = None
+        self._workers: list[threading.Thread] = []
+        self._session_status_cache: dict | None = None
+        self._session_status_cache_time: float = 0.0
         self._profiles: list[ThumbnailProfile] = []
+        self._custom_buttons_file = THUMBNAIL_BUTTONS_FILE
         self._adapter: GeminiWebAdapter | None = None
         self._running_project_ids: set[str] = set()
         self._gems_cache: list[dict] | None = None
@@ -366,13 +422,14 @@ class ThumbnailPipelineManager:
                 "activeProjectId": self._active_project_id,
                 "activeProject": self._serialize_project_detail(self._projects[self._active_project_id]) if self._active_project_id and self._active_project_id in self._projects else None,
                 "profiles": [self._serialize_profile(profile) for profile in self._profiles],
-                "sessionStatus": {
-                    "backend": "gemini_web",
-                    "dependencies_ready": True,
-                    "authenticated": True,
-                    "baseUrl": self._settings.gemini_base_url,
-                },
+                "sessionStatus": self._bootstrap_session_status_locked(),
             }
+
+    def _bootstrap_session_status_locked(self) -> dict:
+        try:
+            return self.get_session_status()
+        except Exception:
+            return {"backend": "gemini_web", "authenticated": False, "dependencies_ready": True}
 
     def list_available_gems(self) -> list[dict]:
         with self._lock:
@@ -389,16 +446,24 @@ class ThumbnailPipelineManager:
                 return list(self._gems_cache)
             runtime_root = thumbnail_gem_scan_runtime_root()
             runtime_root.mkdir(parents=True, exist_ok=True)
-            adapter = GeminiWebAdapter(
-                runtime_root=runtime_root,
-                headless=True,
-                base_url=self._settings.gemini_base_url,
-                response_timeout_ms=self._settings.gemini_response_timeout_ms,
-                model_name=self._settings.gemini_model,
-                debug_selector=False,
-                max_tabs=1,
-            )
-        gems = adapter.list_gems()
+            adapter = self._adapter
+            if not adapter:
+                adapter = GeminiWebAdapter(
+                    runtime_root=thumbnail_runtime_root(),
+                    headless=True,
+                    base_url=self._settings.gemini_base_url,
+                    response_timeout_ms=self._settings.gemini_response_timeout_ms,
+                    model_name=self._settings.gemini_model,
+                    feature="thumbnail",
+                )
+        try:
+            gems = adapter.list_gems()
+        except Exception as exc:
+            print(f"[DEBUG] list_available_gems failed: {exc}")
+            # If it's a lock error, we return empty list so the UI doesn't crash, 
+            # but we could also return a special entry if we want to show it in UI.
+            return []
+
         with self._lock:
             self._gems_cache = list(gems)
             self._gems_cache_time = time.monotonic()
@@ -458,7 +523,7 @@ class ThumbnailPipelineManager:
 
         version = ThumbnailVersion(
             id=version_id,
-            label="Version 0 - Original",
+            label="v0",
             note="Ảnh gốc vừa tạo project",
             prompt="Ảnh gốc chưa chỉnh sửa.",
             button_name="Original",
@@ -996,6 +1061,7 @@ class ThumbnailPipelineManager:
                 with self._lock:
                     self._running_project_ids.discard(project_id)
 
+
     def export_image(self, payload: dict) -> dict:
         project_id = str(payload.get("project_id", "")).strip()
         version_id = str(payload.get("version_id", "")).strip()
@@ -1171,12 +1237,12 @@ class ThumbnailPipelineManager:
             variant_count = sum(1 for item in project.versions if item.parent_version_id == parent_version.id and "Regenerate" in item.label)
             suffix = chr(ord("A") + variant_count)
             version_id = f"{parent_version.id}-{suffix.lower()}"
-            label = f"{base_label}{suffix} - Regenerate"
+            label = f"{base_label}{suffix}"
             note = f"Chạy lại prompt bằng chat Gemini mới từ {parent_version.label}"
             status = "branch"
         else:
             version_id = f"v{base_count}"
-            label = f"Version {base_count} - {button.name}"
+            label = f"v{base_count}"
             note = f"Tạo chat Gemini mới từ {parent_version.label}"
             status = "current"
 
@@ -1241,11 +1307,17 @@ class ThumbnailPipelineManager:
         raise ThumbnailPipelineError("Không tìm thấy profile thumbnail.")
 
     def _serialize_project_summary(self, project: ThumbnailProject) -> dict:
+        preview_path = project.source_image_path
+        if project.versions:
+            # Prefer the first actual generation as the preview if available
+            preview_path = project.versions[0].output_image_path or project.source_image_path
+
         return {
             "id": project.id,
             "name": project.name,
             "folder": project.folder,
             "sourceImagePath": project.source_image_path,
+            "previewImagePath": preview_path,
             "createdAt": project.created_at,
             "updatedAt": project.updated_at,
             "selectedVersionId": project.selected_version_id,
@@ -1261,9 +1333,18 @@ class ThumbnailPipelineManager:
         }
 
     def _serialize_version(self, version: ThumbnailVersion) -> dict:
+        label = version.label
+        if label == "Version 0 - Original":
+            label = "v0"
+        elif label.startswith("Version "):
+            # Format: Version 1 - Button Name -> v1
+            import re
+            match = re.match(r'^Version (\d+)', label)
+            if match:
+                label = f"v{match.group(1)}"
         return {
             "id": version.id,
-            "label": version.label,
+            "label": label,
             "note": version.note,
             "prompt": version.prompt,
             "buttonName": version.button_name,
@@ -1313,6 +1394,7 @@ class ThumbnailPipelineManager:
         normalized_fields = []
         for field in payload["fields"]:
             field["visibleIf"] = field.pop("visible_if", None)
+            field["bindToCanvas"] = field.pop("bind_to_canvas", None)
             normalized_fields.append(field)
         payload["fields"] = normalized_fields
         return payload
@@ -1348,6 +1430,7 @@ class ThumbnailPipelineManager:
         for field_item in fields:
             field_payload = asdict(field_item)
             field_payload["visibleIf"] = field_payload.pop("visible_if", None)
+            field_payload["bindToCanvas"] = field_payload.pop("bind_to_canvas", None)
             normalized_fields.append(field_payload)
         return normalized_fields
 
@@ -1372,6 +1455,7 @@ class ThumbnailPipelineManager:
             max=float(max_value) if max_value is not None else None,
             required=bool(field_data.get("required", field_data.get("isRequired", required_default))),
             visible_if=field_data.get("visible_if", field_data.get("visibleIf", fallback.visible_if if fallback else None)),
+            bind_to_canvas=field_data.get("bind_to_canvas", field_data.get("bindToCanvas", fallback.bind_to_canvas if fallback else None)),
         )
 
     def _build_profile_effect(
@@ -1478,27 +1562,37 @@ class ThumbnailPipelineManager:
         raise ThumbnailPipelineError("Không nhận diện được preset profile.")
 
     def _persist_locked(self) -> None:
-        data = {
+        # State file handles projects, settings, profiles
+        state_data = {
             "activeProjectId": self._active_project_id,
-            "buttons": [asdict(button) for button in self._buttons],
+            "sessionStatus": self._bootstrap_session_status_locked(),
             "projects": [asdict(project) for project in self._projects.values()],
             "profiles": [asdict(profile) for profile in self._profiles],
             "settings": asdict(self._settings),
         }
         self._state_file.parent.mkdir(parents=True, exist_ok=True)
-        self._state_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        self._state_file.write_text(json.dumps(state_data, ensure_ascii=False, indent=2), encoding="utf-8")
+        
+        # Separate buttons file for reliability
+        buttons_data = {
+            "version": THUMBNAIL_PRESET_VERSION,
+            "buttons": [asdict(b) for b in self._buttons],
+        }
+        self._custom_buttons_file.write_text(json.dumps(buttons_data, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _load_state(self) -> None:
         self._projects_root.mkdir(parents=True, exist_ok=True)
         self._runtime_root.mkdir(parents=True, exist_ok=True)
         self._debug_root.mkdir(parents=True, exist_ok=True)
-        if not self._state_file.exists():
-          return
-        try:
-            raw = json.loads(self._state_file.read_text(encoding="utf-8"))
-        except Exception:
-            return
-
+        
+        # Load projects/settings first from main state file
+        raw = {}
+        if self._state_file.exists():
+            try:
+                raw = json.loads(self._state_file.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        
         settings = raw.get("settings", {})
         if isinstance(settings, dict):
             timeout_raw = settings.get("gemini_response_timeout_ms", self._settings.gemini_response_timeout_ms)
@@ -1517,38 +1611,54 @@ class ThumbnailPipelineManager:
             )
 
         self._active_project_id = raw.get("activeProjectId")
-        self._buttons = [
-            ThumbnailButton(
-                id=str(item.get("id", "")).strip(),
-                name=str(item.get("name", "")).strip(),
-                icon=str(item.get("icon", "")).strip(),
-                category=str(item.get("category", "")).strip(),
-                prompt_template=str(item.get("prompt_template", item.get("promptTemplate", ""))).strip(),
-                requires_mask=bool(item.get("requires_mask", item.get("requiresMask", False))),
-                create_new_chat=True,
-                allow_regenerate=bool(item.get("allow_regenerate", item.get("allowRegenerate", True))),
-                summary=str(item.get("summary", "")).strip(),
-                required_tools=normalize_required_tools(item.get("required_tools", item.get("requiredTools", []))),
-                is_pinned=bool(item.get("is_pinned", item.get("isPinned", False))),
-                fields=[
-                    ThumbnailButtonField(
-                        key=str(field.get("key", "")).strip(),
-                        label=str(field.get("label", "")).strip(),
-                        type=str(field.get("type", "text")).strip(),
-                        value=field.get("value", ""),
-                        tooltip=str(field.get("tooltip", "")).strip(),
-                        options=[str(option) for option in field.get("options", [])],
-                        min=float(field["min"]) if field.get("min") is not None else None,
-                        max=float(field["max"]) if field.get("max") is not None else None,
-                        required=bool(field.get("required", field.get("isRequired", True))),
-                        visible_if=field.get("visible_if", field.get("visibleIf")),
-                    )
-                    for field in item.get("fields", [])
-                ],
-            )
-            for item in raw.get("buttons", [])
-            if str(item.get("id", "")).strip()
-        ] or default_buttons()
+        # Resolve buttons: dedicated file > state file ('buttons') > state file ('buttonPresets')
+        loaded_buttons_data = None
+        if self._custom_buttons_file.exists():
+            try:
+                btn_raw = json.loads(self._custom_buttons_file.read_text(encoding="utf-8"))
+                loaded_buttons_data = btn_raw.get("buttons")
+            except Exception:
+                pass
+        
+        if not loaded_buttons_data:
+            loaded_buttons_data = raw.get("buttons") or raw.get("buttonPresets")
+            
+        if loaded_buttons_data:
+            self._buttons = [
+                ThumbnailButton(
+                    id=str(item.get("id", "")).strip(),
+                    name=str(item.get("name", "")).strip(),
+                    icon=str(item.get("icon", "")).strip(),
+                    category=str(item.get("category", "")).strip(),
+                    prompt_template=str(item.get("prompt_template", item.get("promptTemplate", ""))).strip(),
+                    requires_mask=bool(item.get("requires_mask", item.get("requiresMask", False))),
+                    create_new_chat=True,
+                    allow_regenerate=bool(item.get("allow_regenerate", item.get("allowRegenerate", True))),
+                    summary=str(item.get("summary", "")).strip(),
+                    required_tools=normalize_required_tools(item.get("required_tools", item.get("requiredTools", []))),
+                    is_pinned=bool(item.get("is_pinned", item.get("isPinned", False))),
+                    fields=[
+                        ThumbnailButtonField(
+                            key=str(field.get("key", "")).strip(),
+                            label=str(field.get("label", "")).strip(),
+                            type=str(field.get("type", "text")).strip(),
+                            value=field.get("value", ""),
+                            tooltip=str(field.get("tooltip", "")).strip(),
+                            options=[str(option) for option in field.get("options", [])],
+                            min=float(field["min"]) if field.get("min") is not None else None,
+                            max=float(field["max"]) if field.get("max") is not None else None,
+                            required=bool(field.get("required", field.get("isRequired", True))),
+                            visible_if=field.get("visible_if", field.get("visibleIf")),
+                            bind_to_canvas=field.get("bind_to_canvas", field.get("bindToCanvas")),
+                        )
+                        for field in item.get("fields", [])
+                    ],
+                )
+                for item in loaded_buttons_data
+                if str(item.get("id", "")).strip()
+            ]
+        
+        # Always ensure builtin buttons exist and are updated
         self._merge_builtin_buttons()
 
         self._profiles = [
@@ -1640,7 +1750,61 @@ class ThumbnailPipelineManager:
         self._buttons = merged_buttons
 
     def _refresh_adapter_locked(self) -> None:
+        if self._adapter is not None:
+            try:
+                self._adapter.shutdown()
+            except Exception:
+                pass
         self._adapter = None
+        self._session_status_cache = None
+        self._session_status_cache_time = 0.0
+
+    def invalidate_browser_session(self) -> None:
+        with self._lock:
+            self._refresh_adapter_locked()
+
+    def get_session_status(self, refresh: bool = False) -> dict:
+        with self._lock:
+            if refresh:
+                self._refresh_adapter_locked()
+            headless = self._settings.gemini_headless
+            base_url = self._settings.gemini_base_url
+            runtime_root = self._runtime_root
+            cache = self._session_status_cache
+            cache_time = self._session_status_cache_time
+
+        if (
+            not refresh
+            and cache is not None
+            and (time.monotonic() - cache_time) < 45.0
+        ):
+            return cache
+
+        runtime_root.mkdir(parents=True, exist_ok=True)
+        checked = check_gemini_session(
+            headless=headless,
+            base_url=base_url,
+            runtime_root=runtime_root,
+            feature="thumbnail",
+        )
+        status = {
+            "backend": "gemini_web",
+            **asdict(checked),
+        }
+
+        with self._lock:
+            self._session_status_cache = status
+            self._session_status_cache_time = time.monotonic()
+        return status
+
+    def open_login(self) -> dict:
+        try:
+            payload = open_gemini_login_window(feature="thumbnail", user_data_dir=thumbnail_runtime_root())
+        except GeminiWebError as exc:
+            raise ThumbnailPipelineError(str(exc)) from exc
+        with self._lock:
+            self._refresh_adapter_locked()
+        return payload
 
     def _get_adapter(self) -> GeminiWebAdapter:
         with self._lock:
@@ -1655,8 +1819,51 @@ class ThumbnailPipelineManager:
                     debug_selector=True,
                     debug_root=self._debug_root,
                     max_tabs=1,
+                    feature="thumbnail",
                 )
             return self._adapter
+    def commit_crop(self, project_id: str, base64_image: str) -> dict:
+        import base64
+        with self._lock:
+            project = self._require_project(project_id)
+            project_dir = THUMBNAIL_PROJECTS_ROOT / project.id
+            versions_dir = project_dir / "versions"
+            versions_dir.mkdir(parents=True, exist_ok=True)
+            
+            version_idx = len(project.versions)
+            version_label = f"v{version_idx}"
+            version_id = f"{version_label}-{uuid.uuid4().hex[:6]}"
+            version_dir = versions_dir / version_label
+            version_dir.mkdir(parents=True, exist_ok=True)
+            
+            file_path = version_dir / "output.png"
+            
+            # Clean base64 header
+            data_to_decode = base64_image
+            if "," in data_to_decode:
+                data_to_decode = data_to_decode.split(",", 1)[1]
+            
+            file_path.write_bytes(base64.b64decode(data_to_decode))
+            
+            new_version = ThumbnailVersion(
+                id=version_id,
+                label=version_label,
+                note="Ảnh đã được cắt",
+                prompt="",
+                button_name="Croped",
+                fields={},
+                mask_mode="none",
+                created_at=utc_now(),
+                status="history",
+                source_image_path=project.source_image_path,
+                output_image_path=str(file_path),
+            )
+            project.versions.append(new_version)
+            project.selected_version_id = new_version.id
+            project.updated_at = utc_now()
+            self._persist_locked()
+            return self._serialize_project_detail(project)
+
 
 
 def _bool_value(value: object, *, default: bool) -> bool:

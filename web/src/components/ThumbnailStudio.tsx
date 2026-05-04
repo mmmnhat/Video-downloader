@@ -5,7 +5,7 @@ import {
  Play, Plus, Search,
  Layers, Trash2, Pin, PinOff,
  Save, X, ChevronDown, ChevronUp, Edit3, RefreshCw, SplitSquareVertical, Pencil, Sparkles, Upload, Zap,
- MousePointer2, Paintbrush, Frame, Square,
+ Paintbrush, Frame, Square, Eraser, Crop, Circle, Settings2,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -20,6 +20,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import { Slider } from "@/components/ui/slider";
 import { Field, FieldGroup } from "@/components/ui/field";
+import { SessionStatusAlert } from "@/components/ui/session-status-alert";
 import { TooltipFieldLabel } from "@/components/ui/tooltip-field-label";
 import {
  Dialog,
@@ -28,6 +29,7 @@ import {
  DialogHeader,
  DialogTitle,
  DialogFooter,
+ DialogClose,
 } from "@/components/ui/dialog";
 import {
  chooseFolder,
@@ -46,9 +48,12 @@ import {
  getThumbnailAssetUrl,
  getThumbnailBootstrap,
  getThumbnailProject,
+ getThumbnailSessionStatus,
+ openThumbnailLogin,
  openFolder,
  runThumbnailGenerationBatch,
  selectThumbnailVersion,
+ commitThumbnailCrop,
  deleteThumbnailVersion,
  renameThumbnailProject,
  ApiError,
@@ -67,12 +72,41 @@ import MaskCanvas, { type CanvasGuide } from "./MaskCanvas";
 import { useLocalStorage } from "@/hooks/use-local-storage";
 import { cn } from "@/lib/utils";
 
+type CanvasShapeTool = Extract<ThumbnailRequiredTool, "rect" | "ellipse">;
+
 function fieldValueMap(fields: ThumbnailButtonField[]) {
  return Object.fromEntries(fields.map((field) => [field.key, field.value])) as Record<string, string | number | boolean | string[]>;
 }
 
 function getErrorMessage(error: unknown) {
  return error instanceof Error ? error.message : "Yêu cầu thất bại.";
+}
+
+function isLikelyGeminiAuthMessage(message: string) {
+ const normalized = String(message || "").toLowerCase();
+ return (
+  normalized.includes("guest")
+  || normalized.includes("dang nhap")
+  || normalized.includes("session gemini")
+  || normalized.includes("profile rieng cua app")
+ );
+}
+
+function numericCanvasValue(value: ThumbnailButtonField["value"]) {
+ const next = Number(value);
+ return Number.isFinite(next) ? next : null;
+}
+
+function normalizeCanvasShapeTool(value: ThumbnailButtonField["value"]): CanvasShapeTool | null {
+ const normalized = String(value ?? "").trim().toLowerCase();
+ if (!normalized) return null;
+ if (["ellipse", "oval", "circle", "hinh tron", "hình tròn", "elip"].some((marker) => normalized.includes(marker))) {
+  return "ellipse";
+ }
+ if (["rect", "rectangle", "square", "hinh vuong", "hình vuông", "hinh chu nhat", "hình chữ nhật"].some((marker) => normalized.includes(marker))) {
+  return "rect";
+ }
+ return null;
 }
 
 
@@ -223,12 +257,32 @@ function getButtonRequiredTools(button: Pick<ThumbnailButton, "requiredTools" | 
  */
 function isFieldVisible(field: ThumbnailButtonField, allFields: ThumbnailButtonField[]): boolean {
  if (!field.visibleIf) return true;
- 
+
  if (typeof field.visibleIf === "string") {
+  // Support "key=value" syntax (e.g. "body=Average" or "if {body}=Average")
+  let condition = field.visibleIf.trim();
+  // Strip "if " prefix and curly braces if present to match user expectation
+  condition = condition.replace(/^if\s+/i, "").replace(/[\{\}]/g, "");
+
+  if (condition.includes("=")) {
+   const [key, val] = condition.split("=").map(s => s.trim());
+   const parent = allFields.find(f => f.key === key);
+   if (!parent) return false;
+
+   const parentVal = parent.value;
+   // Handle different value types
+   if (typeof parentVal === "number") return parentVal === Number(val);
+   if (typeof parentVal === "boolean") return String(parentVal) === val.toLowerCase();
+   if (Array.isArray(parentVal)) return parentVal.includes(val);
+
+   return String(parentVal ?? "") === val;
+  }
+
+  // Fallback to legacy "key has value" check
   const parent = allFields.find(f => f.key === field.visibleIf);
   return !!parent?.value;
  }
- 
+
  if (typeof field.visibleIf === "object") {
   for (const [key, val] of Object.entries(field.visibleIf)) {
    const parent = allFields.find(f => f.key === key);
@@ -244,21 +298,66 @@ function ThumbnailFieldRenderer({ field, allFields, onChange }: { field: Thumbna
 
  const label = (
   <div className="flex items-center justify-between mb-2">
-   <TooltipFieldLabel tooltip={field.tooltip} className={STUDIO_LABEL_CLASS}>
+   <div className={STUDIO_LABEL_CLASS}>
     {field.label} {field.required && <span className="text-destructive">*</span>}
-   </TooltipFieldLabel>
+   </div>
    {field.type === "slider" && <span className="text-xs font-mono font-semibold text-primary">{field.value}</span>}
   </div>
  );
 
  switch (field.type) {
+  case "multi-select":
+  // multiSelect merged into multi-select above
+   const selectedValues = Array.isArray(field.value) ? field.value : [];
+   return (
+    <Field>
+     {label}
+     <div className="flex flex-wrap gap-2 p-1">
+      {field.options?.map(opt => {
+       const isSelected = selectedValues.includes(opt);
+       return (
+        <Button
+         key={opt}
+         variant={isSelected ? "default" : "outline"}
+         size="sm"
+         className={cn(
+          "h-8 rounded-xl text-[11px] font-bold transition-all",
+          isSelected ? "bg-primary text-primary-foreground shadow-md" : "bg-muted/5 border-border/50 text-muted-foreground hover:bg-muted/10"
+         )}
+         onClick={() => {
+          if (isSelected) {
+           onChange(selectedValues.filter(v => v !== opt));
+          } else {
+           onChange([...selectedValues, opt]);
+          }
+         }}
+        >
+         {opt}
+        </Button>
+       );
+      })}
+     </div>
+    </Field>
+   );
+  case "text":
+   return (
+    <Field>
+     {label}
+     <Input
+      value={field.value as string}
+      onChange={e => onChange(e.target.value)}
+      placeholder={`Nhập ${field.label.toLowerCase()}...`}
+      className="h-10 bg-muted/10 border-border/50 text-sm font-medium focus-visible:ring-primary/30"
+     />
+    </Field>
+   );
   case "textarea":
    return (
     <Field>
      {label}
-     <Textarea 
-      value={field.value as string} 
-      onChange={e => onChange(e.target.value)} 
+     <Textarea
+      value={field.value as string}
+      onChange={e => onChange(e.target.value)}
       placeholder={`Nhập ${field.label.toLowerCase()}...`}
       className="min-h-[80px] bg-muted/10 border-border/50 text-sm focus-visible:ring-primary/30"
      />
@@ -283,12 +382,11 @@ function ThumbnailFieldRenderer({ field, allFields, onChange }: { field: Thumbna
   case "toggle":
    return (
     <div className="flex items-center justify-between p-3 rounded-2xl bg-muted/5 border border-border/30">
-     <TooltipFieldLabel
-      tooltip={field.tooltip || "Bật hoặc tắt tùy chọn này."}
+     <div
       className={cn(STUDIO_LABEL_CLASS, "text-foreground/80")}
      >
       {field.label}
-     </TooltipFieldLabel>
+     </div>
      <Switch checked={!!field.value} onCheckedChange={onChange} />
     </div>
    );
@@ -297,11 +395,11 @@ function ThumbnailFieldRenderer({ field, allFields, onChange }: { field: Thumbna
     <Field>
      {label}
      <div className="px-1 pt-2 pb-1">
-      <Slider 
-       value={[field.value as number]} 
-       min={field.min ?? 0} 
-       max={field.max ?? 10} 
-       step={1} 
+      <Slider
+       value={[field.value as number]}
+       min={field.min ?? 0}
+       max={field.max ?? 10}
+       step={1}
        onValueChange={([v]) => onChange(v)}
        className="py-4"
       />
@@ -312,11 +410,11 @@ function ThumbnailFieldRenderer({ field, allFields, onChange }: { field: Thumbna
    return (
     <Field>
      {label}
-     <Input 
-      type="number" 
-      value={field.value as number} 
-      onChange={e => onChange(Number(e.target.value))} 
-      min={field.min ?? undefined} 
+     <Input
+      type="number"
+      value={field.value as number}
+      onChange={e => onChange(Number(e.target.value))}
+      min={field.min ?? undefined}
       max={field.max ?? undefined}
       className="h-10 bg-muted/10 border-border/50 text-sm font-bold"
      />
@@ -327,14 +425,14 @@ function ThumbnailFieldRenderer({ field, allFields, onChange }: { field: Thumbna
     <Field>
      {label}
      <div className="flex gap-2">
-      <Input 
-       type="color" 
-       value={field.value as string} 
+      <Input
+       type="color"
+       value={field.value as string}
        onChange={e => onChange(e.target.value)}
        className="h-10 w-12 p-1 bg-muted/10 border-border/50 rounded-lg cursor-pointer"
       />
-      <Input 
-       value={field.value as string} 
+      <Input
+       value={field.value as string}
        onChange={e => onChange(e.target.value)}
        placeholder="#000000"
        className="h-10 flex-1 bg-muted/10 border-border/50 text-sm font-mono "
@@ -346,9 +444,9 @@ function ThumbnailFieldRenderer({ field, allFields, onChange }: { field: Thumbna
    return (
     <Field>
      {label}
-     <Input 
-      value={field.value as string} 
-      onChange={e => onChange(e.target.value)} 
+     <Input
+      value={field.value as string}
+      onChange={e => onChange(e.target.value)}
       placeholder={`Nhập ${field.label.toLowerCase()}...`}
       className="h-10 bg-muted/10 border-border/50 text-sm font-medium focus-visible:ring-primary/30"
      />
@@ -489,23 +587,22 @@ const TOOL_REQUIREMENT_OPTIONS: Array<{
  id: ThumbnailRequiredTool;
  label: string;
  shortLabel: string;
- icon: typeof MousePointer2;
+ icon: any;
 }> = [
- { id: "paint", label: "Brush / Eraser", shortLabel: "Brush / Eraser", icon: Paintbrush },
- { id: "frame", label: "Frame / Crop", shortLabel: "Frame / Crop", icon: Frame },
- { id: "shape", label: "Shape", shortLabel: "Shape", icon: Square },
+ { id: "brush", label: "Brush (Cọ vẽ)", shortLabel: "Brush", icon: Paintbrush },
+ { id: "eraser", label: "Eraser (Tẩy)", shortLabel: "Eraser", icon: Eraser },
+ { id: "crop", label: "Crop (Cắt ảnh)", shortLabel: "Crop", icon: Crop },
+ { id: "artboard", label: "Artboard (Khung)", shortLabel: "Artboard", icon: Frame },
+ { id: "rect", label: "Hình vuông", shortLabel: "Rect", icon: Square },
+ { id: "ellipse", label: "Hình tròn", shortLabel: "Ellipse", icon: Circle },
 ];
 
 const LEGACY_REQUIRED_TOOL_MAP: Record<string, ThumbnailRequiredTool | null> = {
- brush: "paint",
- eraser: "paint",
- crop: "frame",
- artboard: "frame",
- rect: "shape",
- ellipse: "shape",
- shape: "shape",
- pointer: null,
- transform: null,
+ paint: "brush",
+ frame: "artboard",
+ shape: "rect",
+ pointer: "brush",
+ transform: "artboard",
 };
 
 const THUMBNAIL_DEFAULT_GEM_URL = "https://gemini.google.com/app";
@@ -515,9 +612,9 @@ const STUDIO_ROUND_SELECT_CLASS = "h-8 rounded-full bg-muted/20 border-border/70
 const STUDIO_INPUT_CLASS = "h-8 rounded-lg bg-muted/20 border-border/70 text-xs";
 const STUDIO_BUTTON_CLASS = "h-8 rounded-full px-3 text-xs";
 const STUDIO_LABEL_CLASS = "text-[11px] font-bold text-muted-foreground/90";
-const STUDIO_LIBRARY_GRID_CLASS = "grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(15rem,1fr))]";
+const STUDIO_LIBRARY_GRID_CLASS = "grid gap-3 items-stretch [grid-template-columns:repeat(auto-fit,minmax(15rem,1fr))]";
 const STUDIO_CARD_META_BADGE_CLASS = "rounded-full border border-border/50 bg-background/70 px-2 py-1 text-[10px] font-bold text-muted-foreground";
-const STUDIO_LIBRARY_CARD_CLASS = "flex w-full flex-col rounded-2xl border border-border/50 bg-card p-2 text-left transition-all hover:bg-muted/50 active:scale-[0.98]";
+const STUDIO_LIBRARY_CARD_CLASS = "flex h-full w-full flex-col rounded-2xl border border-border/50 bg-card p-2 text-left transition-all hover:bg-muted/50 active:scale-[0.98]";
 const STUDIO_LIBRARY_CARD_ACTIONS_CLASS = "absolute inset-x-1 top-1 z-10 flex items-center justify-between gap-1 p-0.5";
 const STUDIO_LIBRARY_CARD_ICON_CLASS = "flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-xs text-primary shadow-sm";
 
@@ -525,24 +622,41 @@ function normalizeRequiredTools(
  requiredTools: Array<ThumbnailRequiredTool | string> | undefined,
  requiresMask = false,
 ) {
- const fallback: Array<ThumbnailRequiredTool | string> = requiresMask ? ["paint"] : [];
+ const fallback: Array<ThumbnailRequiredTool | string> = requiresMask ? ["brush"] : [];
  const source = requiredTools && requiredTools.length > 0 ? requiredTools : fallback;
  const normalized: ThumbnailRequiredTool[] = [];
+ const VALID_TOOLS: ThumbnailRequiredTool[] = ["brush", "eraser", "crop", "artboard", "rect", "ellipse"];
 
  source.forEach((tool) => {
   const value = String(tool).trim().toLowerCase();
   if (!value) return;
   const mapped = LEGACY_REQUIRED_TOOL_MAP[value] ?? value;
-  if ((mapped === "paint" || mapped === "frame" || mapped === "shape") && !normalized.includes(mapped)) {
-   normalized.push(mapped);
+  if (VALID_TOOLS.includes(mapped as ThumbnailRequiredTool) && !normalized.includes(mapped as ThumbnailRequiredTool)) {
+   normalized.push(mapped as ThumbnailRequiredTool);
   }
  });
 
  return normalized;
 }
 
-function formatFieldPreviewValue(value: ThumbnailButtonField["value"]) {
- const normalized = stringifyPromptValue(value).trim();
+function formatFieldPreviewValue(field: ThumbnailButtonField, buttonFields?: ThumbnailButtonField[]) {
+ const options = (field.options && field.options.length > 0)
+  ? field.options
+  : (buttonFields?.find(f => f.key === field.key)?.options || []);
+
+ if (field.type === "multi-select") {
+  const arr = Array.isArray(field.value) ? field.value : [];
+  if (arr.length > 0) return arr.join(", ");
+  if (options.length > 0) return `${options.length} lựa chọn: ${options.slice(0, 3).join(", ")}${options.length > 3 ? "..." : ""}`;
+  return "Chưa có giá trị";
+ }
+ if (field.type === "select") {
+  const v = String(field.value ?? "").trim();
+  if (v) return v;
+  if (options.length > 0) return `${options.length} tùy chọn: ${options.slice(0, 3).join(", ")}${options.length > 3 ? "..." : ""}`;
+  return "Chưa có giá trị";
+ }
+ const normalized = stringifyPromptValue(field.value).trim();
  return normalized || "Chưa có giá trị";
 }
 
@@ -602,7 +716,7 @@ function EffectControlPreviewCard({
         )}
        </div>
        <p className="mt-1 text-[11px] font-medium leading-relaxed text-foreground break-words whitespace-pre-wrap">
-        {formatFieldPreviewValue(field.value)}
+        {formatFieldPreviewValue(field)}
        </p>
       </div>
      ))
@@ -634,9 +748,9 @@ function EmojiPicker({ selected, onSelect, className }: { selected: string, onSe
 
  return (
   <div className={cn("p-4 space-y-4 bg-popover border border-border rounded-2xl shadow-2xl min-w-[300px]", className)}>
-   <Input 
-    placeholder="Tìm icon hoặc emoji..." 
-    value={search} 
+   <Input
+    placeholder="Tìm icon hoặc emoji..."
+    value={search}
     onChange={e => setSearch(e.target.value)}
     className="h-9 bg-muted/20 border-border/50 rounded-xl"
    />
@@ -801,9 +915,17 @@ type ThumbnailStudioProps = {
 export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProps) {
  const [bootLoading, setBootLoading] = useState(true);
  const [submitting, setSubmitting] = useState(false);
+ const [runStatus, setRunStatus] = useState<string>("");
+ const [draggedEffectId, setDraggedEffectId] = useState<string | null>(null);
+
+ const [buttonSearchQuery, setButtonSearchQuery] = useState("");
+ const [profileSearchQuery, setProfileSearchQuery] = useState("");
+ const [projectSearchQuery, setProjectSearchQuery] = useState("");
+
  const submittingRef = useRef(false);
  const buttonPresetInputRef = useRef<HTMLInputElement>(null);
  const profilePresetInputRef = useRef<HTMLInputElement>(null);
+ const imageInputRef = useRef<HTMLInputElement>(null);
  const [exporting, setExporting] = useState(false);
  const [bootstrap, setBootstrap] = useState<ThumbnailBootstrapPayload | null>(null);
  const [thumbnailSettingsDraft, setThumbnailSettingsDraft] = useState<ThumbnailSettings | null>(null);
@@ -813,9 +935,52 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
  const [maskBase64, setMaskBase64] = useState<string | null>(null);
  const [showComparator, setShowComparator] = useState(false);
  const [showExportDialog, setShowExportDialog] = useState(false);
+ const [sessionStatus, setSessionStatus] = useState<ThumbnailBootstrapPayload["sessionStatus"] | null>(null);
+ const [refreshingSession, setRefreshingSession] = useState(false);
+
+ const persistSessionErrorMessage = useCallback((message: string) => {
+   if (!isLikelyGeminiAuthMessage(message)) {
+     return;
+   }
+   setSessionStatus((current) => ({
+     backend: current?.backend ?? "gemini_web",
+     dependencies_ready: current?.dependencies_ready ?? true,
+     authenticated: false,
+     browser: current?.browser ?? null,
+     profileDir: current?.profileDir ?? "",
+     message,
+   }));
+ }, []);
+
+ const refreshSessionStatus = useCallback(async (refresh = false) => {
+   if (refresh) setRefreshingSession(true);
+   try {
+     const status = await getThumbnailSessionStatus(refresh);
+     setSessionStatus(status);
+     if (refresh && status.authenticated) {
+       toast.success("Phiên Gemini đã được làm mới.");
+     }
+   } catch (error) {
+     console.error("Failed to refresh thumbnail session status:", error);
+   } finally {
+     if (refresh) setRefreshingSession(false);
+   }
+ }, []);
+
+ const handleOpenLogin = async () => {
+   try {
+     await openThumbnailLogin();
+     toast.info("Đang mở cửa sổ đăng nhập Gemini...");
+     // Poll for status after opening login
+     setTimeout(() => void refreshSessionStatus(false), 2000);
+   } catch (error) {
+     toast.error(getErrorMessage(error));
+   }
+ };
  // Gallery preview: null = closed, string = versionId currently being previewed
  const [galleryPreviewVersionId, setGalleryPreviewVersionId] = useState<string | null>(null);
  const [canvasGuide, setCanvasGuide] = useState<CanvasGuide | null>(null);
+
  const hasBootstrappedRef = useRef(false);
  // Free-pick comparison: A and B are version IDs chosen by the user
  const [compareVersionAId, setCompareVersionAId] = useState<string | null>(null);
@@ -824,20 +989,28 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
  const [selectedMode] = useState<"preset" | "custom" | "mask">("preset");
  const [leftPanelTab, setLeftPanelTab] =
   useLocalStorage<LeftPanelTab>("thumbnail.leftPanelTab", "buttons");
- const [mainPanelTab, setMainPanelTab] =
-  useLocalStorage<MainPanelTab>("thumbnail.mainPanelTab", "canvas");
+ const [mainPanelTab, setMainPanelTab] = useState<MainPanelTab>("canvas");
  const [configPanelTab, setConfigPanelTab] =
   useLocalStorage<ConfigPanelTab>("thumbnail.configPanelTab", "button");
- const [effectTab, setEffectTab] = 
+ const [effectTab, setEffectTab] =
   useLocalStorage<EffectPanelTab>("thumbnail.effectTab", "effects");
  const regenerateMode = "new-chat" as const;
- 
+
  // Effect Control State
  const [activeEffects, setActiveEffects] = useState<EffectControlEffect[]>([]);
  const [canvasToolRequest, setCanvasToolRequest] = useState<{
   toolGroup: ThumbnailRequiredTool;
   nonce: number;
- } | null>(null);
+  } | null>(null);
+ const [canvasGuideRequest, setCanvasGuideRequest] = useState<{ guide: Partial<CanvasGuide>; nonce: number } | null>(null);
+ const [canvasSyncNonce, setCanvasSyncNonce] = useState(0);
+ const [canvasBrushSize, setCanvasBrushSize] = useState<number | undefined>(undefined);
+ const [canvasBrushColor, setCanvasBrushColor] = useState<string | undefined>(undefined);
+ const [canvasShapeTool, setCanvasShapeTool] = useState<CanvasShapeTool | undefined>(undefined);
+ const [canvasShapeFill, setCanvasShapeFill] = useState<string | undefined>(undefined);
+ const [canvasShapeOpacity, setCanvasShapeOpacity] = useState<number | undefined>(undefined);
+ const [canvasShapeHardness, setCanvasShapeHardness] = useState<number | undefined>(undefined);
+ const [canvasShapeSize, setCanvasShapeSize] = useState<number | undefined>(undefined);
 
  // Button Builder State
  const [buttonBuilderName, setButtonBuilderName] = useState("");
@@ -846,7 +1019,7 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
  const builderCreateNewChat = true;
  const [buttonRequiredTools, setButtonRequiredTools] = useState<ThumbnailRequiredTool[]>([]);
  const [builderFields, setBuilderFields] = useState<ThumbnailButtonField[]>([]);
- 
+
  // Profile Builder State
  const [profileName, setProfileName] = useState("");
  const [profileDesc, setProfileDesc] = useState("");
@@ -861,12 +1034,15 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
  const [newFieldKey, setNewFieldKey] = useState("");
  const [newFieldLabel, setNewFieldLabel] = useState("");
  const [newFieldType, setNewFieldType] = useState<ThumbnailButtonField["type"]>("text");
+ const [editingFieldIndex, setEditingFieldIndex] = useState<number | null>(null);
  const [newFieldDefault, setNewFieldDefault] = useState<any>("");
  const [newFieldOptions, setNewFieldOptions] = useState("");
  const [newFieldMin, setNewFieldMin] = useState<number | null>(null);
  const [newFieldMax, setNewFieldMax] = useState<number | null>(null);
  const [newFieldRequired, setNewFieldRequired] = useState(false);
  const [newFieldVisibleIf, setNewFieldVisibleIf] = useState("");
+ const [newFieldBindToCanvas, setNewFieldBindToCanvas] = useState<"none" | "artboard_ratio" | "crop_ratio" | "brush_size" | "brush_color" | "shape_type" | "shape_color" | "shape_opacity" | "shape_hardness" | "shape_size" | null>(null);
+ const [isFieldDialogOpen, setIsFieldDialogOpen] = useState(false);
 
  // Export State
  const [exportFolder, setExportFolder] = useLocalStorage<string>("thumbnail.exportFolder", "");
@@ -874,7 +1050,127 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
  const [importingButtonPreset, setImportingButtonPreset] = useState(false);
  const [importingProfilePreset, setImportingProfilePreset] = useState(false);
  const [exportingButtonPresetId, setExportingButtonPresetId] = useState<string | null>(null);
- const [exportingProfilePresetId, setExportingProfilePresetId] = useState<string | null>(null);
+  const selectedVersion = activeProject?.currentVersion || null; const [exportingProfilePresetId, setExportingProfilePresetId] = useState<string | null>(null);
+
+ const applyCanvasStateToFields = useCallback((
+  fields: ThumbnailButtonField[],
+  canvasState: {
+   guide?: CanvasGuide | null;
+   brush?: { size: number; color: string };
+   shape?: { type?: CanvasShapeTool; fill: string; opacity: number; hardness: number; size?: number };
+  },
+ ) => {
+  let changed = false;
+  const { guide, brush, shape } = canvasState;
+  const nextFields = fields.map((field) => {
+   if (field.bindToCanvas === "artboard_ratio" && guide?.mode === "artboard" && guide.ratioLabel) {
+    if (field.value !== guide.ratioLabel) {
+     changed = true;
+     return { ...field, value: guide.ratioLabel };
+    }
+   }
+   if (field.bindToCanvas === "crop_ratio" && guide?.mode === "crop" && guide.ratioLabel) {
+    if (field.value !== guide.ratioLabel) {
+     changed = true;
+     return { ...field, value: guide.ratioLabel };
+    }
+   }
+   if (field.bindToCanvas === "brush_size" && brush) {
+    if (Number(field.value) !== brush.size) {
+     changed = true;
+     return { ...field, value: brush.size };
+    }
+   }
+   if (field.bindToCanvas === "brush_color" && brush) {
+    if (String(field.value) !== brush.color) {
+     changed = true;
+     return { ...field, value: brush.color };
+    }
+   }
+   if (field.bindToCanvas === "shape_color" && shape) {
+    if (String(field.value) !== shape.fill) {
+     changed = true;
+     return { ...field, value: shape.fill };
+    }
+   }
+   if (field.bindToCanvas === "shape_type" && shape?.type) {
+    if (String(field.value) !== shape.type) {
+     changed = true;
+     return { ...field, value: shape.type };
+    }
+   }
+   if (field.bindToCanvas === "shape_opacity" && shape) {
+    if (Number(field.value) !== shape.opacity) {
+     changed = true;
+     return { ...field, value: shape.opacity };
+    }
+   }
+   if (field.bindToCanvas === "shape_hardness" && shape) {
+    if (Number(field.value) !== shape.hardness) {
+     changed = true;
+     return { ...field, value: shape.hardness };
+    }
+   }
+   if (field.bindToCanvas === "shape_size" && shape?.size !== undefined) {
+    if (Number(field.value) !== shape.size) {
+     changed = true;
+     return { ...field, value: shape.size };
+    }
+   }
+   if (field.key === "artboard_hint" && guide?.mode === "artboard" && guide.ratioLabel) {
+    const artboardHint = `Respect the ${guide.ratioLabel} artboard guide and keep the subject balanced inside the new frame.`;
+    if (field.value !== artboardHint) {
+     changed = true;
+     return { ...field, value: artboardHint };
+    }
+   }
+   return field;
+  });
+  return changed ? nextFields : fields;
+ }, []);
+
+  const updateActiveButtonFields = useCallback((updateFn: (fields: ThumbnailButtonField[]) => ThumbnailButtonField[]) => {
+    if (!selectedVersion) return;
+    setActiveEffects(curr => {
+      let changed = false;
+      const next = curr.map(eff => {
+        const nextFields = updateFn(eff.fields);
+        if (nextFields !== eff.fields) {
+          changed = true;
+          return { ...eff, fields: nextFields };
+        }
+        return eff;
+      });
+      return changed ? next : curr;
+    });
+  }, [selectedVersion]);
+
+  const handleCanvasGuideChange = useCallback((guide: CanvasGuide | null) => {
+    setCanvasGuide(guide);
+    setCanvasGuideRequest(null);
+    updateActiveButtonFields((fields) => applyCanvasStateToFields(fields, { guide }));
+   }, [updateActiveButtonFields, applyCanvasStateToFields]);
+
+  const handleCanvasBrushChange = useCallback((brush: { size: number; color: string }) => {
+    setCanvasBrushSize(brush.size);
+    setCanvasBrushColor(brush.color);
+    updateActiveButtonFields((fields) => applyCanvasStateToFields(fields, { brush }));
+   }, [updateActiveButtonFields, applyCanvasStateToFields]);
+
+  const handleCanvasShapeChange = useCallback((shape: {
+    type: CanvasShapeTool;
+    fill: string;
+    opacity: number;
+    hardness: number;
+    size: number;
+   }) => {
+    setCanvasShapeTool(shape.type);
+    setCanvasShapeFill(shape.fill);
+    setCanvasShapeOpacity(shape.opacity);
+    setCanvasShapeHardness(shape.hardness);
+    setCanvasShapeSize(shape.size);
+    updateActiveButtonFields((fields) => applyCanvasStateToFields(fields, { shape }));
+   }, [updateActiveButtonFields, applyCanvasStateToFields]);
 
  const [, startTransition] = useTransition();
 
@@ -911,6 +1207,27 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
   window.addEventListener("paste", handleGlobalPaste);
   return () => window.removeEventListener("paste", handleGlobalPaste);
  }, [activeProject]);
+
+  useEffect(() => {
+    if (bootstrap?.sessionStatus) {
+      setSessionStatus(bootstrap.sessionStatus);
+    }
+  }, [bootstrap?.sessionStatus]);
+
+  useEffect(() => {
+    if (!isActive) return;
+    const timer = setInterval(() => {
+      void refreshSessionStatus();
+    }, 30000);
+    return () => clearInterval(timer);
+  }, [isActive, refreshSessionStatus]);
+
+  useEffect(() => {
+    // Reset comparison state when switching projects to avoid cross-project conflicts
+    setCompareVersionAId(null);
+    setCompareVersionBId(null);
+    setShowComparator(false);
+  }, [activeProject?.id]);
 
  useEffect(() => {
   if (!isActive || hasBootstrappedRef.current) return;
@@ -954,14 +1271,18 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
  const handleRefreshGems = useCallback(async () => {
   try {
    setGemsRefreshing(true);
+   toast.info("Đang quét và làm mới danh sách Gem...");
    const gems = await listThumbnailGems();
    setAvailableGems(gems);
+   toast.success(`Đã làm mới, tìm thấy ${gems.length} Gem.`);
   } catch (error) {
-   toast.error(getErrorMessage(error));
+   const message = getErrorMessage(error);
+   persistSessionErrorMessage(message);
+   toast.error(message);
   } finally {
    setGemsRefreshing(false);
   }
- }, []);
+ }, [persistSessionErrorMessage]);
 
  const handleSaveThumbnailSettings = useCallback(async (partial: Partial<ThumbnailSettings>) => {
   if (!thumbnailSettingsDraft) return;
@@ -1087,16 +1408,25 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
  const buttons = bootstrap?.buttons ?? [];
  const profiles = bootstrap?.profiles ?? [];
  const sortedButtons = useMemo(
-  () => buttons.slice().sort((a, b) => (b.isPinned ? 1 : 0) - (a.isPinned ? 1 : 0)),
-  [buttons],
+  () => buttons.slice()
+   .filter(b => b.name.toLowerCase().includes(buttonSearchQuery.toLowerCase()))
+   .sort((a, b) => (b.isPinned ? 1 : 0) - (a.isPinned ? 1 : 0)),
+  [buttons, buttonSearchQuery],
  );
  const sortedProfiles = useMemo(
-  () => profiles.slice().sort((a, b) => (b.isPinned ? 1 : 0) - (a.isPinned ? 1 : 0)),
-  [profiles],
+  () => profiles.slice()
+   .filter(p => p.name.toLowerCase().includes(profileSearchQuery.toLowerCase()))
+   .sort((a, b) => (b.isPinned ? 1 : 0) - (a.isPinned ? 1 : 0)),
+  [profiles, profileSearchQuery],
+ );
+ const sortedProjects = useMemo(
+  () => (bootstrap?.projects ?? [])
+   .filter(p => p.name.toLowerCase().includes(projectSearchQuery.toLowerCase()))
+   .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()),
+  [bootstrap?.projects, projectSearchQuery]
  );
 
  const versions = activeProject?.versions ?? [];
- const selectedVersion = activeProject?.currentVersion ?? versions[versions.length - 1] ?? null;
  const showProjectLibraryTab = mainPanelTab !== "config";
  const effectiveLeftPanelTab = !showProjectLibraryTab && leftPanelTab === "projects" ? "buttons" : leftPanelTab;
  const buttonPreviewPrompt = buildPromptPreview(buttonBuilderPrompt, builderFields);
@@ -1130,11 +1460,94 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
   [activeEffects, buttons],
  );
 
- const requestCanvasToolFromButton = useCallback((button: Pick<ThumbnailButton, "requiredTools" | "requiresMask">) => {
-  const [toolGroup] = getButtonRequiredTools(button);
-  if (!toolGroup) return;
-  setCanvasToolRequest({ toolGroup, nonce: Date.now() + Math.random() });
- }, []);
+ const applyCanvasFieldBinding = useCallback((
+  field: ThumbnailButtonField,
+  nextValue: ThumbnailButtonField["value"],
+  nonce = Date.now() + Math.random(),
+ ): ThumbnailRequiredTool | null => {
+  const binding = field.bindToCanvas;
+  if (!binding || binding === "none") return null;
+
+  if (binding === "artboard_ratio" || binding === "crop_ratio") {
+   const ratioLabel = String(nextValue ?? "").trim();
+   if (!ratioLabel) return null;
+   const toolGroup = binding === "artboard_ratio" ? "artboard" : "crop";
+   setCanvasGuideRequest({ guide: { mode: toolGroup, ratioLabel }, nonce });
+   return toolGroup;
+  }
+
+  if (binding === "brush_size") {
+   const value = numericCanvasValue(nextValue);
+   if (value !== null) {
+    setCanvasBrushSize(value);
+    setCanvasSyncNonce(nonce);
+   }
+   return "brush";
+  }
+
+  if (binding === "brush_color") {
+   setCanvasBrushColor(String(nextValue ?? ""));
+   setCanvasSyncNonce(nonce);
+   return "brush";
+  }
+
+  if (binding === "shape_type") {
+   const shapeTool = normalizeCanvasShapeTool(nextValue);
+   if (!shapeTool) return null;
+   setCanvasShapeTool(shapeTool);
+   setCanvasSyncNonce(nonce);
+   return shapeTool;
+  }
+
+  if (binding === "shape_color") {
+   setCanvasShapeFill(String(nextValue ?? ""));
+   setCanvasSyncNonce(nonce);
+   return canvasShapeTool || null;
+  }
+
+  if (binding === "shape_opacity") {
+   const value = numericCanvasValue(nextValue);
+   if (value !== null) {
+    setCanvasShapeOpacity(value);
+    setCanvasSyncNonce(nonce);
+   }
+   return canvasShapeTool || null;
+  }
+
+  if (binding === "shape_hardness") {
+   const value = numericCanvasValue(nextValue);
+   if (value !== null) {
+    setCanvasShapeHardness(value);
+    setCanvasSyncNonce(nonce);
+   }
+   return canvasShapeTool || null;
+  }
+
+  if (binding === "shape_size") {
+   const value = numericCanvasValue(nextValue);
+   if (value !== null) {
+    setCanvasShapeSize(value);
+    setCanvasSyncNonce(nonce);
+   }
+   return canvasShapeTool || null;
+  }
+
+  return null;
+ }, [canvasShapeTool]);
+
+ const requestCanvasToolFromButton = useCallback((button: ThumbnailButton, fields = button.fields) => {
+  const nonce = Date.now() + Math.random();
+  let boundTool: ThumbnailRequiredTool | null = null;
+  fields.forEach((field) => {
+   boundTool = applyCanvasFieldBinding(field, field.value, nonce) ;
+  });
+
+  const requiredTools = getButtonRequiredTools(button); const fallbackTool = requiredTools.length > 0 ? requiredTools[0] : null;
+  const toolGroup = boundTool || fallbackTool;
+  if (toolGroup) {
+   setCanvasToolRequest({ toolGroup, nonce });
+  }
+ }, [applyCanvasFieldBinding]);
 
  useEffect(() => {
   if (!showProjectLibraryTab && leftPanelTab === "projects") {
@@ -1150,37 +1563,13 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
   return activeProject.versions[0];
  }, [activeProject, selectedVersion]);
 
- const applyCanvasGuideToFields = useCallback((buttonId: string, fields: ThumbnailButtonField[]) => {
-  if (buttonId !== "extend-wide" || canvasGuide?.mode !== "artboard" || !canvasGuide.ratioLabel) {
-   return fields;
-  }
-
-  const artboardHint = `Respect the ${canvasGuide.ratioLabel} artboard guide and keep the subject balanced inside the new frame.`;
-  let changed = false;
-  const nextFields = fields.map((field) => {
-   if (field.key === "target_ratio" && field.value !== canvasGuide.ratioLabel) {
-    changed = true;
-    return { ...field, value: canvasGuide.ratioLabel };
-   }
-   if (field.key === "artboard_hint" && field.value !== artboardHint) {
-    changed = true;
-    return { ...field, value: artboardHint };
-   }
-   if (field.key === "custom_ratio" && field.value) {
-    changed = true;
-    return { ...field, value: "" };
-   }
-   return field;
-  });
-  return changed ? nextFields : fields;
- }, [canvasGuide]);
 
  useEffect(() => {
   if (canvasGuide?.mode !== "artboard") return;
   setActiveEffects((current) => {
    let changed = false;
    const next = current.map((effect) => {
-    const nextFields = applyCanvasGuideToFields(effect.buttonId, effect.fields);
+    const nextFields = applyCanvasStateToFields(effect.fields, { guide: canvasGuide });
     if (nextFields !== effect.fields) {
      changed = true;
      return { ...effect, fields: nextFields };
@@ -1189,27 +1578,31 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
    });
    return changed ? next : current;
   });
- }, [applyCanvasGuideToFields, canvasGuide]);
+ }, [applyCanvasStateToFields, canvasGuide]);
 
  const buildEffectFromButton = useCallback((
   button: ThumbnailBootstrapPayload["buttons"][number],
   savedValues?: Record<string, any>,
  ) => {
-  const nextFields = button.fields.map((field) => ({
-   ...field,
-   value: savedValues?.[field.key] ?? field.value,
-  }));
+  const nextFields = button.fields.map((field) => {
+   const raw = savedValues?.[field.key] ?? field.value;
+   // Đảm bảo multi-select luôn là mảng
+   const value = field.type === "multi-select"
+    ? (Array.isArray(raw) ? raw : (raw ? [raw] : []))
+    : raw;
+   return { ...field, value };
+  });
   return {
    id: Math.random().toString(36).substr(2, 9),
    buttonId: button.id,
-   fields: applyCanvasGuideToFields(button.id, nextFields),
+   fields: applyCanvasStateToFields(nextFields, { guide: canvasGuide }),
   };
- }, [applyCanvasGuideToFields]);
+ }, [applyCanvasStateToFields, canvasGuide]);
 
  const addButtonToEffectControl = useCallback((button: ThumbnailButton) => {
   const nextEffect = buildEffectFromButton(button);
   setActiveEffects((current) => [...current, nextEffect]);
-  requestCanvasToolFromButton(button);
+  requestCanvasToolFromButton(button, nextEffect.fields);
   toast.success(`Đã thêm ${button.name}`);
  }, [buildEffectFromButton, requestCanvasToolFromButton]);
 
@@ -1230,9 +1623,9 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
   return {
    id: Math.random().toString(36).substr(2, 9),
    buttonId: effect.buttonId,
-   fields: applyCanvasGuideToFields(effect.buttonId, [...mergedFields, ...extraFields]),
+   fields: applyCanvasStateToFields([...mergedFields, ...extraFields ], { guide: canvasGuide } ),
   };
- }, [applyCanvasGuideToFields, buttons]);
+ }, [applyCanvasStateToFields, buttons, canvasGuide]);
 
  const applyProfileToEffectControl = useCallback((profile: ThumbnailProfile, options?: { silent?: boolean }) => {
   const nextEffects = profile.effects
@@ -1240,11 +1633,13 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
    .filter((effect): effect is EffectControlEffect => effect !== null);
   setActiveEffects(nextEffects);
   if (!options?.silent) {
-   const firstMatchingButton = profile.effects
-    .map((effect) => buttons.find((item) => item.id === effect.buttonId))
-    .find((button): button is ThumbnailButton => Boolean(button && getButtonRequiredTools(button).length > 0));
-   if (firstMatchingButton) {
-    requestCanvasToolFromButton(firstMatchingButton);
+   const firstMatchingEffect = nextEffects.find((effect) => {
+    const button = buttons.find((item) => item.id === effect.buttonId);
+    return Boolean(button && getButtonRequiredTools(button).length > 0);
+   });
+   if (firstMatchingEffect) {
+    const button = buttons.find((item) => item.id === firstMatchingEffect.buttonId);
+    if (button) requestCanvasToolFromButton(button, firstMatchingEffect.fields);
    }
    if (nextEffects.length === profile.effects.length) {
     toast.success(`Đã áp dụng Profile: ${profile.name}`);
@@ -1284,7 +1679,7 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
   setButtonBuilderName(button.name);
   setButtonBuilderCategory(button.category);
   setButtonBuilderPrompt(button.promptTemplate);
-  setButtonRequiredTools(normalizeRequiredTools(button.requiredTools, false));
+  setButtonRequiredTools(normalizeRequiredTools(button.requiredTools, !!button.requiresMask));
   setButtonIcon(button.icon || "✨");
   setBuilderFields(button.fields.map((f: any) => ({ ...f })));
   setMainPanelTab("config");
@@ -1307,14 +1702,14 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
  function handleCancelEdit() {
   setEditingButtonId(null);
   setEditingProfileId(null);
-  
+
   // Reset Button Builder
   setButtonBuilderName("");
   setButtonBuilderCategory("Custom");
   setButtonBuilderPrompt("");
   setButtonRequiredTools([]);
   setBuilderFields([]);
-  
+
   // Reset Profile Builder
   setProfileName("");
   setProfileDesc("");
@@ -1330,18 +1725,37 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
    else next.add(id);
    return next;
   });
+  const eff = activeEffects.find(e => e.id === id);
+  if (eff) {
+   const button = buttons.find(btn => btn.id === eff.buttonId);
+   if (button) requestCanvasToolFromButton(button, eff.fields);
+  }
  }
 
  function handleEffectFieldChange(effectId: string, key: string, nextValue: any) {
+  const targetEffect = activeEffects.find((effect) => effect.id === effectId);
+  const targetField = targetEffect?.fields.find((field) => field.key === key);
+  if (targetField) {
+   const nonce = Date.now() + Math.random();
+   const toolGroup = applyCanvasFieldBinding(targetField, nextValue, nonce);
+   if (toolGroup) {
+    setCanvasToolRequest({ toolGroup, nonce });
+   }
+  }
+
   setActiveEffects((current) =>
-   current.map((eff) =>
-    eff.id === effectId
-     ? {
-       ...eff,
-       fields: eff.fields.map((f) => (f.key === key ? { ...f, value: nextValue } : f)),
+   current.map((eff) => {
+    if (eff.id === effectId) {
+     const nextFields = eff.fields.map((f) => {
+      if (f.key === key) {
+       return { ...f, value: nextValue };
       }
-     : eff
-   )
+      return f;
+     });
+     return { ...eff, fields: nextFields };
+    }
+    return eff;
+   })
   );
  }
 
@@ -1349,6 +1763,20 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
   const isRegenerate = false;
   if (!activeProject || activeEffects.length === 0) return toast.error("Hãy chọn ảnh và thêm ít nhất một hiệu ứng (button).");
   if (!beginSubmit()) return;
+
+  setRunStatus("Đang tải ảnh...");
+
+  // Giả lập tiến trình (do API gọi theo dạng blocking)
+  const progressInterval = setInterval(() => {
+   setRunStatus(prev => {
+    if (prev === "Đang tải ảnh...") return "Đã tải ảnh, đang chuẩn bị gửi...";
+    if (prev === "Đã tải ảnh, đang chuẩn bị gửi...") return "Đã gửi yêu cầu...";
+    if (prev === "Đã gửi yêu cầu...") return "Đang phân tích và xử lý (có thể mất 15-30s)...";
+    if (prev === "Đang phân tích và xử lý (có thể mất 15-30s)...") return "Đang tạo ảnh...";
+    if (prev === "Đang tạo ảnh...") return "Đang tải preview...";
+    return prev;
+   });
+  }, 4000);
 
   try {
    const requiresMask = activeEffects.some(eff => {
@@ -1375,11 +1803,18 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
     } : undefined,
    });
 
+   clearInterval(progressInterval);
+   setRunStatus("Hoàn tất!");
    syncProject(currentProject);
    toast.success("Đã hoàn thành tạo ảnh với các hiệu ứng đã chọn.");
   } catch (error) {
-   toast.error(getErrorMessage(error));
+   clearInterval(progressInterval);
+   const message = getErrorMessage(error);
+   persistSessionErrorMessage(message);
+   toast.error(message);
   } finally {
+   clearInterval(progressInterval);
+   setRunStatus("");
    endSubmit();
   }
  }
@@ -1402,7 +1837,7 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
    const newProfile = await createThumbnailProfile(payload);
    setBootstrap(prev => prev ? { ...prev, profiles: [...prev.profiles.filter(p => p.id !== newProfile.id), newProfile] } : prev);
    toast.success(editingProfileId ? "Đã cập nhật profile thành công." : "Đã lưu profile mới thành công.");
-   handleCancelEdit();
+   setEditingProfileId(newProfile.id);
   } catch (error) {
    toast.error(getErrorMessage(error));
   } finally {
@@ -1426,15 +1861,13 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
     requiredTools: normalizeRequiredTools(buttonRequiredTools, false),
     fields: builderFields,
    });
-   startTransition(() => {
-    setBootstrap((current) =>
-     current ? { ...current, buttons: [...current.buttons.filter((item) => item.id !== button.id), button] } : current,
-    );
-    toast.success(editingButtonId ? "Đã cập nhật hành động." : "Đã lưu hành động mới.");
-    handleCancelEdit();
-    setMainPanelTab("canvas");
-   });
-  } catch (error) {
+    startTransition(() => {
+     setBootstrap((current) =>
+      current ? { ...current, buttons: [...current.buttons.filter((item) => item.id !== button.id), button] } : current,
+     );
+     toast.success(editingButtonId ? "Đã cập nhật hành động." : "Đã lưu hành động mới.");
+     setEditingButtonId(button.id);
+    });  } catch (error) {
    toast.error(getErrorMessage(error));
   } finally {
    endSubmit();
@@ -1455,9 +1888,9 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
  async function handleTogglePinButton(id: string) {
   try {
    const updated = await togglePinThumbnailButton(id);
-   setBootstrap(curr => curr ? { 
-    ...curr, 
-    buttons: curr.buttons.map(b => b.id === id ? updated : b) 
+   setBootstrap(curr => curr ? {
+    ...curr,
+    buttons: curr.buttons.map(b => b.id === id ? updated : b)
    } : curr);
   } catch (err) {
    toast.error(getErrorMessage(err));
@@ -1478,9 +1911,9 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
  async function handleTogglePinProfile(id: string) {
   try {
    const updated = await togglePinThumbnailProfile(id);
-   setBootstrap(curr => curr ? { 
-    ...curr, 
-    profiles: curr.profiles.map(p => p.id === id ? updated : p) 
+   setBootstrap(curr => curr ? {
+    ...curr,
+    profiles: curr.profiles.map(p => p.id === id ? updated : p)
    } : curr);
   } catch (err) {
    toast.error(getErrorMessage(err));
@@ -1525,7 +1958,8 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
  async function handleExportButtonPreset(id: string) {
   setExportingButtonPresetId(id);
   try {
-   const destinationDir = await ensureExportFolder();
+   const { path: destinationDir } = await chooseFolder();
+   if (!destinationDir) return;
    const result = await exportThumbnailButtonPreset({ id, destinationDir });
    if (result.path) {
     toast.success(`Đã xuất preset button "${result.button.name}" ra ${result.path}`);
@@ -1578,7 +2012,8 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
  async function handleExportProfilePreset(id: string) {
   setExportingProfilePresetId(id);
   try {
-   const destinationDir = await ensureExportFolder();
+   const { path: destinationDir } = await chooseFolder();
+   if (!destinationDir) return;
    const result = await exportThumbnailProfilePreset({ id, destinationDir });
    if (result.path) {
     toast.success(`Đã xuất preset profile "${result.profile.name}" ra ${result.path}`);
@@ -1611,13 +2046,13 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
     const nextProjects = curr.projects.filter(p => p.id !== projectId);
     let nextActiveProject = curr.activeProject;
     let nextActiveProjectId = curr.activeProjectId;
-    
+
     if (curr.activeProjectId === projectId) {
      nextActiveProject = null;
      nextActiveProjectId = null;
      setActiveProject(null);
     }
-    
+
     return {
      ...curr,
      projects: nextProjects,
@@ -1697,17 +2132,13 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
    setExporting(false);
   }
  }
-
- async function requestExportFolder() {
+async function requestExportFolder() {
   const result = await chooseFolder();
   setExportFolder(result.path);
   return result.path;
  }
 
- async function ensureExportFolder() {
-  if (exportFolder) return exportFolder;
-  return requestExportFolder();
- }
+
 
  async function handleChooseExportFolder() {
   try {
@@ -1716,6 +2147,17 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
    toast.error(getErrorMessage(error));
   }
  }
+
+ const handleCanvasImageChange = async (base64: string) => {
+  if (!activeProject) return;
+  try {
+   const project = await commitThumbnailCrop(activeProject.id, base64);
+   syncProject(project);
+   toast.success("Đã lưu phiên bản Croped!");
+  } catch (error) {
+   toast.error(getErrorMessage(error));
+  }
+ };
 
  const processImageFile = async (file: File) => {
   const reader = new FileReader();
@@ -1734,6 +2176,8 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
     setMaskBase64(null);
     syncProject(project);
     toast.success("Đã tạo dự án mới.");
+     setMainPanelTab("canvas");
+     setConfigPanelTab("button");
    } catch (error) {
     toast.error(getErrorMessage(error));
    } finally {
@@ -1766,7 +2210,7 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
    <Card className="border-border/70 shadow-sm">
     <CardContent className="flex items-center justify-center gap-3 py-16 text-sm text-muted-foreground">
      <Loader2 className="size-4 animate-spin" />
-     Khởi tạo ThumbAI Studio...
+     Khởi tạo Studio...
     </CardContent>
    </Card>
   );
@@ -1779,6 +2223,14 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
     "lg:grid lg:grid-cols-[20rem_minmax(0,1fr)_22rem] lg:grid-rows-[auto_minmax(0,1fr)]",
    )}
   >
+    <input
+     ref={imageInputRef}
+     type="file"
+     id="imageInput"
+     accept="image/*"
+     className="hidden"
+     onChange={e => { if (e.target.files?.[0]) void processImageFile(e.target.files[0]); }}
+    />
    <input
     ref={buttonPresetInputRef}
     type="file"
@@ -1793,45 +2245,70 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
     className="hidden"
     onChange={(event) => void handleProfilePresetFileChange(event)}
    />
-   
-   {/* HEADER WITH EXPORT */}
-   <div className="flex flex-col gap-3 rounded-2xl border border-border/70 bg-card pt-0.5 pb-2.5 px-3 shadow-sm xl:flex-row xl:items-center xl:justify-between xl:px-5 xl:pt-1 xl:pb-2.5 lg:col-[2/4] lg:row-start-1">
-    <div className="flex flex-wrap items-center justify-end gap-3 xl:ml-auto">
-     <Tabs value={mainPanelTab} onValueChange={(v) => setMainPanelTab(v as MainPanelTab)} className="h-9">
+
+   <div className="flex flex-col gap-3 rounded-2xl border border-border/70 bg-card pt-1.5 pb-2.5 px-3 shadow-sm xl:flex-row xl:items-center xl:justify-between xl:px-5 lg:col-[2/4] lg:row-start-1">
+    <div className="flex items-center gap-6 flex-1">
+
+     <Tabs value={mainPanelTab} onValueChange={(v) => setMainPanelTab(v as MainPanelTab)} className="w-fit">
       <TabsList className={STUDIO_TOP_TABS_CLASS}>
-       <TabsTrigger value="canvas" className={cn(STUDIO_TAB_TRIGGER_CLASS, "h-full px-4 data-[state=active]:bg-background")}>
-        Editor Canvas
-       </TabsTrigger>
-       <TabsTrigger value="config" className={cn(STUDIO_TAB_TRIGGER_CLASS, "h-full px-4 data-[state=active]:bg-background")}>
-        Thiết lập & Cấu hình
-       </TabsTrigger>
+       <TabsTrigger value="canvas" className={STUDIO_TAB_TRIGGER_CLASS}><Layers className="size-3 mr-1.5" /> Canvas</TabsTrigger>
+       <TabsTrigger value="config" className={STUDIO_TAB_TRIGGER_CLASS}><Settings2 className="size-3 mr-1.5" /> Thiết lập</TabsTrigger>
       </TabsList>
      </Tabs>
-
-     {activeProject && (
-      <div className="flex items-center gap-3 rounded-2xl border border-border/50 bg-muted/20 px-3 py-1.5">
-        <div className="flex flex-col items-end">
-         <span className={cn(STUDIO_LABEL_CLASS, "leading-none")}>Dự án</span>
-         <span className="text-xs font-semibold text-foreground leading-none">{activeProject.name}</span>
-        </div>
-        <div className="w-px h-6 bg-border/50" />
-        {beforeVersion && (
-         <Button
-          variant="ghost" size="icon"
-          className={cn("size-8 rounded-full", showComparator ? "bg-primary/10 text-primary" : "text-muted-foreground hover:text-primary")}
-          title="So sánh phiên bản"
-          onClick={() => setShowComparator(v => !v)}
-         >
-          <SplitSquareVertical className="size-4" />
-         </Button>
-        )}
-        <Button variant="ghost" size="icon" className="size-8 rounded-full text-primary" onClick={() => setShowExportDialog(true)}>
-         <Download className="size-4" />
-        </Button>
-      </div>
-     )}
     </div>
-   </div>
+
+    <div className="flex flex-wrap items-center justify-end gap-3">
+      {activeProject && (
+       <div className="flex items-center gap-3 rounded-2xl border border-border/50 bg-muted/20 px-3 py-1.5">
+         <div className="flex items-center">
+          <span className="text-sm font-semibold text-foreground leading-none">{activeProject.name}</span>
+         </div>
+         <div className="w-px h-6 bg-border/50" />
+         {beforeVersion && (
+          <Button
+           variant="ghost" size="icon"
+           className={cn("size-8 rounded-full", showComparator ? "bg-primary/10 text-primary" : "text-muted-foreground hover:text-primary")}
+           title="So sánh phiên bản"
+           onClick={() => setShowComparator(v => !v)}
+          >
+           <SplitSquareVertical className="size-4" />
+          </Button>
+         )}
+         <Button variant="ghost" size="icon" className="size-8 rounded-full text-primary" onClick={() => setShowExportDialog(true)}>
+          <Download className="size-4" />
+         </Button>
+       </div>
+      )}
+
+      {sessionStatus && (
+       <div className="flex items-center gap-1.5">
+        <div className="relative">
+         <Button
+           variant="ghost"
+           size="sm"
+           className="h-7 text-[10px] font-bold px-2.5 hover:bg-muted/80 rounded-full border border-border/40 flex items-center gap-2"
+           onClick={() => void handleOpenLogin()}
+         >
+           {sessionStatus.authenticated && (
+             <span className="size-1.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)]" />
+           )}
+           {sessionStatus.authenticated ? "Đã đăng nhập" : "Đăng nhập"}
+         </Button>
+        </div>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-8 hover:bg-muted/80 rounded-full border border-border/40 shrink-0"
+          onClick={() => void refreshSessionStatus(true)}
+          disabled={refreshingSession}
+        >
+         <RefreshCw className={cn("size-3", refreshingSession && "animate-spin")} />
+        </Button>
+       </div>
+      )}
+
+     </div>
+    </div>
 
    {/* EXPORT DIALOG */}
    <Dialog open={showExportDialog} onOpenChange={setShowExportDialog}>
@@ -1853,7 +2330,7 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
       </Field>
      </div>
      <DialogFooter>
-      <Button variant="ghost" size="sm" onClick={() => setShowExportDialog(false)}>Hủy</Button>
+      <Button variant="ghost" size="sm" onClick={() => { setShowExportDialog(false); }}>Hủy</Button>
       <Button size="sm" onClick={() => { void handleExport(); setShowExportDialog(false); }} disabled={exporting || !selectedVersion}>
        {exporting ? <Loader2 className="size-4 animate-spin mr-2" /> : <Download className="size-4 mr-2" />}
        Bắt đầu xuất
@@ -1861,7 +2338,7 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
      </DialogFooter>
     </DialogContent>
    </Dialog>
-   
+
    {/* BEFORE/AFTER COMPARATOR OVERLAY — supports any two versions */}
    {showComparator && (() => {
     const vA = compareVersionAId
@@ -1907,7 +2384,7 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
           <div className="flex items-center gap-2">
            <div className="relative group flex-1">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
-            <Input placeholder="Tìm button..." className={cn(STUDIO_INPUT_CLASS, "pl-9")} />
+            <Input placeholder="Tìm button..." className={cn(STUDIO_INPUT_CLASS, "pl-9")} value={buttonSearchQuery} onChange={e => setButtonSearchQuery(e.target.value)} />
            </div>
 
            <Button
@@ -1924,7 +2401,7 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
 
           <div className={STUDIO_LIBRARY_GRID_CLASS}>
            {sortedButtons.map((b) => (
-            <div key={b.id} className="group relative">
+            <div key={b.id} className="group relative flex flex-col">
              <div className={STUDIO_LIBRARY_CARD_ACTIONS_CLASS}>
               <div className={STUDIO_LIBRARY_CARD_ICON_CLASS}>
                {b.icon}
@@ -1988,28 +2465,27 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
               className={cn(STUDIO_LIBRARY_CARD_CLASS, "cursor-grab active:cursor-grabbing")}
              >
               <div className="flex flex-col gap-1.5 pt-7">
-               <div className="min-h-0 space-y-0.5">
-                <div className="text-[12px] font-bold leading-tight">
-                 <span className="line-clamp-1 text-pretty">{b.name}</span>
+                <div className="min-h-0 space-y-0.5">
+                 <div className="text-[12px] font-bold leading-tight">
+                  <span className="line-clamp-1 text-pretty">{b.name}</span>
+                 </div>
                 </div>
-                <div className="line-clamp-2 text-[10px] leading-relaxed text-muted-foreground/80 text-pretty">
-                 {b.summary || b.category || "Button tùy biến"}
-                </div>
-               </div>
               </div>
              </button>
             </div>
            ))}
           </div>
          </div>
-        </ScrollArea>
-       </TabsContent>
+        </ScrollArea>       </TabsContent>
 
        <TabsContent value="profiles" className="flex-1 flex flex-col m-0 min-h-0">
         <ScrollArea className="h-full">
          <div className="space-y-4 p-4 pr-3">
-          <div className="flex justify-end gap-2">
-
+          <div className="flex items-center gap-2">
+           <div className="relative group flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+            <Input placeholder="Tìm profile..." className={cn(STUDIO_INPUT_CLASS, "pl-9")} value={profileSearchQuery} onChange={e => setProfileSearchQuery(e.target.value)} />
+           </div>
            <Button
             variant="secondary"
             size="sm"
@@ -2094,7 +2570,6 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
                 <div className="text-[13px] font-semibold leading-5">
                  <span className="line-clamp-2 text-pretty">{p.name}</span>
                 </div>
-                <div className="line-clamp-2 text-[11px] leading-relaxed text-muted-foreground text-pretty">{p.description || "Combo nhiều hành động"}</div>
                </div>
               </div>
              </button>
@@ -2105,70 +2580,83 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
         </ScrollArea>
        </TabsContent>
 
-       {showProjectLibraryTab && (
-        <TabsContent value="projects" className="flex-1 flex flex-col m-0 min-h-0">
-         <ScrollArea className="h-full">
-          <div className="space-y-3 p-4 pr-3">
-           <div className="relative group">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
-            <Input placeholder="Tìm dự án..." className={cn(STUDIO_INPUT_CLASS, "pl-9")} />
-           </div>
-           {bootstrap?.projects?.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()).map(p => (
-            <div key={p.id} className="relative group">
-             <button
-              onClick={() => void handleSelectProject(p.id)}
-              className={cn(
-               "w-full flex items-center gap-3 p-3 rounded-2xl border transition-all text-left active:scale-[0.98]",
-               activeProject?.id === p.id
-                ? "border-primary bg-primary/5 ring-1 ring-primary/20"
-                : "border-border/50 bg-card hover:border-primary/30 hover:bg-muted/30"
-              )}
-             >
-              <div className="size-10 rounded-lg bg-black/20 border border-border/20 overflow-hidden shrink-0">
-               {p.base64Image ? (
-                <img src={p.base64Image} alt={p.name} className="size-full object-cover" />
-               ) : (
-                <Layers className="size-full p-2 text-muted-foreground/50" />
-               )}
-              </div>
-              <div className="flex-1 min-w-0">
-               <div className="text-sm font-semibold truncate text-foreground/90">{p.name}</div>
-               <div className="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">
-                <span>{p.versionCount} versions</span>
-                <span>•</span>
-                <span>{new Date(p.updatedAt).toLocaleDateString()}</span>
-               </div>
-              </div>
-             </button>
-
-             <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1">
-              <Button
-               variant="ghost"
-               size="icon"
-               className="h-7 w-7 rounded-lg bg-background/80 backdrop-blur-sm border border-border/50 hover:text-primary shadow-sm"
-               onClick={(e) => {
-                e.stopPropagation();
-                void handleRenameProject(p.id, p.name);
-               }}
-              >
-               <Pencil className="size-3" />
-              </Button>
-              <Button
-               variant="ghost"
-               size="icon"
-               className="h-7 w-7 rounded-lg bg-background/80 backdrop-blur-sm border border-border/50 hover:text-destructive shadow-sm"
-               onClick={(e) => {
-                e.stopPropagation();
-                void handleDeleteProject(p.id);
-               }}
-              >
-               <Trash2 className="size-3" />
-              </Button>
+        {showProjectLibraryTab && (
+         <TabsContent value="projects" className="flex-1 flex flex-col m-0 min-h-0">
+          <ScrollArea className="h-full">
+           <div className="space-y-3 p-4 pr-3">
+            <div className="flex items-center gap-2">
+             <div className="relative flex-1 group">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+              <Input placeholder="Tìm dự án..." className={cn(STUDIO_INPUT_CLASS, "pl-9")} value={projectSearchQuery} onChange={e => setProjectSearchQuery(e.target.value)} />
              </div>
+             <Button
+               variant="outline"
+               size="icon"
+               className="h-9 w-9 rounded-xl shrink-0 bg-card border-border/50 hover:border-primary/50 hover:bg-primary/5 shadow-sm"
+               onClick={() => imageInputRef.current?.click()}
+               title="Tạo dự án mới"
+             >
+              <Plus className="size-4" />
+             </Button>
             </div>
-           ))}
-          </div>
-         </ScrollArea>
+            {sortedProjects.map(p => (
+             <div key={p.id} className="relative group">
+              <button
+               onClick={() => void handleSelectProject(p.id)}
+               className={cn(
+                "w-full flex items-center gap-3 p-3 rounded-2xl border transition-all text-left active:scale-[0.98]",
+                activeProject?.id === p.id
+                 ? "border-primary bg-primary/5 ring-1 ring-primary/20"
+                 : "border-border/50 bg-card hover:border-primary/30 hover:bg-muted/30"
+               )}
+              >
+               <div className="size-10 rounded-lg bg-black/20 border border-border/20 overflow-hidden shrink-0">
+                {p.previewImagePath ? (
+                 <img src={getThumbnailAssetUrl(p.previewImagePath)} alt={p.name} className="size-full object-cover" />
+                ) : p.base64Image ? (
+                 <img src={p.base64Image} alt={p.name} className="size-full object-cover" />
+                ) : (
+                 <Layers className="size-full p-2 text-muted-foreground/50" />
+                )}
+               </div>
+               <div className="flex-1 min-w-0">
+                <div className="text-sm font-semibold truncate text-foreground/90">{p.name}</div>
+                <div className="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">
+                 <span>{p.versionCount} versions</span>
+                 <span>•</span>
+                 <span>{new Date(p.updatedAt).toLocaleDateString()}</span>
+                </div>
+               </div>
+              </button>
+
+              <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1">
+               <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 rounded-lg bg-background/80 backdrop-blur-sm border border-border/50 hover:text-primary shadow-sm"
+                onClick={(e) => {
+                 e.stopPropagation();
+                 void handleRenameProject(p.id, p.name);
+                }}
+               >
+                <Pencil className="size-3" />
+               </Button>
+               <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 rounded-lg bg-background/80 backdrop-blur-sm border border-border/50 hover:text-destructive shadow-sm"
+                onClick={(e) => {
+                 e.stopPropagation();
+                 void handleDeleteProject(p.id);
+                }}
+               >
+                <Trash2 className="size-3" />
+               </Button>
+              </div>
+             </div>
+            ))}
+           </div>
+          </ScrollArea>
         </TabsContent>
        )}
      </Tabs>
@@ -2177,6 +2665,11 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
 
    {/* -------------------- CENTER COLUMN -------------------- */}
    <main className="flex flex-col min-h-0 gap-4 lg:col-start-2 lg:row-start-2">
+    <SessionStatusAlert
+     authenticated={Boolean(sessionStatus?.authenticated)}
+     notReadyTitle={"Phiên Gemini của Thumbnail chưa sẵn sàng"}
+     message={sessionStatus?.message ?? "Mở cửa sổ đăng nhập Gemini của Thumbnail, đăng nhập đúng profile riêng của app rồi bấm làm mới phiên."}
+    />
     {mainPanelTab === "config" ? (
      <Card className="flex-1 border-border/70 shadow-sm overflow-hidden flex flex-col bg-background/50 backdrop-blur-md">
        <div className="px-6 pt-0 pb-2.5 border-b border-border/50 bg-muted/20 flex items-center justify-between">
@@ -2195,10 +2688,10 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
          {configPanelTab === "button" ? (
           <div className="flex items-center gap-2">
            {editingButtonId && (
-            <Button variant="ghost" size="xs" onClick={handleCancelEdit} className="h-8 rounded-full px-3 text-xs hover:bg-destructive/10 hover:text-destructive">Hủy</Button>
+            <Button variant="ghost" size="xs" onClick={() => { handleCancelEdit(); setMainPanelTab("canvas"); }} className="h-8 rounded-full px-3 text-xs hover:bg-destructive/10 hover:text-destructive">Hủy</Button>
            )}
-           <Button 
-            onClick={() => void handleSaveButton()} 
+           <Button
+            onClick={() => void handleSaveButton()}
             disabled={submitting}
             className="h-8 rounded-full px-4 text-[10px] font-bold shadow-lg shadow-primary/20"
            >
@@ -2209,9 +2702,9 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
          ) : (
           <div className="flex items-center gap-2">
            {editingProfileId && (
-            <Button variant="ghost" size="xs" onClick={handleCancelEdit} className="h-8 rounded-full px-3 text-xs hover:bg-destructive/10 hover:text-destructive">Hủy</Button>
+            <Button variant="ghost" size="xs" onClick={() => { handleCancelEdit(); setMainPanelTab("canvas"); }} className="h-8 rounded-full px-3 text-xs hover:bg-destructive/10 hover:text-destructive">Hủy</Button>
            )}
-           <Button 
+           <Button
             onClick={() => void handleSaveProfile()}
             disabled={activeEffects.length === 0 || submitting}
             className="h-8 rounded-full px-4 text-[10px] font-bold  shadow-lg shadow-primary/20"
@@ -2223,7 +2716,7 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
          )}
         </div>
        </div>
-       
+
        <ScrollArea className="flex-1">
         <div className="space-y-8 p-6">
         {configPanelTab === "button" ? (
@@ -2246,7 +2739,7 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
                </Dialog>
               </Field>
               <Field className="flex-1">
-               <TooltipFieldLabel tooltip="Tên hiển thị của button trong thư viện và effect control." className={STUDIO_LABEL_CLASS}>Tên Module</TooltipFieldLabel>
+               <TooltipFieldLabel tooltip="Tên hiển thị của button trong thư viện và effect control." className={STUDIO_LABEL_CLASS}>Tên Button</TooltipFieldLabel>
                <Input value={buttonBuilderName} onChange={e => setButtonBuilderName(e.target.value)} placeholder="VD: Thay đổi bầu trời" className="h-16 rounded-2xl bg-muted/20 text-base font-bold px-5" />
               </Field>
              </div>
@@ -2255,7 +2748,7 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
               <Textarea value={buttonBuilderPrompt} onChange={e => setButtonBuilderPrompt(e.target.value)} placeholder="Prompt gửi Gemini, dùng {key} để chèn tham số..." className="min-h-[150px] rounded-xl bg-muted/20 font-mono text-xs leading-relaxed" />
              </Field>
             </FieldGroup>
-            
+
             <div className="rounded-2xl border border-border/50 bg-muted/10 p-4">
              <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-3">
@@ -2275,14 +2768,15 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
                  variant={isSelected ? "default" : "outline"}
                  size="sm"
                  className="h-8 rounded-full px-3 text-xs font-medium"
-                 onClick={() =>
+                 onClick={() => {
                   setButtonRequiredTools((current) => {
                    if (current.includes(toolOption.id)) {
                     return current.filter((item) => item !== toolOption.id);
                    }
                    return [...current, toolOption.id];
-                  })
-                 }
+                  });
+                   setCanvasToolRequest({ toolGroup: toolOption.id as ThumbnailRequiredTool, nonce: Date.now() });
+                 }}
                 >
                  <ToolIcon className="mr-1.5 size-3.5" />
                  {toolOption.label}
@@ -2297,9 +2791,19 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
            <div className="space-y-6">
             <div className="flex items-center justify-between">
              <TooltipFieldLabel tooltip="Khai báo các field mà user sẽ nhập khi dùng button này." className={STUDIO_LABEL_CLASS}>Tham số (Fields)</TooltipFieldLabel>
-             <Dialog>
+             <Dialog open={isFieldDialogOpen} onOpenChange={setIsFieldDialogOpen}>
               <DialogTrigger asChild>
-               <Button variant="outline" size="sm" className={cn(STUDIO_BUTTON_CLASS, "rounded-lg font-medium")}>
+               <Button
+                variant="outline"
+                size="sm"
+                className={cn(STUDIO_BUTTON_CLASS, "rounded-lg font-medium")}
+                onClick={() => {
+                  setNewFieldKey(""); setNewFieldLabel(""); setNewFieldType("text");
+                  setNewFieldDefault(""); setNewFieldOptions("");
+                  setNewFieldMin(null); setNewFieldMax(null); setNewFieldRequired(false);
+                  setNewFieldVisibleIf(""); setNewFieldBindToCanvas(null);
+                }}
+               >
                 <Plus className="size-3 mr-1.5" /> Thêm tham số
                </Button>
               </DialogTrigger>
@@ -2319,6 +2823,7 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
                     if (v === 'toggle') setNewFieldDefault(false);
                     else if (v === 'slider' || v === 'number') setNewFieldDefault(0);
                     else if (v === 'color') setNewFieldDefault("#FFFFFF");
+                    else if (v === 'multi-select') setNewFieldDefault([]);
                     else setNewFieldDefault("");
                    }}>
                     <SelectTrigger className={cn(STUDIO_INPUT_CLASS, "h-9")}><SelectValue /></SelectTrigger>
@@ -2331,6 +2836,21 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
                      <SelectItem value="number">Number (Số lượng)</SelectItem>
                      <SelectItem value="color">Color Picker (Màu sắc)</SelectItem>
                      <SelectItem value="toggle">Toggle (Bật/Tắt)</SelectItem>
+                    </SelectContent>
+                   </Select>
+                  </Field>
+
+                  <Field>
+                   <TooltipFieldLabel tooltip="Tự động đồng bộ giá trị với thuộc tính của Canvas." className={STUDIO_LABEL_CLASS}>Nối cấu hình Canvas</TooltipFieldLabel>
+                   <Select value={newFieldBindToCanvas || "none"} onValueChange={(v: any) => setNewFieldBindToCanvas(v === "none" ? null : v)}>
+                    <SelectTrigger className={cn(STUDIO_INPUT_CLASS, "h-9")}><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">Không đồng bộ (None)</SelectItem>
+                      <SelectItem value="artboard_ratio">Tỉ lệ Artboard</SelectItem>
+                      <SelectItem value="crop_ratio">Tỉ lệ Cắt (Crop)</SelectItem>
+                      <SelectItem value="brush_color">Màu cọ vẽ</SelectItem>
+                      <SelectItem value="shape_type">Loại hình học (Shape)</SelectItem>
+                      <SelectItem value="shape_color">Màu hình học</SelectItem>
                     </SelectContent>
                    </Select>
                   </Field>
@@ -2355,33 +2875,67 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
                     <Switch checked={newFieldRequired} onCheckedChange={setNewFieldRequired} />
                    </div>
                    <Field>
-                    <TooltipFieldLabel tooltip="Tên key điều kiện để field này chỉ hiện khi field kia có giá trị." className={STUDIO_LABEL_CLASS}>Điều kiện hiển thị</TooltipFieldLabel>
+                    <TooltipFieldLabel tooltip="Nhập mã key (VD: my_key) để hiện khi field đó có giá trị, hoặc biểu thức so sánh (VD: my_key=value)." className={STUDIO_LABEL_CLASS}>Điều kiện hiển thị</TooltipFieldLabel>
                     <Input value={newFieldVisibleIf} onChange={e => setNewFieldVisibleIf(e.target.value)} placeholder="Hiện nếu key này có giá trị..." className={cn(STUDIO_INPUT_CLASS, "h-9")} />
                    </Field>
                   </div>
                  </div>
                 </ScrollArea>
                 <DialogFooter className="pt-4 border-t border-border/50">
-                 <Button 
+                 <Button
                   className="w-full h-10 rounded-xl font-bold"
                   onClick={() => {
                    const options = newFieldOptions.split(',').map(s => s.trim()).filter(Boolean);
-                   setBuilderFields([...builderFields, { 
-                    key: newFieldKey, 
-                    label: newFieldLabel, 
-                    type: newFieldType, 
-                    value: newFieldDefault,
-                    options: options.length ? options : undefined,
-                    min: newFieldMin,
-                    max: newFieldMax,
-                    required: newFieldRequired,
-                    visibleIf: newFieldVisibleIf || undefined,
-                    tooltip: "" 
-                   }]);
-                   setNewFieldKey(""); setNewFieldLabel(""); setNewFieldOptions("");
+                   void options; // suppress unused variable — options đã được inline bên dưới
+                   if (editingFieldIndex !== null) {
+                     const updatedFields = [...builderFields];
+                     updatedFields[editingFieldIndex] = {
+                      key: newFieldKey,
+                      label: newFieldLabel,
+                      type: newFieldType,
+                      value: newFieldDefault,
+                      options: newFieldOptions.split(",").map(s => s.trim()).filter(Boolean).length ? newFieldOptions.split(",").map(s => s.trim()).filter(Boolean) : undefined,
+                      min: newFieldMin,
+                      max: newFieldMax,
+                      required: newFieldRequired,
+                      visibleIf: newFieldVisibleIf || undefined,
+                      bindToCanvas: newFieldBindToCanvas || undefined,
+                      tooltip: ""
+                     };
+                     setBuilderFields(updatedFields);
+                     if (newFieldBindToCanvas === "artboard_ratio") {
+                       setCanvasGuideRequest({ guide: { mode: "artboard", ratioLabel: newFieldDefault }, nonce: Date.now() });
+                       setCanvasSyncNonce(n => n + 1);
+                     } else if (newFieldBindToCanvas === "crop_ratio") {
+                       setCanvasGuideRequest({ guide: { mode: "crop", ratioLabel: newFieldDefault }, nonce: Date.now() });
+                       setCanvasSyncNonce(n => n + 1);
+                     }
+                   } else {
+                    setBuilderFields([...builderFields, {
+                     key: newFieldKey,
+                     label: newFieldLabel,
+                     type: newFieldType,
+                     value: newFieldDefault,
+                     options: newFieldOptions.split(",").map(s => s.trim()).filter(Boolean).length ? newFieldOptions.split(",").map(s => s.trim()).filter(Boolean) : undefined,
+                     min: newFieldMin,
+                     max: newFieldMax,
+                     required: newFieldRequired,
+                     visibleIf: newFieldVisibleIf || undefined,
+                     bindToCanvas: newFieldBindToCanvas || undefined,
+                     tooltip: ""
+                    }]);
+                    if (newFieldBindToCanvas === "artboard_ratio") {
+                      setCanvasGuideRequest({ guide: { mode: "artboard", ratioLabel: newFieldDefault }, nonce: Date.now() });
+                      setCanvasSyncNonce(n => n + 1);
+                    } else if (newFieldBindToCanvas === "crop_ratio") {
+                      setCanvasGuideRequest({ guide: { mode: "crop", ratioLabel: newFieldDefault }, nonce: Date.now() });
+                      setCanvasSyncNonce(n => n + 1);
+                    }
+                   }                   setNewFieldKey(""); setNewFieldLabel(""); setNewFieldOptions("");
                    setNewFieldMin(null); setNewFieldMax(null); setNewFieldRequired(false);
-                   setNewFieldVisibleIf("");
-                 }}>Thêm tham số vào Button</Button>
+                   setNewFieldVisibleIf(""); setNewFieldBindToCanvas(null);
+                   setEditingFieldIndex(null); setIsFieldDialogOpen(false);
+                 }}>{editingFieldIndex !== null ? "Lưu thay đổi tham số" : "Thêm tham số vào Button"}</Button>
                 </DialogFooter>
               </DialogContent>
              </Dialog>
@@ -2402,6 +2956,7 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
                     <span className="capitalize">{f.type}</span>
                     {f.min !== null && <span>• Min: {f.min}</span>}
                     {f.max !== null && <span>• Max: {f.max}</span>}
+                    {f.bindToCanvas && <span className="text-primary/80 ml-1">• Nối với: {f.bindToCanvas}</span>}
                    </div>
                   </div>
                   <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -2415,7 +2970,9 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
                     setNewFieldMax(f.max ?? null);
                     setNewFieldRequired(f.required || false);
                     setNewFieldVisibleIf(typeof f.visibleIf === 'string' ? f.visibleIf : "");
-                    setBuilderFields(builderFields.filter((_, idx) => idx !== i));
+                    setNewFieldBindToCanvas(f.bindToCanvas || null);
+                    setEditingFieldIndex(i);
+                    setIsFieldDialogOpen(true);
                    }}>
                     <Edit3 className="size-3" />
                    </Button>
@@ -2436,7 +2993,7 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
         ) : (
          <div className="mx-auto max-w-2xl space-y-8 pb-6">
 
-          
+
           <FieldGroup className="gap-6">
             <div className="flex gap-4 items-end">
              <Field className="w-16 shrink-0">
@@ -2454,10 +3011,10 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
              </Field>
              <Field className="flex-1">
               <TooltipFieldLabel tooltip="Tên hiển thị của profile." className={STUDIO_LABEL_CLASS}>Tên Profile</TooltipFieldLabel>
-              <Input 
-               value={profileName} 
+              <Input
+               value={profileName}
                onChange={e => setProfileName(e.target.value)}
-               placeholder="VD: Cinematic Summer Look" className="h-16 rounded-2xl bg-muted/20 text-base font-bold px-5" 
+               placeholder="VD: Cinematic Summer Look" className="h-16 rounded-2xl bg-muted/20 text-base font-bold px-5"
               />
              </Field>
             </div>
@@ -2465,10 +3022,10 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
               <TooltipFieldLabel tooltip="Mô tả ngắn giúp phân biệt profile với các preset khác." className={STUDIO_LABEL_CLASS}>Mô tả ngắn</TooltipFieldLabel>
               <Input value={profileDesc} onChange={e => setProfileDesc(e.target.value)} placeholder="Tóm tắt công dụng..." className="h-10 rounded-xl bg-muted/20 text-sm" />
              </Field>
-            
+
             <div className="space-y-3">
              <TooltipFieldLabel tooltip="Danh sách effect hiện tại sẽ được đóng gói vào profile này." className={STUDIO_LABEL_CLASS}>Các effect sẽ được lưu</TooltipFieldLabel>
-             <div 
+             <div
               className="p-2 rounded-2xl border border-border/50 bg-muted/5 min-h-[100px] flex flex-col gap-2 transition-all duration-200 group/drop"
               onDragOver={(e) => {
                e.preventDefault();
@@ -2507,11 +3064,10 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
                {activeEffects.length === 0 && <div className="py-8 text-center text-xs text-muted-foreground/40">Kéo thả button vào đây hoặc thêm vào canvas để tạo profile.</div>}
              </div>
             </div>
-            
-
           </FieldGroup>
          </div>
         )}
+
         </div>
        </ScrollArea>
      </Card>
@@ -2525,14 +3081,27 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
        {activeProject ? (
         <div className="h-full flex flex-col">
           <div className="flex-1 relative">
-           <MaskCanvas 
+           <MaskCanvas
             key={selectedVersion?.id ?? activeProject.id}
             imageUrl={selectedVersion?.outputImagePath ? getThumbnailAssetUrl(selectedVersion.outputImagePath) : (activeProject?.base64Image || "")}
             onMaskChange={setMaskBase64}
-            onGuideChange={setCanvasGuide}
+            onGuideChange={handleCanvasGuideChange}
+            onBrushChange={handleCanvasBrushChange}
+            onShapeChange={handleCanvasShapeChange}
+            onImageChange={handleCanvasImageChange}
             keepViewState={false}
             requestedToolGroup={canvasToolRequest?.toolGroup ?? null}
             requestedToolNonce={canvasToolRequest?.nonce}
+            requestedGuide={canvasGuideRequest?.guide || null}
+            requestedGuideNonce={canvasGuideRequest?.nonce}
+            requestedToolSettingsNonce={canvasSyncNonce}
+            requestedBrushSize={canvasBrushSize}
+            requestedBrushColor={canvasBrushColor}
+            requestedShapeTool={canvasShapeTool}
+            requestedShapeFill={canvasShapeFill}
+            requestedShapeOpacity={canvasShapeOpacity}
+            requestedShapeHardness={canvasShapeHardness}
+            requestedShapeSize={canvasShapeSize}
            />
           </div>
         </div>
@@ -2549,8 +3118,7 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
            <Button onClick={() => void handlePasteFromClipboard()} className="rounded-xl px-6 h-10 font-bold">
             <Plus className="size-4 mr-2" /> Dán từ Clipboard
            </Button>
-           <input type="file" id="imageInput" accept="image/*" className="hidden" onChange={e => { if (e.target.files?.[0]) void processImageFile(e.target.files[0]); }} />
-           <Button variant="outline" onClick={() => document.getElementById('imageInput')?.click()} className="rounded-xl px-6 h-10 font-bold border-border/70">
+           <Button variant="outline" onClick={() => imageInputRef.current?.click()} className="rounded-xl px-6 h-10 font-bold border-border/70">
             Chọn file ảnh
            </Button>
           </div>
@@ -2574,14 +3142,16 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
         )}
         <ScrollArea className="flex-1 w-full" viewportClassName="overflow-y-hidden">
           <div className="flex h-full min-w-max flex-row items-center gap-3 px-4">
-          {versions.slice().reverse().map((v, idx) => (
+            {/* History Versions */}
+
+          {versions.slice().reverse().map((v) => (
            <div
             key={v.id}
             onClick={() => void handleSelectVersion(v.id)}
             className={cn(
              "group relative flex h-20 w-44 shrink-0 cursor-pointer gap-3 rounded-2xl border p-2 text-left transition-all md:w-40",
-             selectedVersion?.id === v.id 
-              ? "border-primary bg-primary/10 ring-1 ring-primary/30 shadow-md shadow-primary/5" 
+             selectedVersion?.id === v.id
+              ? "border-primary bg-primary/10 ring-1 ring-primary/30 shadow-md shadow-primary/5"
               : "border-border/50 hover:border-primary/20 hover:bg-muted/30"
             )}
            >
@@ -2600,7 +3170,7 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
             <div className="flex min-w-0 flex-1 flex-col justify-center pr-7">
              <div className="flex flex-col gap-1.5">
                <div className="flex items-center gap-2">
-                <span className="text-xs font-black  text-primary">v{versions.length - 1 - idx}</span>
+                 <span className="text-xs font-black text-primary">{v.label}</span>
                 {v.status === "branch" && (
                  <Badge
                   variant="outline"
@@ -2615,12 +3185,12 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
                </span>
              </div>
             </div>
-  
+
             {/* Delete Action */}
             <div className="absolute top-1.5 right-1.5 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-             <Button 
-              variant="ghost" 
-              size="icon" 
+             <Button
+              variant="ghost"
+              size="icon"
               className="h-6 w-6 rounded-lg bg-background/80 backdrop-blur-sm border border-border/50 hover:text-destructive shadow-sm"
               onClick={(e) => {
                e.stopPropagation();
@@ -2874,19 +3444,61 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
        <div className="px-4 pt-0 pb-2.5 border-b border-border/50 bg-muted/20 flex items-center justify-between">
         <TabsList className={STUDIO_TOP_TABS_CLASS}>
          <TabsTrigger value="effects" className={STUDIO_TAB_TRIGGER_CLASS}>Hiệu ứng</TabsTrigger>
-         <TabsTrigger value="gemini" className={STUDIO_TAB_TRIGGER_CLASS}>Gemini / Prompt</TabsTrigger>
+         <TabsTrigger value="gemini" className={STUDIO_TAB_TRIGGER_CLASS}>Gemini</TabsTrigger>
         </TabsList>
-        
+
         <div className="flex items-center gap-2">
          {activeEffects.length > 0 && (
-          <Button 
-           variant="ghost" size="xs" className="h-8 gap-2 rounded-full border border-border/40 px-3 text-xs hover:bg-primary/10 hover:text-primary"
-           onClick={handleSaveProfile}
-           disabled={submitting}
-          >
-           <Save className="w-3 h-3" />
-           Lưu Profile
-          </Button>
+          <Dialog>
+           <DialogTrigger asChild>
+            <Button
+             variant="ghost" size="xs" className="h-8 gap-2 rounded-full border border-border/40 px-3 text-xs hover:bg-primary/10 hover:text-primary"
+             disabled={submitting}
+            >
+             <Save className="w-3 h-3" />
+             Lưu Profile
+            </Button>
+           </DialogTrigger>
+           <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+             <DialogTitle>Lưu Profile Hiệu ứng</DialogTitle>
+             <p className="text-sm text-muted-foreground">
+              Đóng gói {activeEffects.length} hiệu ứng hiện tại thành một profile để sử dụng lại.
+             </p>
+            </DialogHeader>
+            <div className="flex gap-4 items-end py-4">
+             <Field className="w-16 shrink-0">
+              <TooltipFieldLabel tooltip="Biểu tượng đại diện" className={STUDIO_LABEL_CLASS}>Icon</TooltipFieldLabel>
+              <Dialog>
+               <DialogTrigger asChild>
+                <button className="size-16 flex items-center justify-center rounded-2xl border-2 border-dashed border-border hover:border-primary/50 hover:bg-primary/5 transition-all text-3xl shadow-sm">
+                 {profileIcon || "📦"}
+                </button>
+               </DialogTrigger>
+               <DialogContent className="p-0 border-none bg-transparent shadow-none w-fit">
+                <EmojiPicker selected={profileIcon} onSelect={(e) => { setProfileIcon(e); }} />
+               </DialogContent>
+              </Dialog>
+             </Field>
+             <Field className="flex-1">
+              <TooltipFieldLabel tooltip="Tên hiển thị của profile." className={STUDIO_LABEL_CLASS}>Tên Profile</TooltipFieldLabel>
+              <Input
+               value={profileName}
+               onChange={e => setProfileName(e.target.value)}
+               placeholder="VD: Cinematic Summer Look" className="h-16 rounded-2xl bg-muted/20 text-base font-bold px-5"
+              />
+             </Field>
+            </div>
+            <DialogFooter>
+             <DialogClose asChild>
+              <Button variant="outline">Hủy</Button>
+             </DialogClose>
+             <DialogClose asChild>
+              <Button onClick={() => void handleSaveProfile()}>Lưu Profile</Button>
+             </DialogClose>
+            </DialogFooter>
+           </DialogContent>
+          </Dialog>
          )}
          {activeEffects.length > 0 && (
           <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => setActiveEffects([])}>
@@ -2897,7 +3509,7 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
        </div>
 
        <TabsContent value="effects" className="flex-1 flex flex-col min-h-0 m-0 border-0">
-        <ScrollArea 
+        <ScrollArea
          className="min-h-0 flex-1"
          onDragOver={(e) => {
           e.preventDefault();
@@ -2917,9 +3529,43 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
            {activeEffects.map((eff) => {
             const b = buttons.find(btn => btn.id === eff.buttonId);
             if (!b) return null;
-            
+
             return (
-             <div key={eff.id} className="rounded-2xl border border-border/50 bg-card/50 overflow-hidden shadow-sm">
+             <div
+              key={eff.id}
+              draggable
+              onDragStart={(e) => {
+               e.dataTransfer.setData("effectId", eff.id);
+               setDraggedEffectId(eff.id);
+              }}
+              onDragOver={(e) => {
+               if (draggedEffectId && draggedEffectId !== eff.id) {
+                e.preventDefault();
+               }
+              }}
+              onDrop={(e) => {
+               const sourceId = e.dataTransfer.getData("effectId");
+               if (sourceId && sourceId !== eff.id) {
+                e.preventDefault();
+                e.stopPropagation();
+                setActiveEffects(prev => {
+                 const sourceIndex = prev.findIndex(item => item.id === sourceId);
+                 const targetIndex = prev.findIndex(item => item.id === eff.id);
+                 if (sourceIndex < 0 || targetIndex < 0) return prev;
+                 const next = [...prev];
+                 const [removed] = next.splice(sourceIndex, 1);
+                 next.splice(targetIndex, 0, removed);
+                 return next;
+                });
+               }
+               setDraggedEffectId(null);
+              }}
+              onDragEnd={() => setDraggedEffectId(null)}
+              className={cn(
+               "rounded-2xl border bg-card/50 overflow-hidden shadow-sm transition-all duration-200",
+               draggedEffectId === eff.id ? "opacity-30 border-primary" : "opacity-100 border-border/50 hover:border-primary/30"
+              )}
+             >
               <div className="px-4 py-2 bg-muted/30 border-b border-border/30 flex items-center justify-between">
                <div className="flex items-center gap-2 flex-1 cursor-pointer select-none" onClick={() => toggleEffectCollapse(eff.id)}>
                 <div className="size-6 flex items-center justify-center rounded bg-primary/10 text-xs">{b.icon}</div>
@@ -2934,7 +3580,7 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
                <ScrollArea className="max-h-[18rem]">
                 <div className="space-y-4 p-4">
                  {eff.fields.map(field => (
-                  <ThumbnailFieldRenderer 
+                  <ThumbnailFieldRenderer
                    key={field.key}
                    field={field}
                    allFields={eff.fields}
@@ -2947,7 +3593,7 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
              </div>
             )
            })}
-           
+
            {activeEffects.length === 0 && (
             <div className="flex flex-col items-center justify-center py-20 text-center space-y-4 opacity-40">
              <div className="size-12 rounded-full bg-muted flex items-center justify-center border border-dashed border-border"><Plus className="size-6 text-muted-foreground" /></div>
@@ -2983,15 +3629,24 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
         </ScrollArea>
        </TabsContent>
       </Tabs>
-      
+
       <div className="border-t border-border/50 bg-muted/10 p-4 space-y-3">
         <div className="flex items-center justify-end px-1">
-         {submitting && <Badge variant="outline" className="h-5 text-[11px] animate-pulse">Processing</Badge>}
+         {submitting && <Badge variant="outline" className="h-5 text-[11px] animate-pulse">{runStatus || "Processing"}</Badge>}
         </div>
-        
+
         <Button onClick={() => void handleRun()} disabled={submitting || activeEffects.length === 0} className="w-full h-11 rounded-2xl font-black shadow-xl shadow-primary/20">
-         {submitting ? <Loader2 className="size-4 animate-spin mr-2" /> : <Play className="size-4 mr-2" />}
-         Run Studio
+         {submitting ? (
+          <>
+           <Loader2 className="size-4 animate-spin mr-2" />
+           {runStatus || "Đang xử lý..."}
+          </>
+         ) : (
+          <>
+           <Play className="size-4 mr-2" />
+           Run Studio
+          </>
+         )}
         </Button>
       </div>
      </Card>

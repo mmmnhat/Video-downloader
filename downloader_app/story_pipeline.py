@@ -379,6 +379,7 @@ class StoryPipelineManager:
             response_timeout_ms=self._settings.gemini_response_timeout_ms,
             model_name=self._settings.gemini_model,
             debug_selector=False,
+            feature="story",
         )
         gems = adapter.list_gems()
         with self._lock:
@@ -1896,6 +1897,7 @@ class StoryPipelineManager:
                 debug_selector=True,
                 debug_root=story_debug_root(),
                 max_tabs=self._settings.max_parallel_videos,
+                feature="story",
             )
             return
 

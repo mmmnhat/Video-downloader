@@ -32,11 +32,24 @@ interface MaskCanvasProps {
  imageUrl: string;
  onMaskChange?: (base64: string | null) => void;
  onGuideChange?: (guide: CanvasGuide | null) => void;
+ onBrushChange?: (brush: { size: number; color: string }) => void;
+ onShapeChange?: (shape: { type: ShapeTool; fill: string; opacity: number; hardness: number; size: number }) => void;
  className?: string;
  isSubmitting?: boolean;
  keepViewState?: boolean;
  requestedToolGroup?: ThumbnailRequiredTool | null;
  requestedToolNonce?: number;
+ onImageChange?: (base64: string) => void;
+ requestedGuide?: Partial<CanvasGuide> | null;
+ requestedGuideNonce?: number | string;
+ requestedToolSettingsNonce?: number | string;
+ requestedBrushSize?: number;
+ requestedBrushColor?: string;
+ requestedShapeTool?: ShapeTool;
+ requestedShapeFill?: string;
+ requestedShapeOpacity?: number;
+ requestedShapeHardness?: number;
+ requestedShapeSize?: number;
 }
 
 type Point = { x: number; y: number };
@@ -367,8 +380,6 @@ function drawShapeToContext(ctx: CanvasRenderingContext2D, shape: CanvasShape) {
  ctx.globalAlpha = shape.opacity / 100;
  ctx.globalCompositeOperation = "source-over";
  ctx.fillStyle = shape.fill;
- ctx.shadowBlur = Math.max(0, (100 - shape.hardness) / 2);
- ctx.shadowColor = shape.fill;
 
  if (shape.type === "rect") {
   ctx.fillRect(shape.rect.x, shape.rect.y, shape.rect.width, shape.rect.height);
@@ -395,18 +406,31 @@ export default function MaskCanvas({
  imageUrl,
  onMaskChange,
  onGuideChange,
+ onBrushChange,
+ onShapeChange,
  className,
  isSubmitting,
  keepViewState,
  requestedToolGroup,
  requestedToolNonce,
+ onImageChange,
+ requestedGuide,
+ requestedGuideNonce,
+ requestedToolSettingsNonce,
+ requestedBrushSize,
+ requestedBrushColor,
+ requestedShapeTool,
+ requestedShapeFill,
+ requestedShapeOpacity,
+ requestedShapeHardness,
+ requestedShapeSize,
 }: MaskCanvasProps) {
  const containerRef = useRef<HTMLDivElement>(null);
  const canvasRef = useRef<HTMLCanvasElement>(null);
  const imageRef = useRef<HTMLImageElement>(null);
  const stageRef = useRef<HTMLDivElement>(null);
 
- const [tool, setTool] = useState<CanvasTool>("pan");
+  const [tool, setTool] = useState<CanvasTool>("pan");
  const [paintTool, setPaintTool] = useState<PaintTool>("brush");
  const [frameTool, setFrameTool] = useState<FrameTool>("crop");
  const [shapeTool, setShapeTool] = useState<ShapeTool>("rect");
@@ -414,7 +438,11 @@ export default function MaskCanvas({
  const [brushOpacity, setBrushOpacity] = useState(80);
  const [brushHardness, setBrushHardness] = useState(60);
  const [maskColor, setMaskColor] = useState("#ff0000");
- const [selectedRatioLabel, setSelectedRatioLabel] = useState("16:9");
+ const [shapeFill, setShapeFill] = useState("#FFFFFF");
+ const [shapeOpacity, setShapeOpacity] = useState(100);
+ const [shapeHardness, setShapeHardness] = useState(100);
+ const [shapeSize, setShapeSize] = useState(180);
+ const [selectedRatioLabel, setSelectedRatioLabel] = useState(() => requestedGuide?.ratioLabel || "16:9");
  const [imageSize, setImageSize] = useState({ width: 0, height: 0 });
 
  const [scale, setScale] = useState(1);
@@ -438,10 +466,10 @@ export default function MaskCanvas({
  const historyRef = useRef<HistorySnapshot[]>([]);
  const historyIndexRef = useRef(-1);
 
- const [dockMode, setDockMode] = useLocalStorage<DockMode>(
-  "thumbnail.maskCanvas.dockMode",
-  "expanded",
- );
+  const [dockMode, setDockMode] = useLocalStorage<DockMode>(
+   "thumbnail.maskCanvas.dockMode",
+   "orb",
+  );
  const [dockPos, setDockPos] = useState({ x: 20, y: 80 });
  const [isDraggingDock, setIsDraggingDock] = useState(false);
  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
@@ -500,19 +528,83 @@ export default function MaskCanvas({
 
  useEffect(() => {
   if (!requestedToolGroup) return;
+  setTool(requestedToolGroup as CanvasTool);
+ }, [requestedToolGroup, requestedToolNonce]);
 
-  if (requestedToolGroup === "paint") {
-   activatePaintTool("brush");
-   return;
+ useEffect(() => {
+  if (!requestedGuide || requestedGuideNonce === undefined || requestedGuideNonce === "none") return;
+
+  setGuide((prev) => {
+   const nextMode = (requestedGuide.mode || prev?.mode || "artboard") as FrameTool;
+   const nextRatioLabel = requestedGuide.ratioLabel || prev?.ratioLabel || "16:9";
+   const ratioPreset = ARTBOARD_RATIOS.find((ratio) => ratio.label === nextRatioLabel) || ARTBOARD_RATIOS[0];
+   const nextRatio = ratioPreset.width / ratioPreset.height;
+
+   if (!prev) {
+    const baseWidth = 300;
+    const baseHeight = baseWidth / nextRatio;
+    return {
+     mode: nextMode,
+     ratioLabel: nextRatioLabel,
+     rect: { x: 100, y: 100, width: baseWidth, height: baseHeight },
+    };
+   }
+
+   const centerX = prev.rect.x + prev.rect.width / 2;
+   const centerY = prev.rect.y + prev.rect.height / 2;
+   let nextWidth = prev.rect.width;
+   let nextHeight = prev.rect.height;
+
+   if (nextWidth / Math.max(nextHeight, 1) > nextRatio) {
+    nextHeight = nextWidth / nextRatio;
+   } else {
+    nextWidth = nextHeight * nextRatio;
+   }
+
+   return {
+    ...prev,
+    mode: nextMode,
+    ratioLabel: nextRatioLabel,
+    rect: {
+     x: centerX - nextWidth / 2,
+     y: centerY - nextHeight / 2,
+     width: nextWidth,
+     height: nextHeight,
+    },
+   };
+  });
+
+  if (requestedGuide.ratioLabel) {
+   setSelectedRatioLabel(requestedGuide.ratioLabel);
   }
-  if (requestedToolGroup === "frame") {
-   activateFrameTool("crop");
-   return;
+  if (requestedGuide.mode) {
+   setTool(requestedGuide.mode as CanvasTool);
   }
-  if (requestedToolGroup === "shape") {
-   activateShapeTool("rect");
+ }, [requestedGuide, requestedGuideNonce]);
+
+ useEffect(() => {
+  if (requestedToolSettingsNonce === undefined || requestedToolSettingsNonce === "none") return;
+
+  if (requestedBrushSize !== undefined) setBrushSize(requestedBrushSize);
+  if (requestedBrushColor !== undefined) setMaskColor(requestedBrushColor);
+  if (requestedShapeTool !== undefined) {
+   setShapeTool(requestedShapeTool);
+   setTool(requestedShapeTool);
   }
- }, [activateFrameTool, activatePaintTool, activateShapeTool, requestedToolGroup, requestedToolNonce]);
+  if (requestedShapeFill !== undefined) setShapeFill(requestedShapeFill);
+  if (requestedShapeOpacity !== undefined) setShapeOpacity(requestedShapeOpacity);
+  if (requestedShapeHardness !== undefined) setShapeHardness(requestedShapeHardness);
+  if (requestedShapeSize !== undefined) setShapeSize(requestedShapeSize);
+ }, [
+  requestedToolSettingsNonce,
+  requestedBrushSize,
+  requestedBrushColor,
+  requestedShapeTool,
+  requestedShapeFill,
+  requestedShapeOpacity,
+  requestedShapeHardness,
+  requestedShapeSize,
+ ]);
 
  const fitToScreen = useCallback((force = false) => {
   if (!containerRef.current || !canvasRef.current || !imageRef.current) return;
@@ -674,6 +766,20 @@ export default function MaskCanvas({
  }, [guide, onGuideChange]);
 
  useEffect(() => {
+  onBrushChange?.({ size: brushSize, color: maskColor });
+ }, [brushSize, maskColor, onBrushChange]);
+
+ useEffect(() => {
+  onShapeChange?.({
+   type: shapeTool,
+   fill: shapeFill,
+   opacity: shapeOpacity,
+   hardness: shapeHardness,
+   size: shapeSize,
+  });
+ }, [shapeTool, shapeFill, shapeOpacity, shapeHardness, shapeSize, onShapeChange]);
+
+ useEffect(() => {
   if (!showBrushCursor) {
    setCursorPoint(null);
   }
@@ -716,6 +822,34 @@ export default function MaskCanvas({
   setFlipY(false);
   fitToScreen(true);
  };
+
+ const handleApplyCrop = useCallback(() => {
+  if (!guide || guide.mode !== "crop" || !imageRef.current) return;
+  const rect = guide.rect;
+  if (rect.width <= 0 || rect.height <= 0) return;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = rect.width;
+  canvas.height = rect.height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+
+  ctx.drawImage(
+   imageRef.current,
+   rect.x,
+   rect.y,
+   rect.width,
+   rect.height,
+   0,
+   0,
+   rect.width,
+   rect.height
+  );
+
+  const base64 = canvas.toDataURL("image/png");
+  onImageChange?.(base64);
+  setGuide(null);
+ }, [guide, onImageChange]);
 
  const getWorkspacePoint = useCallback((e: React.PointerEvent<HTMLDivElement>): Point | null => {
   if (!canvasRef.current) return null;
@@ -854,11 +988,11 @@ export default function MaskCanvas({
    id: "draft",
    type: action.type,
    rect: getRectFromDrag(action.start, action.current, action.modifiers, null),
-   fill: maskColor,
-   opacity: brushOpacity,
-   hardness: brushHardness,
+    fill: shapeFill,
+    opacity: shapeOpacity,
+    hardness: shapeHardness,
   } satisfies CanvasShape;
- }, [brushHardness, brushOpacity, maskColor]);
+  }, [shapeFill, shapeOpacity, shapeHardness]);
 
  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
   if (tool === "pan" || e.button === 1 || e.button === 2) {
@@ -919,6 +1053,25 @@ export default function MaskCanvas({
 
   if (tool === "rect" || tool === "ellipse") {
    setCursorPoint(null);
+
+   // Check handles of SELECTED shape first (important because handles can be slightly outside rect)
+   if (selectedShapeId) {
+    const selectedShape = shapesRef.current.find(s => s.id === selectedShapeId);
+    if (selectedShape) {
+     const handle = getHandleAtPoint(workspacePoint, selectedShape.rect, scale);
+     if (handle) {
+      setOverlayInteraction({
+       kind: "resize-shape",
+       shapeId: selectedShape.id,
+       handle,
+       startPointer: workspacePoint,
+       startRect: cloneRect(selectedShape.rect),
+      });
+      return;
+     }
+    }
+   }
+
    const hitShape = findTopmostShapeAtPoint(workspacePoint);
    if (hitShape) {
     setSelectedShapeId(hitShape.id);
@@ -1119,10 +1272,18 @@ export default function MaskCanvas({
    }
 
    if (overlayInteraction.kind === "draft-shape") {
-    const nextShape = buildDraftShape(overlayInteraction);
+    const draftShape = buildDraftShape(overlayInteraction);
+    const shapeId = `shape-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const nextShape = { ...draftShape, id: shapeId };
+
     setOverlayInteraction(null);
     if (nextShape.rect.width < 2 || nextShape.rect.height < 2) {
-     return;
+     nextShape.rect = {
+      x: overlayInteraction.start.x - shapeSize / 2,
+      y: overlayInteraction.start.y - shapeSize / 2,
+      width: shapeSize,
+      height: shapeSize,
+     };
     }
     const nextShapes = [...shapesRef.current, nextShape];
     setShapes(nextShapes);
@@ -1379,36 +1540,53 @@ export default function MaskCanvas({
     >
      {currentGuide.mode === "artboard" ? `Artboard ${currentGuide.ratioLabel}` : "Crop"}
     </div>
+
+    {currentGuide.mode === "crop" && (
+      <div className="absolute right-2 top-2 flex gap-1 pointer-events-auto">
+        <Button
+          variant="default"
+          size="sm"
+          className="h-6 rounded-full bg-amber-500 px-3 text-[9px] font-black hover:bg-amber-600 shadow-xl border border-white/20"
+          onClick={(e) => {
+            e.stopPropagation();
+            handleApplyCrop();
+          }}
+        >
+          Apply Crop
+        </Button>
+      </div>
+    )}
+
     {(tool === "crop" || tool === "artboard") && renderResizeHandles(currentGuide.rect)}
    </div>
   );
  };
 
- const renderShapeOverlay = (shape: CanvasShape, isSelected: boolean, isDraft = false) => (
+ const renderShapeOverlay = (shape: CanvasShape, isSelected: boolean) => (
   <div
    key={shape.id}
    className={cn(
-    "pointer-events-none absolute border-2",
+    "pointer-events-none absolute",
     shape.type === "ellipse" ? "rounded-full" : "rounded-none",
-    isDraft ? "border-dashed" : "border-solid",
-    isSelected && "ring-2 ring-white/70 ring-offset-2 ring-offset-black/30",
+    isSelected && "ring-2 ring-primary z-20",
    )}
    style={{
     left: shape.rect.x,
     top: shape.rect.y,
     width: shape.rect.width,
     height: shape.rect.height,
-    borderColor: shape.fill,
-    backgroundColor: `${shape.fill}33`,
-   }}
+     borderColor: shape.fill,
+     backgroundColor: shape.opacity === 100 ? shape.fill : `${shape.fill}${Math.round((shape.opacity / 100) * 255).toString(16).padStart(2, "0")}`,
+    }}
   >
    {isSelected && (tool === "rect" || tool === "ellipse") && renderResizeHandles(shape.rect)}
   </div>
  );
 
  const renderToolSettings = () => {
-  const isPaintTool = tool === "brush" || tool === "eraser" || tool === "rect" || tool === "ellipse";
-  const isFrameMode = tool === "crop" || tool === "artboard";
+  const isBrushTool = tool === "brush" || tool === "eraser";
+  const isShapeTool = tool === "rect" || tool === "ellipse";
+  const isPaintTool = isBrushTool || isShapeTool;
 
   return (
    <div className="space-y-4">
@@ -1418,47 +1596,39 @@ export default function MaskCanvas({
        <p className="text-[10px] font-black  text-foreground/70">Tool Active</p>
        <p className="text-sm font-semibold text-foreground">
         {{
-         brush: "Brush / Eraser",
-         eraser: "Brush / Eraser",
-         pan: "Mũi tên",
-         scale: "Transform",
-         crop: "Frame / Crop",
-         artboard: "Frame / Crop",
-         rect: "Shape",
-         ellipse: "Shape",
-        }[tool]}
+         brush: "Cọ vẽ (Brush)",
+         eraser: "Tẩy (Eraser)",
+         pan: "Mũi tên (Pan)",
+         scale: "Biến đổi (Transform)",
+         crop: "Cắt ảnh (Crop)",
+         artboard: "Khung vẽ (Artboard)",
+         rect: "Hình chữ nhật (Rect)",
+         ellipse: "Hình Elip (Ellipse)",
+        }[tool] || tool}
        </p>
       </div>
-      {isFrameMode && (
-       <span className="rounded-full bg-primary/10 px-2 py-1 text-[10px] font-bold text-primary">
-        {tool === "artboard" ? selectedRatio.label : "free"}
+      <div className="flex items-center gap-1.5">
+       <span className="rounded-md bg-muted px-2 py-1 text-[10px] font-bold text-muted-foreground uppercase shadow-sm border border-border/50">
+        Phím {{
+         brush: "B",
+         eraser: "E",
+         pan: "V",
+         scale: "T",
+         crop: "C",
+         artboard: "A",
+         rect: "R",
+         ellipse: "O",
+        }[tool] || "?"}
        </span>
-      )}
+      </div>
      </div>
 
-     <p className="text-[11px] leading-relaxed text-muted-foreground">
-      {tool === "pan" && "Tool mũi tên dùng để điều hướng canvas nhanh. Kéo để di chuyển khung nhìn, hoặc giữ chuột giữa / chuột phải để pan."}
-      {tool === "scale" && "Kéo lên xuống để zoom. Flip và rotate cũng được gom trong tool Transform này."}
-      {tool === "crop" && "Cụm frame/crop đang ở chế độ crop. Click kéo để tạo crop từ vị trí chuột và kéo vào crop hiện có để di chuyển."}
-      {tool === "artboard" && "Cụm frame/crop đang ở chế độ artboard. Artboard có thể vượt khỏi ảnh và kéo được như một khung bố cục."}
-      {tool === "rect" && "Cụm shape đang ở chế độ rect. Click kéo để tạo shape mask và kéo vào shape hiện có để di chuyển."}
-      {tool === "ellipse" && "Cụm shape đang ở chế độ ellipse. Click kéo để tạo shape tròn và kéo vào shape hiện có để di chuyển."}
-      {tool === "brush" && "Cụm brush/eraser đang ở chế độ brush để vẽ mask tự do lên vùng cần chỉnh sửa."}
-      {tool === "eraser" && "Cụm brush/eraser đang ở chế độ eraser để xóa phần mask đã tô."}
-     </p>
-
-     {(tool === "crop" || tool === "artboard" || tool === "rect" || tool === "ellipse") && (
-      <div className="mt-3 rounded-xl border border-border/30 bg-background/50 p-2 text-[10px] leading-relaxed text-muted-foreground">
-       <div>`Shift`: bung đều 4 hướng từ điểm bấm.</div>
-       <div>`Alt`: bung đều 2 hướng theo trục kéo mạnh hơn.</div>
-      </div>
-     )}
     </div>
 
-    {tool === "artboard" && (
+    {(tool === "artboard" || tool === "crop") && (
      <div className="space-y-2.5 rounded-2xl border border-border/40 bg-muted/10 p-3">
       <div className="flex items-center justify-between text-[10px] font-bold text-muted-foreground/80">
-       <span>Tỉ lệ artboard</span>
+       <span>Tỉ lệ khung hình</span>
        <span className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-primary">{selectedRatio.label}</span>
       </div>
       <div className="grid grid-cols-3 gap-2">
@@ -1470,7 +1640,7 @@ export default function MaskCanvas({
          className="h-8 rounded-xl text-[10px] font-bold"
          onClick={() => {
           setSelectedRatioLabel(ratio.label);
-          if (guideRef.current?.mode === "artboard") {
+          if (guideRef.current?.mode === "artboard" || guideRef.current?.mode === "crop") {
            const currentGuide = guideRef.current;
            const centerX = currentGuide.rect.x + currentGuide.rect.width / 2;
            const centerY = currentGuide.rect.y + currentGuide.rect.height / 2;
@@ -1535,38 +1705,64 @@ export default function MaskCanvas({
 
     {isPaintTool && (
      <div className="space-y-4 rounded-2xl border border-border/40 bg-muted/10 p-3">
-      <div className="space-y-2.5">
-       <div className="flex items-center justify-between text-[10px] font-bold text-muted-foreground/80">
-        <span>Kích thước</span>
-        <span className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-primary">{brushSize}px</span>
+      {isBrushTool && (
+       <div className="space-y-2.5">
+        <div className="flex items-center justify-between text-[10px] font-bold text-muted-foreground/80">
+         <span>Kích thước</span>
+         <span className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-primary">{brushSize}px</span>
+        </div>
+        <Slider value={[brushSize]} min={5} max={200} step={1} onValueChange={([value]) => setBrushSize(value)} />
        </div>
-       <Slider value={[brushSize]} min={5} max={200} step={1} onValueChange={([value]) => setBrushSize(value)} />
-      </div>
+      )}
 
-      <div className="space-y-2.5">
-       <div className="flex items-center justify-between text-[10px] font-bold text-muted-foreground/80">
-        <span>Độ cứng</span>
-        <span className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-primary">{brushHardness}%</span>
+
+      {isBrushTool && (
+       <div className="space-y-2.5">
+        <div className="flex items-center justify-between text-[10px] font-bold text-muted-foreground/80">
+         <span>Độ cứng</span>
+         <span className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-primary">
+          {brushHardness}%
+         </span>
+        </div>
+        <Slider
+         value={[brushHardness]}
+         min={0}
+         max={100}
+         step={1}
+         onValueChange={([value]) => setBrushHardness(value)}
+        />
        </div>
-       <Slider value={[brushHardness]} min={0} max={100} step={1} onValueChange={([value]) => setBrushHardness(value)} />
-      </div>
+      )}
 
       <div className="space-y-2.5">
        <div className="flex items-center justify-between text-[10px] font-bold text-muted-foreground/80">
         <span>Độ mờ</span>
-        <span className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-primary">{brushOpacity}%</span>
+        <span className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-primary">
+         {isBrushTool ? brushOpacity : shapeOpacity}%
+        </span>
        </div>
-       <Slider value={[brushOpacity]} min={10} max={100} step={1} onValueChange={([value]) => setBrushOpacity(value)} />
+       <Slider
+        value={[isBrushTool ? brushOpacity : shapeOpacity]}
+        min={10}
+        max={100}
+        step={1}
+        onValueChange={([value]) => (isBrushTool ? setBrushOpacity(value) : setShapeOpacity(value))}
+       />
       </div>
 
       <div className="flex items-center justify-between">
-       <span className="text-[10px] font-black  text-muted-foreground">Màu mask</span>
+       <span className="text-[10px] font-black  text-muted-foreground">
+        {isBrushTool ? "Màu mask" : "Màu fill"}
+       </span>
        <div className="relative h-7 w-7 overflow-hidden rounded-full border border-border shadow-inner">
-        <div className="h-full w-full" style={{ backgroundColor: maskColor }} />
+        <div
+         className="h-full w-full"
+         style={{ backgroundColor: isBrushTool ? maskColor : shapeFill }}
+        />
         <input
          type="color"
-         value={maskColor}
-         onChange={(e) => setMaskColor(e.target.value)}
+         value={isBrushTool ? maskColor : shapeFill}
+         onChange={(e) => (isBrushTool ? setMaskColor(e.target.value) : setShapeFill(e.target.value))}
          className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
         />
        </div>
@@ -1657,6 +1853,12 @@ export default function MaskCanvas({
     case "r": activateShapeTool("rect"); break;
     case "o": activateShapeTool("ellipse"); break;
     case "t": setTool("scale"); break;
+    case "enter":
+     if (guide?.mode === "crop") {
+      e.preventDefault();
+      handleApplyCrop();
+     }
+     break;
     case "[": setBrushSize((prev) => Math.max(5, prev - 5)); break;
     case "]": setBrushSize((prev) => Math.min(200, prev + 5)); break;
     case "delete":
@@ -1766,7 +1968,6 @@ export default function MaskCanvas({
        {!isRailDock && (
         <div>
          <p className="text-[10px] font-black  text-foreground/70">Canvas Dock</p>
-         <p className="text-[10px] text-muted-foreground">Mũi tên, brush/eraser, frame/crop, shape, transform</p>
         </div>
        )}
       </div>
@@ -1843,7 +2044,13 @@ export default function MaskCanvas({
 
    <div
     ref={containerRef}
-    className="relative flex min-h-0 flex-1 overflow-hidden"
+    className={cn(
+     "relative flex min-h-0 flex-1 overflow-hidden",
+     isPanning ? "cursor-grabbing" :
+     (overlayInteraction?.kind === "move-guide" || overlayInteraction?.kind === "move-shape") ? "cursor-move" :
+     (tool === "pan") ? "cursor-default" :
+     "cursor-crosshair"
+    )}
     onPointerDown={handlePointerDown}
     onPointerMove={handlePointerMove}
     onPointerUp={handlePointerUp}
@@ -1887,7 +2094,9 @@ export default function MaskCanvas({
           ? "cursor-grab active:cursor-grabbing"
           : showBrushCursor
            ? "cursor-none"
-           : "cursor-crosshair",
+           : (tool === "artboard" || tool === "crop" || tool === "rect" || tool === "ellipse")
+            ? "cursor-default"
+            : "cursor-crosshair",
         )}
         style={{
          width: imageSize.width || undefined,
@@ -1908,7 +2117,7 @@ export default function MaskCanvas({
        ) : null}
        {renderGuideOverlay(previewGuide)}
        {shapes.map((shape) => renderShapeOverlay(shape, shape.id === selectedShapeId))}
-       {previewShape ? renderShapeOverlay(previewShape, false, true) : null}
+       {previewShape ? renderShapeOverlay(previewShape, false) : null}
       </div>
      </div>
     </div>

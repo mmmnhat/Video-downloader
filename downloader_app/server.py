@@ -89,8 +89,15 @@ class AppHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/story/session/status":
-            refresh = self._single_query_value(query, "refresh") == "1"
+            val = self._single_query_value(query, "refresh").lower()
+            refresh = val in ("1", "true")
             self._send_json(story_pipeline.get_session_status(refresh=refresh))
+            return
+
+        if path == "/api/thumbnail/session/status":
+            val = self._single_query_value(query, "refresh").lower()
+            refresh = val in ("1", "true")
+            self._send_json(thumbnail_pipeline.get_session_status(refresh=refresh))
             return
 
         if path == "/api/story/file":
@@ -266,7 +273,11 @@ class AppHandler(BaseHTTPRequestHandler):
                 return
 
             try:
-                self._send_json(browser_config_manager.update(payload))
+                before_config = browser_config_manager.get_all()
+                updated_config = browser_config_manager.update(payload)
+                if before_config.get("thumbnail") != updated_config.get("thumbnail"):
+                    thumbnail_pipeline.invalidate_browser_session()
+                self._send_json(updated_config)
             except BrowserConfigError as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
@@ -303,7 +314,10 @@ class AppHandler(BaseHTTPRequestHandler):
             feature = str(payload.get("feature", "")).strip().lower()
             profile_name = str(payload.get("profile_name", "")).strip()
             try:
-                self._send_json(create_managed_profile(feature, profile_name))
+                result = create_managed_profile(feature, profile_name)
+                if feature == "thumbnail":
+                    thumbnail_pipeline.invalidate_browser_session()
+                self._send_json(result)
             except BrowserConfigError as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
@@ -318,7 +332,10 @@ class AppHandler(BaseHTTPRequestHandler):
             feature = str(payload.get("feature", "")).strip().lower()
             profile_name = str(payload.get("profile_name", "")).strip()
             try:
-                self._send_json(delete_managed_profile(feature, profile_name))
+                result = delete_managed_profile(feature, profile_name)
+                if feature == "thumbnail":
+                    thumbnail_pipeline.invalidate_browser_session()
+                self._send_json(result)
             except BrowserConfigError as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
@@ -479,6 +496,13 @@ class AppHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
 
+        if path == "/api/thumbnail/session/open-login":
+            try:
+                self._send_json(thumbnail_pipeline.open_login())
+            except ThumbnailPipelineError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
         if path == "/api/thumbnail/select-project":
             try:
                 payload = self._read_json_body()
@@ -494,6 +518,19 @@ class AppHandler(BaseHTTPRequestHandler):
                     thumbnail_pipeline.select_version(
                         str(payload.get("project_id", "")).strip(),
                         str(payload.get("version_id", "")).strip(),
+                    )
+                )
+            except (json.JSONDecodeError, ThumbnailPipelineError) as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/thumbnail/commit-crop":
+            try:
+                payload = self._read_json_body()
+                self._send_json(
+                    thumbnail_pipeline.commit_crop(
+                        str(payload.get("project_id", "")).strip(),
+                        str(payload.get("base64_image", "")).strip(),
                     )
                 )
             except (json.JSONDecodeError, ThumbnailPipelineError) as exc:

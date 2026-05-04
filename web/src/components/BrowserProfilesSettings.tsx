@@ -26,9 +26,9 @@ import {
  type BrowserProfileProbeResult,
  type FeatureBrowserConfig,
 } from "@/lib/api";
+import { cn } from "@/lib/utils";
 
-
-type FeatureKey = "downloader" | "tts" | "story";
+type FeatureKey = "downloader" | "tts" | "story" | "thumbnail";
 
 type ProbeState = {
  loading: boolean;
@@ -57,12 +57,18 @@ const FEATURE_META: Array<{
   title: "Tạo ảnh AI",
   description: "Profile Gemini riêng của app để quét Gem và gen ảnh ổn định.",
  },
+ {
+  key: "thumbnail",
+  title: "Thumbnail Studio",
+  description: "Profile Gemini riêng cho Thumbnail Studio, tách biệt hoàn toàn với Story Studio.",
+ },
 ];
 
 const EMPTY_CONFIG: BrowserConfigPayload = {
  downloader: { browser_path: "", profile_name: "" },
  tts: { browser_path: "", profile_name: "" },
  story: { browser_path: "", profile_name: "" },
+ thumbnail: { browser_path: "", profile_name: "" },
 };
 
 function cloneConfig(config: BrowserConfigPayload): BrowserConfigPayload {
@@ -70,6 +76,7 @@ function cloneConfig(config: BrowserConfigPayload): BrowserConfigPayload {
   downloader: { ...config.downloader },
   tts: { ...config.tts },
   story: { ...config.story },
+  thumbnail: { ...config.thumbnail },
  };
 }
 
@@ -86,7 +93,13 @@ function emptyProbeState(): ProbeState {
  };
 }
 
-export default function BrowserProfilesSettings() {
+export default function BrowserProfilesSettings({
+  feature: restrictFeature,
+  className, onConfigChange,
+}: {
+  feature?: FeatureKey;
+  className?: string; onConfigChange?: () => void;
+} = {}) {
  const [loading, setLoading] = useState(true);
  const [pickingFeature, setPickingFeature] = useState<FeatureKey | null>(null);
  const [creatingFeature, setCreatingFeature] = useState<FeatureKey | null>(null);
@@ -97,11 +110,13 @@ export default function BrowserProfilesSettings() {
   downloader: "",
   tts: "",
   story: "",
+  thumbnail: "",
  });
  const [probes, setProbes] = useState<Record<FeatureKey, ProbeState>>({
   downloader: emptyProbeState(),
   tts: emptyProbeState(),
   story: emptyProbeState(),
+  thumbnail: emptyProbeState(),
  });
  const timersRef = useRef<Partial<Record<FeatureKey, number>>>({});
  const saveTimerRef = useRef<number | null>(null);
@@ -195,7 +210,7 @@ export default function BrowserProfilesSettings() {
   if (loading) {
    return;
   }
-  for (const feature of FEATURE_META.map((item) => item.key)) {
+  for (const feature of FEATURE_META.filter(f => !restrictFeature || f.key === restrictFeature).map((item) => item.key)) {
    const config = draftConfig[feature];
    const probe = probes[feature];
    const requestKey = `${config.browser_path}\n${config.profile_name}`;
@@ -230,7 +245,7 @@ export default function BrowserProfilesSettings() {
       JSON.stringify(current) === JSON.stringify(payload)
        ? cloneConfig(saved)
        : current,
-     );
+     ); onConfigChange?.();
     })
     .catch((error) => {
      toast.error(getErrorMessage(error));
@@ -332,8 +347,8 @@ export default function BrowserProfilesSettings() {
  }
 
  return (
-  <div className="space-y-6">
-   {FEATURE_META.map((featureMeta) => {
+  <div className={cn("space-y-6", className)}>
+   {FEATURE_META.filter(f => !restrictFeature || f.key === restrictFeature).map((featureMeta) => {
     const feature = featureMeta.key;
     const config = draftConfig[feature];
     const probe = probes[feature];

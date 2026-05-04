@@ -32,6 +32,13 @@ GEMINI_AUTH_DOMAINS = ("gemini.google.com", "google.com", "accounts.google.com")
 GEMINI_GEM_URL_MARKERS = ("/gem/", "/gems/", "/app/gems/")
 GEMINI_GEM_URL_IGNORED_SUFFIXES = ("/view", "/list", "/manage", "/discover")
 GEMINI_APP_GEM_RESERVED_IDS = {"download", "gems"}
+# Known built-in/starter gem slugs provided by Google (not user-created)
+GEMINI_BUILTIN_GEM_SLUGS = {
+    "storybook", "brainstormer", "career-guide", "coding-partner",
+    "learning-coach", "productivity-helper", "writing-editor",
+    "chef", "customer-support", "translator", "fitness-coach",
+    "debate", "game-master", "mindfulness", "resume-helper",
+}
 GEMINI_MODEL_MODE_LABELS = {
     "gemini-1.5-flash": "Nhanh",
     "gemini-2.5-flash": "Nhanh",
@@ -61,14 +68,22 @@ PROFILE_ITEMS = (
 )
 PROFILE_DIR_COOKIE_RELATIVE_PATHS = (
     Path("Cookies"),
-    Path("Network") / "Cookies",
+    Path("Network/Cookies"),
 )
+
+# Global registry to ensure only ONE browser process per (runtime_root, feature) pair.
+_GLOBAL_CONTEXT_REGISTRY: dict[tuple[Path, str], SharedBrowserContext] = {}
+_GLOBAL_REGISTRY_LOCK = threading.Lock()
+
 GEMINI_GEMS_ROOT_EXTRA_ITEMS = (
+    "Local State",
     "first_party_sets.db",
     "Variations",
     "Last Version",
 )
 GEMINI_GEMS_PROFILE_EXTRA_ITEMS = (
+    "Cookies",
+    "Network/Cookies",
     "Account Web Data",
     "IndexedDB",
     "Sessions",
@@ -94,7 +109,7 @@ GEMINI_STARTER_GEM_LABEL_MARKERS = (
 )
 VISIBLE_GEMINI_CLOSE_DELAY_MS = 0
 GEMINI_SCAN_PROFILE_NAME = "Default"
-GEMINI_DEDICATED_PROFILE_PATH = app_path("cache", "story_pipeline", "gem_scan_profile")
+GEMINI_DEDICATED_PROFILE_PATH = app_path("cache", "gemini_pipeline", "gem_scan_profile")
 
 # Profile copy configuration
 PROFILE_SKIP_DIRS = {
@@ -126,13 +141,13 @@ class SharedBrowserContext:
         profile: "GeminiBrowserProfile",
         runtime_root: Path,
         headless: bool,
-        base_url: str,
+        feature: str,
     ) -> None:
         self._max_tabs = max(1, int(max_tabs))
         self._profile = profile
         self._runtime_root = runtime_root
         self._headless = headless
-        self._base_url = base_url
+        self._feature = feature
 
         self._lock = threading.Lock()
         # Semaphore giới hạn số tab đồng thời = max_tabs
@@ -140,6 +155,7 @@ class SharedBrowserContext:
 
         self._playwright = None
         self._context = None
+        self._thread_root: Path | None = None
         self._runtime_profile_path: Path | None = None
         self._pages: list[dict] = []  # [{id, page, in_use: bool}]
         self._started = False
@@ -190,6 +206,11 @@ class SharedBrowserContext:
                     "Khong co browser tab nao gan voi worker hien tai. "
                     "Hay giam so luong worker hoac khoi dong lai tien trinh Gemini."
                 )
+            # Cancel idle timer if active
+            if self._idle_timer:
+                self._idle_timer.cancel()
+                self._idle_timer = None
+
             if self._context is None:
                 self._semaphore.release()
                 raise GeminiWebError("Browser context đã bị đóng.")
@@ -212,8 +233,20 @@ class SharedBrowserContext:
             for item in self._pages:
                 if item["id"] == page_id:
                     item["in_use"] = False
+                    item["owner_thread_id"] = None
                     break
         self._semaphore.release()
+
+        # Start idle timer to shut down browser after some time if no tabs are in use
+        with self._lock:
+            if self._idle_timer:
+                self._idle_timer.cancel()
+            
+            # If all pages are idle, schedule shutdown
+            if all(not p["in_use"] for p in self._pages):
+                self._idle_timer = threading.Timer(30.0, self.shutdown)
+                self._idle_timer.daemon = True
+                self._idle_timer.start()
 
     def close_page(self, page_id: str) -> None:
         """Đóng và xóa một tab (dùng khi tab bị lỗi nặng)."""
@@ -256,20 +289,60 @@ class SharedBrowserContext:
         self._pages.clear()
         if self._context is not None:
             try:
+                import time
+                time.sleep(1.0) # Cho phep Chromium flush cookies/cache xuong dia
                 self._context.close()
             except Exception:
                 pass
             self._context = None
+        
         if self._playwright is not None:
             try:
                 self._playwright.stop()
             except Exception:
                 pass
             self._playwright = None
-        if self._runtime_profile_path is not None:
-            # Do NOT delete the selected dedicated profile to persist login
-            if self._runtime_profile_path != self._profile.user_data_dir:
-                shutil.rmtree(self._runtime_profile_path, ignore_errors=True)
+
+    def _cleanup_profile_lock(self, profile_dir: Path) -> None:
+        """Thử xóa file lock của Chromium nếu process cũ đã chết hoặc treo."""
+        lock_file = profile_dir / "SingletonLock"
+        if not lock_file.exists():
+            return
+            
+        import os
+        import signal
+        try:
+            # Trên macOS/Linux, SingletonLock là symlink chứa hostname-pid
+            if lock_file.is_symlink():
+                target = os.readlink(str(lock_file))
+                if "-" in target:
+                    try:
+                        pid = int(target.split("-")[-1])
+                        # Kiểm tra xem process còn sống không
+                        os.kill(pid, 0)
+                        # Nếu còn sống, thử kill nhẹ nhàng trước
+                        os.kill(pid, signal.SIGTERM)
+                        import time
+                        time.sleep(0.5)
+                        # Nếu vẫn còn sống, kill thẳng tay
+                        os.kill(pid, signal.SIGKILL)
+                    except (ProcessLookupError, ValueError):
+                        pass # Process đã chết hoặc PID không hợp lệ, yên tâm xóa lock
+            
+            # Xóa file lock thủ công
+            if lock_file.exists():
+                lock_file.unlink()
+        except Exception:
+            pass
+        if self._thread_root is not None:
+            # We delete the thread-specific copy to save space, but NOT the main managed profile
+            import shutil
+            try:
+                # Delete the entire thread-specific folder to clean up fully
+                shutil.rmtree(self._thread_root, ignore_errors=True)
+            except Exception:
+                pass
+            self._thread_root = None
             self._runtime_profile_path = None
 
     @property
@@ -298,9 +371,22 @@ class SharedBrowserContext:
                 "và `./.venv/bin/python -m playwright install chromium`."
             ) from exc
 
-        # Use the selected app-managed profile directly instead of copying from system browser
-        self._runtime_profile_path = self._profile.user_data_dir
-        self._runtime_profile_path.mkdir(parents=True, exist_ok=True)
+        # Use the shared runtime root for a persistent session across all threads.
+        self._runtime_profile_path = self._runtime_root / self._profile.profile_name
+        self._runtime_root.mkdir(parents=True, exist_ok=True)
+        
+        # Copy profile to isolated thread folder
+        _copy_gems_runtime_profile(self._profile, self._runtime_root)
+        
+        # Dọn dẹp lock cũ nếu có trong bản copy
+        self._cleanup_profile_lock(self._runtime_profile_path)
+        # Cũng dọn dẹp lock trong Network/Cookies nếu có
+        network_cookies_lock = self._runtime_profile_path / "Network" / "Cookies-journal"
+        if network_cookies_lock.exists():
+            try:
+                network_cookies_lock.unlink()
+            except Exception:
+                pass
 
         # Fix Playwright Asyncio conflict:
         # Playwright Sync API cannot run if an event loop is already active in the thread.
@@ -335,37 +421,72 @@ class SharedBrowserContext:
             pass
 
         self._playwright = sync_playwright().start()
-        self._context = self._playwright.chromium.launch_persistent_context(
-            str(self._runtime_profile_path),
-            headless=self._headless,
-            accept_downloads=True,
-            executable_path=str(self._profile.executable_path),
-            args=[
-                f"--profile-directory={self._profile.profile_name}",
-                "--disable-blink-features=AutomationControlled",
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--disable-sync",
-                "--disable-background-networking",
-                "--disable-background-timer-throttling",
-                "--disable-backgrounding-occluded-windows",
-                "--disable-breakpad",
-                "--disable-component-update",
-                "--disable-domain-reliability",
-                "--disable-features=IsolateOrigins,site-per-process,Translate,OptimizationHints,DialMediaRouteProvider",
-                "--disable-ipc-flooding-protection",
-                "--disable-renderer-backgrounding",
-                "--force-color-profile=srgb",
-                "--metrics-recording-only",
-            ],
-        )
+        
+        # Tự động dọn dẹp lock nếu có để tránh lỗi "Profile in use"
+        self._cleanup_profile_lock(self._runtime_profile_path)
+        
+        try:
+            self._context = self._playwright.chromium.launch_persistent_context(
+                str(self._runtime_root),
+                headless=self._headless,
+                accept_downloads=True,
+                executable_path=str(self._profile.executable_path),
+                # Stealth: Hide "controlled by automation" banner and use real User Agent
+                ignore_default_args=["--enable-automation"],
+                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 CocCoc/131.0.0.0",
+                args=[
+                    f"--profile-directory={self._profile.profile_name}",
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                    "--disable-sync",
+                    "--disable-background-networking",
+                    "--disable-background-timer-throttling",
+                    "--disable-backgrounding-occluded-windows",
+                    "--disable-breakpad",
+                    "--disable-component-update",
+                    "--disable-domain-reliability",
+                    "--disable-features=IsolateOrigins,site-per-process,Translate,OptimizationHints,DialMediaRouteProvider",
+                    "--disable-ipc-flooding-protection",
+                    "--disable-renderer-backgrounding",
+                    "--force-color-profile=srgb",
+                    "--metrics-recording-only",
+                    "--enable-features=NetworkService,NetworkServiceInProcess",
+                    "--password-store=basic", # Prevent keyring prompts on some systems
+                ],
+                # viewport=None to respect browser window size if not headless
+                viewport=None if not self._headless else {"width": 1280, "height": 720},
+            )
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "profile is in use" in msg or "lock" in msg or "used by another" in msg:
+                raise GeminiWebAuthError(
+                    f"Profile '{self._profile.profile_name}' đang bị khóa bởi một trình duyệt khác. "
+                    "Vui lòng ĐÓNG cửa sổ CocCoc/Chrome đang đăng nhập rồi thử lại."
+                ) from exc
+            raise GeminiWebError(f"Không khởi động được trình duyệt: {exc}") from exc
         try:
             self._context.grant_permissions(
-                ["clipboard-read", "clipboard-write"], origin=self._base_url
+                ["clipboard-read", "clipboard-write"], origin="https://gemini.google.com"
             )
         except Exception:
             pass
-        # Cookies are persisted in dedicated profile
+        try:
+            cookie_count = _sync_browser_cookies_to_context(
+                self._context,
+                self._profile,
+                feature=self._feature,
+            )
+            print(
+                f"[GeminiWebAdapter] Synced {cookie_count} Gemini cookies into {self._feature} runtime context.",
+                flush=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[GeminiWebAdapter] Could not sync Gemini cookies into {self._feature} runtime context: {exc}",
+                flush=True,
+            )
+
         # Dùng page mặc định làm tab đầu tiên
         first_page = self._context.pages[0] if self._context.pages else self._context.new_page()
         first_page.set_default_timeout(20_000)
@@ -483,7 +604,7 @@ def _resolve_macos_app_bundle(
     return default_path
 
 
-def _normalize_gem_url(raw_url: str) -> str | None:
+def _normalize_gem_url(raw_url: str, *, trusted: bool = False) -> str | None:
     url = str(raw_url or "").strip()
     if not url:
         return None
@@ -499,16 +620,24 @@ def _normalize_gem_url(raw_url: str) -> str | None:
 
     path = parsed.path.rstrip("/") or "/"
     lower_path = path.lower()
+
+    # Accept trusted URLs from click-based scanning (e.g. /app/HASH format)
+    if trusted:
+        if lower_path in {"/", "/app", "/app/gems", "/gems", "/gems/view", "/app/gems/view"}:
+            return None
+        query_pairs = parse_qsl(parsed.query, keep_blank_values=True)
+        normalized_query = urlencode(sorted(query_pairs))
+        return urlunparse(("https", "gemini.google.com", path, "", normalized_query, ""))
+
     if not any(marker in lower_path for marker in GEMINI_GEM_URL_MARKERS):
         return None
 
-    if lower_path.startswith("/app/"):
-        app_target = lower_path[len("/app/"):].strip("/")
-        if not app_target or "/" in app_target or app_target in GEMINI_APP_GEM_RESERVED_IDS:
-            return None
-    if lower_path in {"/gems", "/app/gems"}:
+    if lower_path in {"/gems", "/app/gems", "/gems/view", "/app/gems/view"}:
         return None
-    if any(lower_path.endswith(suffix) for suffix in GEMINI_GEM_URL_IGNORED_SUFFIXES):
+
+    # Reject known built-in/starter gems provided by Google
+    url_slug = lower_path.rstrip("/").split("/")[-1]
+    if url_slug in GEMINI_BUILTIN_GEM_SLUGS:
         return None
 
     query_pairs = parse_qsl(parsed.query, keep_blank_values=True)
@@ -545,7 +674,10 @@ def _derive_custom_gem_name(raw_text: str, *, aria_label: str = "", title: str =
 def _normalize_gem_entries(raw_entries: list[dict] | None) -> list[dict]:
     deduped: dict[str, dict] = {}
     for entry in raw_entries or []:
-        normalized_url = _normalize_gem_url(str(entry.get("url", "")))
+        raw_url = str(entry.get("url", ""))
+        # Use trusted=True for entries that came from click-based navigation
+        trusted = entry.get("trusted", False)
+        normalized_url = _normalize_gem_url(raw_url, trusted=trusted)
         if not normalized_url:
             continue
 
@@ -778,6 +910,37 @@ def _cookie_count_for_domains(cookie_path: Path, domains: tuple[str, ...]) -> in
             except Exception:
                 pass
 
+def _has_critical_cookies(cookie_path: Path) -> bool:
+    """Verifies if critical session cookies like __Secure-1PSID are present."""
+    if not cookie_path.exists():
+        return False
+
+    temp_copy: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False) as handle:
+            temp_copy = Path(handle.name)
+        
+        _robust_copy_file(cookie_path, temp_copy)
+        
+        connection = sqlite3.connect(temp_copy)
+        try:
+            # We check for __Secure-1PSID as it's the primary session token for Gemini
+            row = connection.execute(
+                "SELECT COUNT(*) FROM cookies WHERE name IN ('__Secure-1PSID', 'SID', '__Secure-3PSID')",
+            ).fetchone()
+            count = int(row[0]) if row else 0
+            return count > 0
+        finally:
+            connection.close()
+    except Exception:
+        return False
+    finally:
+        if temp_copy and temp_copy.exists():
+            try:
+                temp_copy.unlink(missing_ok=True)
+            except Exception:
+                pass
+
 
 def _cookie_paths_for_profile(profile_dir: Path) -> list[Path]:
     return [profile_dir / relative_path for relative_path in PROFILE_DIR_COOKIE_RELATIVE_PATHS]
@@ -806,10 +969,9 @@ def _choose_profile_dir(user_data_dir: Path, domains: tuple[str, ...]) -> Path |
     return profile_dirs[0]
 
 
-def detect_gemini_browser_profile(domains: tuple[str, ...] = GEMINI_AUTH_DOMAINS) -> GeminiBrowserProfile:
-    _ = domains
+def detect_gemini_browser_profile(feature: str = "story") -> GeminiBrowserProfile:
     try:
-        detected = resolve_feature_browser_profile("story")
+        detected = resolve_feature_browser_profile(feature)
     except Exception as exc:  # noqa: BLE001
         raise GeminiWebError(str(exc)) from exc
     return GeminiBrowserProfile(
@@ -846,7 +1008,9 @@ def _robust_copy_file(source: Path, destination: Path) -> None:
                     src_path = "/" + src_path
             
             # nolock=1 and immutable=1 are key for reading locked SQLite files
-            src_uri = f"file://{src_path}?mode=ro&nolock=1&immutable=1"
+            import urllib.parse
+            encoded_path = urllib.parse.quote(src_path)
+            src_uri = f"file:{encoded_path}?mode=ro&nolock=1&immutable=1"
             
             src_conn = sqlite3.connect(src_uri, uri=True)
             try:
@@ -858,7 +1022,8 @@ def _robust_copy_file(source: Path, destination: Path) -> None:
             finally:
                 src_conn.close()
             return
-        except Exception:
+        except Exception as e:
+            print(f"[GeminiWebAdapter] Failed SQLite backup for {source.name}: {e}")
             pass
 
     # 3. For Windows, try win32file with aggressive sharing flags
@@ -1255,17 +1420,29 @@ def _launch_browser_detached(executable: Path, args: list[str]) -> None:
     subprocess.Popen([str(executable), *args], **popen_kwargs)
 
 
-def _sync_browser_cookies_to_context(context, profile: GeminiBrowserProfile) -> int:
-    configured = browser_config_manager.get_feature("story")
+def _sync_browser_cookies_to_context(
+    context,
+    profile: GeminiBrowserProfile,
+    *,
+    feature: str = "story",
+) -> int:
+    configured = browser_config_manager.get_feature(feature)
     strict_profile = bool(str(configured.profile_name or "").strip())
 
-    cookies = _build_playwright_cookies(profile, GEMINI_AUTH_DOMAINS)
+    try:
+        cookies = _build_playwright_cookies(profile, GEMINI_AUTH_DOMAINS)
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[GeminiWebAdapter] Failed to read cookies from configured {feature} profile: {exc}",
+            flush=True,
+        )
+        cookies = []
     if not cookies:
         cookies = _build_playwright_cookies_from_browser_session(GEMINI_AUTH_DOMAINS)
         if cookies and strict_profile:
             print(
                 "[GeminiWebAdapter] Using live browser-session cookies because the configured "
-                "Story profile cookie DB is locked or unreadable.",
+                f"{feature} profile cookie DB is locked or unreadable.",
                 flush=True,
             )
     if not cookies:
@@ -1274,20 +1451,24 @@ def _sync_browser_cookies_to_context(context, profile: GeminiBrowserProfile) -> 
     return len(cookies)
 
 
-def open_gemini_login_window() -> dict:
-    profile = detect_gemini_browser_profile()
-    user_data_dir = _gem_scan_user_data_dir()
+def open_gemini_login_window(feature: str = "story", user_data_dir: Path = None) -> dict:
+    profile = detect_gemini_browser_profile(feature)
+    final_user_data_dir = user_data_dir or profile.user_data_dir
     try:
         _launch_browser_detached(
             profile.executable_path,
             [
-                f"--user-data-dir={user_data_dir}",
+                f"--user-data-dir={final_user_data_dir}",
                 f"--profile-directory={profile.profile_name}",
                 "--new-window",
                 "--disable-blink-features=AutomationControlled",
                 "--no-first-run",
                 "--no-default-browser-check",
                 "--disable-sync",
+                # Stealth flags
+                "--ignore-certificate-errors",
+                "--disable-automation",
+                "--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 CocCoc/131.0.0.0",
                 GEMINI_LOGIN_URL,
             ],
         )
@@ -1314,10 +1495,10 @@ def _dependencies_ready() -> bool:
     return True
 
 
-def check_gemini_session(*, headless: bool, base_url: str, runtime_root: Path) -> GeminiSessionStatus:
+def check_gemini_session(*, headless: bool, base_url: str, runtime_root: Path, feature: str = "story") -> GeminiSessionStatus:
     _ = (headless, base_url, runtime_root)  # keep signature compatibility for callers
     try:
-        profile = detect_gemini_browser_profile()
+        profile = detect_gemini_browser_profile(feature)
     except GeminiWebError as exc:
         return GeminiSessionStatus(
             dependencies_ready=False,
@@ -1335,20 +1516,39 @@ def check_gemini_session(*, headless: bool, base_url: str, runtime_root: Path) -
             message=str(exc),
         )
 
-    cookie_count = max(
-        (
-            _cookie_count_for_domains(cookie_path, GEMINI_AUTH_DOMAINS)
-            for cookie_path in _cookie_paths_for_profile(profile.profile_dir)
-        ),
-        default=0,
+    # Verify if critical session cookies are present and can be synced into Playwright.
+    has_critical_cookie = any(
+        _has_critical_cookies(cookie_path)
+        for cookie_path in _cookie_paths_for_profile(profile.profile_dir)
     )
-    if cookie_count > 0:
+    syncable_cookie_count = 0
+    sync_error = ""
+    if has_critical_cookie:
+        try:
+            syncable_cookie_count = len(_build_playwright_cookies(profile, GEMINI_AUTH_DOMAINS))
+        except Exception as exc:  # noqa: BLE001
+            sync_error = str(exc)
+    
+    if has_critical_cookie and syncable_cookie_count > 0:
         return GeminiSessionStatus(
             dependencies_ready=True,
             authenticated=True,
             browser=profile.name,
             profile_dir=str(profile.profile_dir),
-            message=f"Da san sang voi profile Gemini rieng cua app tren {profile.name}.",
+            message=f"Da san sang voi profile Gemini rieng cua app tren {profile.name} (feature: {feature}).",
+        )
+    if has_critical_cookie:
+        detail = f" Loi dong bo cookie: {sync_error}" if sync_error else ""
+        return GeminiSessionStatus(
+            dependencies_ready=True,
+            authenticated=False,
+            browser=profile.name,
+            profile_dir=str(profile.profile_dir),
+            message=(
+                "Profile Gemini rieng cua app co cookie dang nhap, nhung app chua dong bo duoc cookie do vao Playwright runtime. "
+                "Hay bam Dang nhap trong tab nay, dang nhap lai roi dong cua so Gemini vua mo, sau do bam Lam moi phien."
+                f"{detail}"
+            ),
         )
     return GeminiSessionStatus(
         dependencies_ready=True,
@@ -1391,6 +1591,7 @@ class GeminiWebAdapter:
         debug_selector: bool = False,
         debug_root: Path | None = None,
         max_tabs: int = 1,
+        feature: str = "story",
     ) -> None:
         self._runtime_root = runtime_root
         self._headless = headless
@@ -1402,8 +1603,8 @@ class GeminiWebAdapter:
         self._ffmpeg_path = resolve_binary("ffmpeg")
         self._ffprobe_path = resolve_binary("ffprobe")
         self._max_tabs = max(1, int(max_tabs))
+        self._feature = feature
         self._context_lock = threading.Lock()
-        self._thread_contexts: dict[int, SharedBrowserContext] = {}
 
     def generate(
         self,
@@ -1430,7 +1631,7 @@ class GeminiWebAdapter:
                 "va `./.venv/bin/python -m playwright install chromium`."
             ) from exc
 
-        shared = self._get_or_create_thread_context()
+        shared = self._get_or_create_shared_context()
         page_id, page = shared.acquire_page()
         debug_run_dir = self._prepare_debug_run(context) if self._debug_selector else None
 
@@ -1439,10 +1640,13 @@ class GeminiWebAdapter:
         page_had_error = False
         try:
             stage = "workspace_ready"
+            print(f"[GeminiWebAdapter] Stage: {stage}...")
             self._ensure_workspace_ready(page, target_url=target_thread_url)
             stage = "select_image_tool"
+            print(f"[GeminiWebAdapter] Stage: {stage}...")
             self._ensure_image_tool_selected(page)
             stage = "select_mode"
+            print(f"[GeminiWebAdapter] Stage: {stage}...")
             self._apply_generation_mode(page)
             self._dump_debug_state(
                 page,
@@ -1490,6 +1694,7 @@ class GeminiWebAdapter:
                 baseline_keys = self._collect_candidate_keys(page)
 
                 stage = "submit_prompt"
+                print(f"[GeminiWebAdapter] Stage: {stage} - Prompt: {prompt[:50]}...")
                 self._submit_prompt(page, prompt)
                 self._dump_debug_state(
                     page,
@@ -1558,30 +1763,29 @@ class GeminiWebAdapter:
             shared.close_page(page_id)
 
     def shutdown(self) -> None:
-        """Hủy bỏ browser contexts của mọi worker thread."""
-        with self._context_lock:
-            for shared in self._thread_contexts.values():
+        """Hủy bỏ browser context chung của adapter này."""
+        with _GLOBAL_REGISTRY_LOCK:
+            shared = _GLOBAL_CONTEXT_REGISTRY.pop((self._runtime_root, self._feature), None)
+            if shared:
                 try:
                     shared.shutdown()
                 except Exception:
                     pass
-            self._thread_contexts.clear()
 
-    def _get_or_create_thread_context(self) -> SharedBrowserContext:
-        """Mỗi worker thread dùng context Playwright riêng để tránh lỗi greenlet/thread affinity."""
-        current_thread_id = threading.get_ident()
-        with self._context_lock:
-            shared = self._thread_contexts.get(current_thread_id)
+    def _get_or_create_shared_context(self) -> SharedBrowserContext:
+        """Shared browser context per feature instance to ensure session unity."""
+        with _GLOBAL_REGISTRY_LOCK:
+            key = (self._runtime_root, self._feature)
+            shared = _GLOBAL_CONTEXT_REGISTRY.get(key)
             if shared is None or shared.is_closed:
-                profile = detect_gemini_browser_profile()
                 shared = SharedBrowserContext(
-                    max_tabs=1,
-                    profile=profile,
-                    runtime_root=self._runtime_root,
+                    profile=detect_gemini_browser_profile(self._feature),
                     headless=self._headless,
-                    base_url=self._base_url,
+                    runtime_root=self._runtime_root,
+                    max_tabs=self._max_tabs,
+                    feature=self._feature,
                 )
-                self._thread_contexts[current_thread_id] = shared
+                _GLOBAL_CONTEXT_REGISTRY[key] = shared
             return shared
 
     def _prepare_debug_run(self, context: dict) -> Path:
@@ -1961,9 +2165,9 @@ class GeminiWebAdapter:
                     if self._recover_session_from_live_browser(page, desired_url):
                         continue
                 raise GeminiWebAuthError(
-                    "Gemini dang o trang thai guest trong profile Story hien tai. "
-                    "Neu anh da dang nhap tren browser chinh, hay bam Dang nhap trong tab Story de mo dung profile rieng cua app, "
-                    "hoac chon lai browser/profile cho Story."
+                    f"Gemini dang o trang thai guest trong profile {self._feature} hien tai. "
+                    f"Neu anh da dang nhap tren browser chinh, hay bam Dang nhap trong tab {self._feature} de mo dung profile rieng cua app, "
+                    f"hoac chon lai browser/profile cho {self._feature}."
                 )
             try:
                 if page.locator('input[type="file"]').count() > 0:
@@ -1972,107 +2176,109 @@ class GeminiWebAdapter:
                 pass
             page.wait_for_timeout(350)
 
-        if self._page_requires_sign_in(page):
-            raise GeminiWebAuthError(
-                "Gemini dang o trang thai guest trong profile Story hien tai. "
-                "Hay dang nhap lai bang nut Dang nhap trong tab Story."
-            )
-        raise GeminiWebError("Khong tim thay khung nhap prompt tren Gemini.")
-
     def _ensure_image_tool_selected(self, page) -> None:
         """
         Chọn công cụ 'Tạo hình ảnh' (Image creation) trong Gemini trước khi gửi prompt.
         Nếu không tìm thấy nút hoặc đã chọn rồi, bỏ qua và tiếp tục.
         """
-        # Các selector phổ biến của nút tạo hình ảnh trên Gemini
-        image_tool_selectors = [
-            # Data attributes
-            '[data-tool-id="image_generation"]',
-            '[data-test-id="image-generation-tool"]',
-            # Aria labels (EN + VI)
-            'button[aria-label*="image" i][aria-label*="generat" i]',
-            'button[aria-label*="tạo hình" i]',
-            'button[aria-label*="tao hinh" i]',
-            'button[aria-label*="image creation" i]',
-            'button[aria-label*="create image" i]',
-            # Pill / chip buttons at toolbar
-            'button.tool-chip',
-            '[role="button"][data-tool-name*="image" i]',
-        ]
+        image_tool_keywords = (
+            "tao hinh anh",    # Tạo hình ảnh (normalized)
+            "image generation",
+            "create image",
+            "generate image",
+            "image creation",
+        )
+        reject_keywords = (
+            "bo chon",          # Bỏ chọn (deselect)
+            "tai xuong",        # Tải xuống
+            "chia se",          # Chia sẻ
+            "sao chep",         # Sao chép
+            "tai tep",          # Tải tệp lên (upload menu)
+            "dinh kem",
+            "mo trinh don",
+            "gui tin nhan",     # Gửi tin nhắn (send)
+            "micro",
+        )
 
-        # Check if there's an active/selected image tool already
-        active_selectors = [
-            '[data-tool-id="image_generation"][aria-pressed="true"]',
-            '[data-tool-id="image_generation"].active',
-            'button[aria-label*="image" i][aria-pressed="true"]',
-        ]
-        for sel in active_selectors:
+        def _is_image_tool_btn(btn) -> bool:
             try:
-                loc = page.locator(sel)
-                if loc.count() > 0 and loc.first.is_visible():
-                    return  # Already selected
+                aria = (btn.get_attribute("aria-label") or "").strip()
+                text = (btn.inner_text() or "").strip()
+            except Exception:
+                return False
+            combined = self._normalize_ui_text(f"{aria} {text}")
+            if any(rk in combined for rk in reject_keywords):
+                return False
+            return any(kw in combined for kw in image_tool_keywords)
+
+        def _already_selected(btn) -> bool:
+            try:
+                if (btn.get_attribute("aria-pressed") or "").strip().lower() == "true":
+                    return True
+                cls = (btn.get_attribute("class") or "").lower()
+                if "selected" in cls or "active" in cls:
+                    return True
             except Exception:
                 pass
+            return False
 
-        # Try to find and click the image tool button
-        for selector in image_tool_selectors:
-            try:
-                loc = page.locator(selector)
-                count = loc.count()
-                for idx in range(min(count, 10)):
-                    candidate = loc.nth(idx)
-                    try:
+        targeted_selectors = [
+            '[data-tool-id="image_generation"]',
+            '[data-test-id="image-generation-tool"]',
+            '[role="button"][aria-label*="hình ảnh"]',
+            '[role="button"][aria-label*="hinh anh"]',
+            'button[aria-label*="hình ảnh"]',
+            'button[aria-label*="image"]',
+            'button[aria-label*="tạo"]',
+            'button:has-text("Tạo hình ảnh")',
+            '[role="button"]:has-text("Tạo hình ảnh")',
+        ]
+
+        # Đợi tối đa 6 giây để Gemini render các nút công cụ
+        deadline = time.monotonic() + 6
+        while time.monotonic() < deadline:
+            for selector in targeted_selectors:
+                try:
+                    loc = page.locator(selector)
+                    count = loc.count()
+                    for idx in range(min(count, 5)):
+                        candidate = loc.nth(idx)
                         if not candidate.is_visible():
                             continue
-                        text = (candidate.inner_text() or "").strip().lower()
-                        aria = (candidate.get_attribute("aria-label") or "").strip().lower()
-                        combined = f"{text} {aria}"
-                        # Match if the button contains image/hình keywords
-                        if any(kw in combined for kw in (
-                            "image", "tạo hình", "tao hinh", "hình ảnh", "hinh anh",
-                            "create image", "generate image", "image generation",
-                        )):
+                        if _already_selected(candidate):
+                            print("[GeminiWebAdapter] Công cụ tạo hình ảnh đã được chọn.", flush=True)
+                            return
+                        if _is_image_tool_btn(candidate):
+                            aria = (candidate.get_attribute("aria-label") or "")[:60]
                             candidate.click()
                             page.wait_for_timeout(400)
-                            print(
-                                f"[GeminiWebAdapter] Đã chọn công cụ tạo hình ảnh: '{text or aria}'",
-                                flush=True,
-                            )
+                            print(f"[GeminiWebAdapter] Đã chọn công cụ tạo hình ảnh: '{aria}'", flush=True)
                             return
-                    except Exception:
-                        continue
-            except Exception:
-                continue
-
-        # Fallback: scan all visible toolbar buttons for image keyword
-        try:
-            all_buttons = page.locator("button, [role='button']")
-            btn_count = all_buttons.count()
-            for idx in range(min(btn_count, 60)):
-                btn = all_buttons.nth(idx)
-                try:
-                    if not btn.is_visible():
-                        continue
-                    text = (btn.inner_text() or "").strip().lower()
-                    aria = (btn.get_attribute("aria-label") or "").strip().lower()
-                    title = (btn.get_attribute("title") or "").strip().lower()
-                    combined = f"{text} {aria} {title}"
-                    if any(kw in combined for kw in (
-                        "tạo hình ảnh", "image creation", "create image", "generate image",
-                    )):
-                        btn.click()
-                        page.wait_for_timeout(400)
-                        print(
-                            f"[GeminiWebAdapter] (fallback) Đã chọn công cụ tạo hình ảnh: '{text or aria}'",
-                            flush=True,
-                        )
-                        return
                 except Exception:
                     continue
-        except Exception:
-            pass
 
-        print("[GeminiWebAdapter] Không tìm thấy nút tạo hình ảnh — bỏ qua, dùng chế độ mặc định.", flush=True)
+            # Fallback scan
+            try:
+                all_buttons = page.locator("button, [role='button']")
+                for idx in range(min(all_buttons.count(), 80)):
+                    btn = all_buttons.nth(idx)
+                    if not btn.is_visible():
+                        continue
+                    if _already_selected(btn):
+                        print("[GeminiWebAdapter] Công cụ tạo hình ảnh đã được chọn (fallback).", flush=True)
+                        return
+                    if _is_image_tool_btn(btn):
+                        aria = (btn.get_attribute("aria-label") or "")[:60]
+                        btn.click()
+                        page.wait_for_timeout(400)
+                        print(f"[GeminiWebAdapter] (fallback) Đã chọn công cụ tạo hình ảnh: '{aria}'", flush=True)
+                        return
+            except Exception:
+                pass
+                
+            page.wait_for_timeout(800)
+
+        print("[GeminiWebAdapter] Không tìm thấy nút tạo hình ảnh sau 6s — bỏ qua.", flush=True)
 
     def _resolve_generation_mode_label(self) -> str | None:
         raw_model = str(self._model_name or "").strip()
@@ -2176,6 +2382,7 @@ class GeminiWebAdapter:
         selectors = [
             'button[data-test-id="bard-mode-menu-button"]',
             'button[aria-label*="bộ chọn chế độ" i]',
+            'button[aria-label*="bo chon che do" i]',
             'button[aria-label*="model switcher" i]',
             'button[aria-label*="mode switcher" i]',
             'button[aria-label*="mode" i]',
@@ -2193,6 +2400,22 @@ class GeminiWebAdapter:
                         return candidate
                 except Exception:
                     continue
+        
+        # Fallback: find by normalized text
+        try:
+            buttons = page.locator("button, [role='button']")
+            for i in range(min(buttons.count(), 60)):
+                btn = buttons.nth(i)
+                if not btn.is_visible():
+                    continue
+                aria = (btn.get_attribute("aria-label") or "").lower()
+                text = (btn.inner_text() or "").lower()
+                norm = self._normalize_ui_text(f"{aria} {text}")
+                if "bo chon che do" in norm or "model switcher" in norm or "mode switcher" in norm:
+                    return btn
+        except Exception:
+            pass
+
         return None
 
     def _read_mode_picker_label(self, page) -> str:
@@ -3223,22 +3446,9 @@ class GeminiWebAdapter:
         timeout_ms: int = 1_500,
         baseline_uploaded_keys: set[str] | None = None,
     ) -> bool:
-        if not self._headless:
-            if self._set_file_via_associated_input(page, target, input_image_path, baseline_uploaded_keys):
-                return True
-            try:
-                target.click(force=True)
-            except Exception:
-                try:
-                    target.evaluate("(el) => el.click()")
-                except Exception:
-                    return False
-            page.wait_for_timeout(250)
-            if self._set_file_via_associated_input(page, target, input_image_path, baseline_uploaded_keys):
-                return True
-            if self._set_file_via_existing_inputs(page, input_image_path, baseline_uploaded_keys):
-                return True
-            return False
+        # Thử tìm input liên quan trực tiếp trước để tránh click mở dialog
+        if self._set_file_via_associated_input(page, target, input_image_path, baseline_uploaded_keys):
+            return True
 
         clickers = [
             lambda: target.click(),
@@ -3247,6 +3457,7 @@ class GeminiWebAdapter:
         ]
         for clicker in clickers:
             try:
+                # Playwright có thể handle file chooser kể cả ở chế độ non-headless
                 with page.expect_file_chooser(timeout=timeout_ms) as chooser_info:
                     clicker()
                 chooser = chooser_info.value
@@ -3255,17 +3466,21 @@ class GeminiWebAdapter:
                 if self._confirm_uploaded_preview(page, baseline_uploaded_keys):
                     return True
             except Exception:
-                if self._set_file_via_cdp_file_chooser(
-                    page,
-                    target,
-                    input_image_path,
-                    timeout_ms=timeout_ms,
-                    baseline_uploaded_keys=baseline_uploaded_keys,
-                ):
-                    return True
-                if self._set_file_via_existing_inputs(page, input_image_path, baseline_uploaded_keys):
-                    return True
-                continue
+                # Fallback CDP nếu expect_file_chooser thất bại
+                try:
+                    if self._set_file_via_cdp_file_chooser(
+                        page,
+                        target,
+                        input_image_path,
+                        timeout_ms=timeout_ms,
+                        baseline_uploaded_keys=baseline_uploaded_keys,
+                    ):
+                        return True
+                except Exception:
+                    pass
+
+        if self._set_file_via_existing_inputs(page, input_image_path, baseline_uploaded_keys):
+            return True
         return False
 
     def _set_file_via_cdp_file_chooser(
@@ -3673,99 +3888,205 @@ class GeminiWebAdapter:
 
         return []
 
-    def _list_gems_with_playwright(self) -> list[dict]:
-        try:
-            from playwright.sync_api import sync_playwright
-        except ImportError:
+        return self._scan_gems_on_page(page)
+
+    def _scan_gems_on_page(self, page) -> list[dict]:
+        # Navigate to the full gems listing page (shows ALL gems as cards)
+        gems_view_url = "https://gemini.google.com/gems/view"
+        gems_app_url  = "https://gemini.google.com/app/gems"
+        current_url = page.url
+
+        if gems_view_url not in current_url and gems_app_url not in current_url:
+            try:
+                print(f"[GeminiWebAdapter] Gem scan: navigating to {gems_view_url}...", flush=True)
+                page.goto(gems_view_url, wait_until="domcontentloaded", timeout=30000)
+                print(f"[GeminiWebAdapter] Gem scan: arrived at {page.url}.", flush=True)
+                page.wait_for_timeout(3000)
+            except Exception as exc:
+                print(f"[DEBUG] Failed to navigate to gems page: {exc}")
+
+        # Check for login gate
+        page.wait_for_timeout(2000)
+        login_info = page.evaluate("""() => {
+            const isAccounts = window.location.host.includes('accounts.google.com');
+            const hasSignIn = document.body.innerText.includes('Sign in') || document.body.innerText.includes('Đăng nhập');
+            const hasApp = !!document.querySelector('gemini-app') || !!document.querySelector('.chat-history') || !!document.querySelector('chat-window');
+            const pageTitle = document.title;
+            const bodyPreview = document.body.innerText.substring(0, 100).replace(/\\n/g, ' ');
+            
+            return {
+                isAccounts,
+                hasSignIn,
+                hasApp,
+                pageTitle,
+                bodyPreview,
+                url: window.location.href
+            };
+        }""")
+        
+        print(f"[GeminiWebAdapter] Gem scan: Login info: {login_info}", flush=True)
+        
+        if login_info['isAccounts'] or (login_info['hasSignIn'] and not login_info['hasApp']):
+            print(f"[DEBUG] Gem scan aborted: Browser is at login gate. Title: '{login_info['pageTitle']}', URL: {login_info['url']}, Preview: {login_info['bodyPreview']}")
             return []
 
-        profile = detect_gemini_browser_profile()
+        dismiss_button = page.get_by_role("button", name="Dismiss")
+        try:
+            if dismiss_button.count():
+                dismiss_button.first.click()
+        except Exception:
+            pass
 
-        def _is_login_gate(page) -> bool:
-            return bool(
-                page.evaluate("""() => {
-                    // Check for redirect to accounts.google.com
-                    if (window.location.host.includes('accounts.google.com')) return true;
-                    
-                    // Check for explicit login buttons that are prominent
-                    const loginButtons = Array.from(document.querySelectorAll('a, button')).filter(el => {
-                        const text = (el.innerText || el.textContent || '').toLowerCase();
-                        return (text === 'sign in' || text === 'đăng nhập') && el.offsetParent !== null;
-                    });
-                    if (loginButtons.length > 0 && document.querySelectorAll('gemini-app, .main-content').length === 0) return true;
-                    
-                    // Check for the Absence of the main app container which indicates we are not inside Gemini
-                    const hasApp = !!document.querySelector('gemini-app') || !!document.querySelector('.chat-history') || !!document.querySelector('chat-window');
-                    if (!hasApp && (window.location.pathname.includes('/app') || window.location.pathname.includes('/gems'))) {
-                         // If we are on an app path but don't see the app container, we might be on a landing page or login gate
-                         return true;
-                    }
-                    
-                    return false;
-                }""")
-            )
-
-        def _collect_gems_from_page(page) -> list[dict]:
-            dismiss_button = page.get_by_role("button", name="Dismiss")
-            try:
-                if dismiss_button.count():
-                    dismiss_button.first.click()
-            except Exception:
-                pass
-
-            def read_all_gems_state() -> dict:
-                return page.evaluate("""() => {
-                    const containers = Array.from(document.querySelectorAll('[data-test-id$="-gems-list"]'));
-                    if (containers.length === 0) {
-                        return { hasContainer: false, text: '', links: [] };
-                    }
-
-                    let allLinks = [];
-                    containers.forEach(container => {
-                        const links = Array.from(container.querySelectorAll('a[href]')).map((link) => ({
-                            url: link.href || link.getAttribute('href') || '',
-                            text: (link.innerText || link.textContent || '').trim(),
-                            ariaLabel: (link.getAttribute('aria-label') || '').trim(),
-                            title: (link.getAttribute('title') || '').trim(),
-                        }));
-                        allLinks = allLinks.concat(links);
-                    });
-
-                    return {
-                        hasContainer: true,
-                        links: allLinks,
-                    };
-            }""")
-
-            def read_fallback_gem_links() -> list[dict]:
-                return page.evaluate("""() => {
-                    const links = Array.from(document.querySelectorAll('a[href]')).map((link) => ({
+        def read_all_gems_state() -> dict:
+            """Try reading gems from known data-test-id containers (old approach)."""
+            return page.evaluate("""() => {
+                const containers = Array.from(document.querySelectorAll('[data-test-id$="-gems-list"]'));
+                if (containers.length === 0) {
+                    return { hasContainer: false, text: '', links: [] };
+                }
+                let allLinks = [];
+                containers.forEach(container => {
+                    const links = Array.from(container.querySelectorAll('a[href]')).map((link) => ({
                         url: link.href || link.getAttribute('href') || '',
                         text: (link.innerText || link.textContent || '').trim(),
                         ariaLabel: (link.getAttribute('aria-label') || '').trim(),
                         title: (link.getAttribute('title') || '').trim(),
                     }));
-                    return links.filter((link) =>
-                        /gemini\\.google\\.com\\/(gem|gems|app\\/gems)/i.test(link.url) ||
-                        /^\\/(gem|gems|app\\/gems)/i.test(link.url)
-                    );
-                }""")
+                    allLinks = allLinks.concat(links);
+                });
+                return { hasContainer: true, links: allLinks };
+            }""")
 
-            raw_gems: list[dict] = []
-            for i in range(15):
+        def get_main_content_gem_links() -> list[dict]:
+            """Scan the main content area of gems/view for ALL gem cards (has real href links)."""
+            return page.evaluate("""() => {
+                const results = [];
+                const seen = new Set();
+
+                // Method 1: Find all <a> tags that link to /gem/ paths
+                document.querySelectorAll('a[href]').forEach(a => {
+                    const url = a.href || '';
+                    if (!url || seen.has(url)) return;
+                    if (url.includes('/gem/') && !url.includes('/gems/view') && !url.endsWith('/gems')) {
+                        const text = (a.innerText || a.textContent || '').trim();
+                        const ariaLabel = (a.getAttribute('aria-label') || '').trim();
+                        seen.add(url);
+                        results.push({ url, text: text || ariaLabel || '', ariaLabel, title: '' });
+                    }
+                });
+
+                // Method 2: Find gem cards by common Angular element names
+                const cardSelectors = [
+                    'gem-card', 'bot-card', 'user-gem-card',
+                    '[data-test-id*="gem"]', '[class*="gem-card"]', '[class*="bot-card"]'
+                ];
+                cardSelectors.forEach(sel => {
+                    document.querySelectorAll(sel).forEach(card => {
+                        // Try to find a link inside the card
+                        const link = card.querySelector('a[href]');
+                        const url = link ? link.href : (card.href || card.getAttribute('href') || '');
+                        if (!url || seen.has(url)) return;
+                        if (url.includes('/gem/') || url.includes('/gems/')) {
+                            const text = (card.innerText || card.textContent || '').split('\\n')[0].trim();
+                            seen.add(url);
+                            results.push({ url, text, ariaLabel: '', title: '' });
+                        }
+                    });
+                });
+
+                return results;
+            }""")
+
+        def get_bot_list_item_names() -> list[str]:
+            """Get names of all Gems from Angular bot-list-item elements in the sidebar."""
+            return page.evaluate("""() => {
+                const items = Array.from(document.querySelectorAll('bot-list-item'));
+                return items.map(item => (item.innerText || item.textContent || '').trim()).filter(t => t && t.length < 80);
+            }""")
+
+        def click_gem_and_get_url(gem_name: str) -> str:
+            """Click a bot-list-item by name and return the resulting URL."""
+            try:
+                # Find the bot-list-item with that text
+                items = page.query_selector_all('bot-list-item')
+                for item in items:
+                    text = (item.inner_text() or '').strip()
+                    if text == gem_name:
+                        current_url = page.url
+                        item.click()
+                        page.wait_for_timeout(1500)
+                        new_url = page.url
+                        if new_url != current_url and 'gemini.google.com' in new_url:
+                            print(f"[GeminiWebAdapter] Clicked gem '{gem_name}' → {new_url}", flush=True)
+                            return new_url
+                        # Navigate back to gems list
+                        page.go_back()
+                        page.wait_for_timeout(1000)
+                        return ''
+            except Exception as exc:
+                print(f"[GeminiWebAdapter] Error clicking gem '{gem_name}': {exc}", flush=True)
+            return ''
+
+        def read_fallback_gem_links() -> list[dict]:
+            """Collect gems from bot-list-items by clicking each one."""
+            results = []
+            gem_names = get_bot_list_item_names()
+            print(f"[GeminiWebAdapter] Found {len(gem_names)} bot-list-items: {gem_names}", flush=True)
+            for name in gem_names:
+                url = click_gem_and_get_url(name)
+                # Accept any gem URL except the gems listing pages
+                excluded = {'https://gemini.google.com/app/gems', 'https://gemini.google.com/gems/view', 'https://gemini.google.com/app'}
+                if url and url not in excluded:
+                    results.append({'url': url, 'text': name, 'ariaLabel': '', 'title': ''})
+                # Always navigate back to gems page after each click
+                if page.url not in {'https://gemini.google.com/app/gems'}:
+                    try:
+                        page.goto('https://gemini.google.com/gems/view', wait_until='domcontentloaded', timeout=15000)
+                        page.wait_for_timeout(1500)
+                    except Exception:
+                        pass
+            return results
+
+        raw_gems: list[dict] = []
+
+        # Phase 1: Navigate to gems/view and scan main content (shows ALL gems as cards with hrefs)
+        try:
+            if 'gems/view' not in page.url:
+                page.goto('https://gemini.google.com/gems/view', wait_until='domcontentloaded', timeout=20000)
+                page.wait_for_timeout(2000)
+        except Exception as exc:
+            print(f"[GeminiWebAdapter] Gem scan: could not navigate to gems/view: {exc}", flush=True)
+
+        for i in range(5):
+            main_links = get_main_content_gem_links()
+            print(f"[GeminiWebAdapter] Gem scan: found {len(main_links)} gem links in main content (attempt {i+1}).", flush=True)
+            if main_links:
+                for l in main_links:
+                    print(f"[DEBUG] Main gem link: text='{l.get('text')}', url='{l.get('url')}'", flush=True)
+                raw_gems = []
+                for l in main_links:
+                    if not l.get("url") or not _is_custom_gem_link(l):
+                        continue
+                    raw_text = (l.get("text") or "").replace("\r\n", "\n").replace("\r", "\n")
+                    lines = [ln.strip() for ln in raw_text.split("\n") if ln.strip()]
+                    # First line is often a single-letter avatar initial — skip it
+                    if lines and len(lines[0]) == 1:
+                        lines = lines[1:]
+                    gem_name = lines[0] if lines else ""
+                    gem_name = gem_name or _fallback_gem_name(l.get("url", ""))
+                    raw_gems.append({"name": gem_name, "url": str(l.get("url", ""))})
+                raw_gems = [e for e in raw_gems if e["name"] and e["url"]]
+                if raw_gems:
+                    break
+            page.wait_for_timeout(1000)
+
+        # Phase 2: Try data-test-id container approach (legacy)
+        if not raw_gems:
+            for i in range(3):
                 state = read_all_gems_state()
                 container_links = list(state.get("links") or [])
-                fallback_links = [l for l in read_fallback_gem_links() if _is_custom_gem_link(l)]
-                combined_links = container_links + fallback_links
-
-                if combined_links:
-                    if i < 3:
-                        page.wait_for_timeout(1500)
-                        state = read_all_gems_state()
-                        container_links = list(state.get("links") or [])
-                        fallback_links = [l for l in read_fallback_gem_links() if _is_custom_gem_link(l)]
-                        combined_links = container_links + fallback_links
-
+                if container_links:
+                    print(f"[GeminiWebAdapter] Gem scan: found {len(container_links)} links via container.", flush=True)
                     raw_gems = [
                         {
                             "name": _derive_custom_gem_name(
@@ -3775,13 +4096,41 @@ class GeminiWebAdapter:
                             ),
                             "url": str(link.get("url", "")),
                         }
-                        for link in combined_links
+                        for link in container_links
+                        if _is_custom_gem_link(link)
                     ]
-                    raw_gems = [entry for entry in raw_gems if entry["name"] and entry["url"]]
-                    break
+                    raw_gems = [e for e in raw_gems if e["name"] and e["url"]]
+                    if raw_gems:
+                        break
                 page.wait_for_timeout(1000)
 
-            return _normalize_gem_entries(raw_gems)
+        # Phase 3: Click-based approach on bot-list-items (runs ONCE, slower but reliable)
+        if not raw_gems:
+            # Navigate back to app/gems for the sidebar bot-list-items
+            try:
+                page.goto('https://gemini.google.com/app/gems', wait_until='domcontentloaded', timeout=15000)
+                page.wait_for_timeout(2000)
+            except Exception:
+                pass
+            print(f"[GeminiWebAdapter] Gem scan: trying click-based approach on bot-list-items...", flush=True)
+            fallback_links = read_fallback_gem_links()
+            print(f"[GeminiWebAdapter] Gem scan: click-based found {len(fallback_links)} gems.", flush=True)
+            for l in fallback_links:
+                print(f"[DEBUG] Gem click result: text='{l['text']}', url='{l['url']}'", flush=True)
+            # These URLs are already verified by actual navigation - bypass URL filter
+            raw_gems = [
+                {
+                    "name": l.get("text", "") or _fallback_gem_name(l.get("url", "")),
+                    "url": str(l.get("url", "")),
+                    "trusted": True,  # URLs verified by actual navigation
+                }
+                for l in fallback_links
+                if l.get("url") and l.get("text")
+            ]
+
+        results = _normalize_gem_entries(raw_gems)
+        print(f"[GeminiWebAdapter] Gem scan found {len(results)} gems.", flush=True)
+        return results
 
         playwright = None
         browser = None
@@ -3852,12 +4201,30 @@ class GeminiWebAdapter:
         if os.environ.get("FLOWGEN_GEM_SCAN_MODE") == "child":
             return self._list_gems_with_playwright()
 
+        # In main process: use the shared browser context to be fast and share login
+        print("[GeminiWebAdapter] Starting gem scan in main process...", flush=True)
+        shared = self._get_or_create_shared_context()
+        page_id, page = shared.acquire_page()
+        try:
+            print("[GeminiWebAdapter] Gem scan: ensuring workspace ready...", flush=True)
+            self._ensure_workspace_ready(page)
+            print(f"[GeminiWebAdapter] Gem scan: scanning gems on page (URL: {page.url})...", flush=True)
+            return self._scan_gems_on_page(page)
+        finally:
+            shared.release_page(page_id)
+            print("[GeminiWebAdapter] Gem scan completed in main process.", flush=True)
+
         script = (
             "import json, os, sys\n"
             "from pathlib import Path\n"
             "from downloader_app.gemini_web_adapter import GeminiWebAdapter\n"
             "os.environ['FLOWGEN_GEM_SCAN_MODE'] = 'child'\n"
-            "adapter = GeminiWebAdapter(runtime_root=Path(sys.argv[1]))\n"
+            "adapter = GeminiWebAdapter(\n"
+            "    runtime_root=Path(sys.argv[1]),\n"
+            "    feature=sys.argv[2],\n"
+            "    base_url=sys.argv[3],\n"
+            "    headless=True,\n"
+            ")\n"
             "gems = adapter._list_gems_with_playwright()\n"
             "payload = json.dumps(gems, ensure_ascii=True)\n"
             "sys.stdout.write('\\n__GEM_SCAN_JSON_START__\\n')\n"
@@ -3866,7 +4233,7 @@ class GeminiWebAdapter:
         )
         try:
             completed = subprocess.run(
-                [sys.executable, "-c", script, str(self._runtime_root)],
+                [sys.executable, "-c", script, str(self._runtime_root), self._feature, self._base_url],
                 capture_output=True,
                 check=False,
                 timeout=60,

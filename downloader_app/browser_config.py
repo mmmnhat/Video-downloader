@@ -17,11 +17,12 @@ from downloader_app.runtime import app_path
 
 BROWSER_CONFIG_FILE = app_path("browser_config.json")
 APP_PROFILE_ROOT = app_path("cache", "browser_profiles")
-FEATURE_IDS = ("downloader", "tts", "story")
+FEATURE_IDS = ("downloader", "tts", "story", "thumbnail")
 FEATURE_COOKIE_DOMAINS: dict[str, tuple[str, ...]] = {
     "downloader": ("google.com",),
     "tts": ("elevenlabs.io",),
     "story": ("gemini.google.com", "google.com", "accounts.google.com"),
+    "thumbnail": ("gemini.google.com", "google.com", "accounts.google.com"),
 }
 DEFAULT_MANAGED_PROFILE_NAME = "Default"
 CHROMIUM_PROFILE_DIR_NAME = "Default"
@@ -101,6 +102,7 @@ class BrowserConfigState:
     downloader: FeatureBrowserConfig
     tts: FeatureBrowserConfig
     story: FeatureBrowserConfig
+    thumbnail: FeatureBrowserConfig
 
 
 BROWSER_SPECS: tuple[BrowserSpec, ...] = (
@@ -257,10 +259,12 @@ def _spec_from_browser_path(raw_path: str) -> BrowserSpec:
 
 
 def resolve_installation_from_browser_path(raw_path: str) -> BrowserInstallation:
-    if not raw_path or not str(raw_path).strip():
+    import unicodedata
+    path_str = unicodedata.normalize("NFC", str(raw_path or "").strip())
+    if not path_str:
         raise BrowserConfigError("Can nhap browser path.")
 
-    path = Path(str(raw_path).strip()).expanduser()
+    path = Path(path_str).expanduser()
     spec = _spec_from_browser_path(path)
 
     if sys.platform == "darwin":
@@ -483,9 +487,8 @@ def _cookie_count_from_db(cookie_path: Path, domains: tuple[str, ...]) -> int:
         clauses: list[str] = []
         params: list[str] = []
         for domain in domains:
-            clauses.append("(host_key = ? OR host_key LIKE ?)")
-            params.append(domain)
-            params.append(f"%.{domain}")
+            clauses.append("host_key LIKE ?")
+            params.append(f"%{domain}")
         if not clauses:
             return 0
 
@@ -634,6 +637,7 @@ class BrowserConfigManager:
             downloader=FeatureBrowserConfig(profile_name=DEFAULT_MANAGED_PROFILE_NAME),
             tts=FeatureBrowserConfig(profile_name=DEFAULT_MANAGED_PROFILE_NAME),
             story=FeatureBrowserConfig(profile_name=DEFAULT_MANAGED_PROFILE_NAME),
+            thumbnail=FeatureBrowserConfig(profile_name=DEFAULT_MANAGED_PROFILE_NAME),
         )
         self._load()
         with self._lock:

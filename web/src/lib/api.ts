@@ -33,6 +33,7 @@ export type BrowserConfigPayload = {
   downloader: FeatureBrowserConfig;
   tts: FeatureBrowserConfig;
   story: FeatureBrowserConfig;
+  thumbnail: FeatureBrowserConfig;
 };
 
 export type BrowserProfileOption = {
@@ -394,12 +395,16 @@ export type ThumbnailButtonField = {
   max?: number | null;
   required?: boolean;
   visibleIf?: string | Record<string, any> | null;
+  bindToCanvas?: "none" | "artboard_ratio" | "crop_ratio" | "brush_size" | "brush_color" | "shape_type" | "shape_color" | "shape_opacity" | "shape_hardness" | "shape_size" | null;
 };
 
 export type ThumbnailRequiredTool =
-  | "paint"
-  | "frame"
-  | "shape";
+  | "brush"
+  | "eraser"
+  | "crop"
+  | "artboard"
+  | "rect"
+  | "ellipse";
 
 export type ThumbnailSettings = {
   gemini_headless: boolean;
@@ -527,6 +532,14 @@ export async function selectThumbnailVersion(projectId: string, versionId: strin
   });
 }
 
+export async function commitThumbnailCrop(projectId: string, base64Image: string) {
+  return requestJson<ThumbnailProjectDetail>("/api/thumbnail/commit-crop", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ project_id: projectId, base64_image: base64Image }),
+  });
+}
+
 export async function deleteThumbnailVersion(projectId: string, versionId: string) {
   return requestJson<ThumbnailProjectDetail>("/api/thumbnail/delete-version", {
     method: "POST",
@@ -540,6 +553,18 @@ export async function renameThumbnailProject(projectId: string, name: string) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ project_id: projectId, name }),
+  });
+}
+
+export async function getThumbnailSessionStatus(refresh = false) {
+  return requestJson<ThumbnailBootstrapPayload["sessionStatus"]>(
+    `/api/thumbnail/session/status?refresh=${refresh ? 1 : 0}`,
+  );
+}
+
+export async function openThumbnailLogin() {
+  return requestJson<{ message: string }>("/api/thumbnail/session/open-login", {
+    method: "POST",
   });
 }
 
@@ -564,6 +589,7 @@ export type ThumbnailProjectSummary = {
   name: string;
   folder: string;
   sourceImagePath: string;
+  previewImagePath?: string;
   base64Image?: string;
   createdAt: string;
   updatedAt: string;
@@ -587,7 +613,9 @@ export type ThumbnailBootstrapPayload = {
     backend: string;
     dependencies_ready: boolean;
     authenticated: boolean;
-    baseUrl: string;
+    browser?: string | null;
+    profileDir?: string;
+    message?: string;
   };
 };
 
@@ -733,7 +761,7 @@ export async function updateBrowserConfig(payload: BrowserConfigPayload) {
 }
 
 export async function probeBrowserProfiles(
-  feature: "downloader" | "tts" | "story",
+  feature: "downloader" | "tts" | "story" | "thumbnail",
   browserPath: string,
   profileName = "",
 ) {
@@ -749,7 +777,7 @@ export async function probeBrowserProfiles(
 }
 
 export async function createBrowserProfile(
-  feature: "downloader" | "tts" | "story",
+  feature: "downloader" | "tts" | "story" | "thumbnail",
   profileName = "",
 ) {
   return requestJson<BrowserProfileMutationResult>("/api/browser-config/profiles/create", {
@@ -763,7 +791,7 @@ export async function createBrowserProfile(
 }
 
 export async function deleteBrowserProfile(
-  feature: "downloader" | "tts" | "story",
+  feature: "downloader" | "tts" | "story" | "thumbnail",
   profileName: string,
 ) {
   return requestJson<BrowserProfileMutationResult>("/api/browser-config/profiles/delete", {
