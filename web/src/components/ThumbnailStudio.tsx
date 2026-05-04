@@ -17,7 +17,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { Slider } from "@/components/ui/slider";
 import { Field, FieldGroup } from "@/components/ui/field";
 import { SessionStatusAlert } from "@/components/ui/session-status-alert";
@@ -906,6 +906,73 @@ function VersionComparator({
    </div>
   </div>
  );
+}
+
+function ZoomableGalleryImage({ src, alt, badge, badgeClass }: { src: string; alt: string; badge?: React.ReactNode; badgeClass?: string }) {
+  const [scale, setScale] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState(false);
+  const dragStart = useRef({ x: 0, y: 0 });
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setScale(1);
+    setPan({ x: 0, y: 0 });
+  }, [src]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      setScale(s => Math.min(Math.max(0.2, s - e.deltaY * 0.005), 10));
+    };
+    container.addEventListener('wheel', handleWheel, { passive: false });
+    return () => container.removeEventListener('wheel', handleWheel);
+  }, []);
+
+  const handleMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+    dragStart.current = { x: e.clientX - pan.x, y: e.clientY - pan.y };
+  };
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (!isDragging) return;
+    setPan({ x: e.clientX - dragStart.current.x, y: e.clientY - dragStart.current.y });
+  };
+
+  const handleMouseUp = () => setIsDragging(false);
+
+  return (
+    <div 
+      ref={containerRef}
+      className="relative flex-1 rounded-2xl overflow-hidden border border-border/50 shadow-2xl min-h-0 flex items-center justify-center bg-background/50 cursor-grab active:cursor-grabbing group/zoom"
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUp}
+      onMouseLeave={handleMouseUp}
+    >
+      <img
+        src={src}
+        alt={alt}
+        style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${scale})`, transition: isDragging ? 'none' : 'transform 0.1s ease-out' }}
+        className="max-h-full max-w-full object-contain select-none"
+        draggable={false}
+      />
+      {badge && (
+        <div className={cn("absolute top-3 left-3 px-3 py-1 rounded-full text-xs font-black shadow-lg", badgeClass)}>
+          {badge}
+        </div>
+      )}
+      <div className="absolute bottom-3 right-3 flex items-center gap-2 bg-background/80 backdrop-blur-md px-2 py-1 rounded-lg border border-border/50 text-xs opacity-0 group-hover/zoom:opacity-100 transition-opacity">
+        <button onClick={(e) => { e.stopPropagation(); setScale(s => Math.max(0.2, s - 0.5)); }} className="hover:text-primary w-6 h-6 flex items-center justify-center rounded-md hover:bg-muted">-</button>
+        <span className="w-10 text-center font-mono">{Math.round(scale * 100)}%</span>
+        <button onClick={(e) => { e.stopPropagation(); setScale(s => Math.min(10, s + 0.5)); }} className="hover:text-primary w-6 h-6 flex items-center justify-center rounded-md hover:bg-muted">+</button>
+        <button onClick={(e) => { e.stopPropagation(); setScale(1); setPan({x:0, y:0}); }} className="ml-1 hover:text-primary w-6 h-6 flex items-center justify-center rounded-md hover:bg-muted" title="Reset"><RefreshCw className="size-3"/></button>
+      </div>
+    </div>
+  );
 }
 
 type ThumbnailStudioProps = {
@@ -3241,19 +3308,19 @@ async function requestExportFolder() {
       setCompareVersionBId(vId);
      };
      return (
-      <div className="fixed inset-0 z-50 bg-black/95 backdrop-blur-md flex flex-col" onClick={() => setGalleryPreviewVersionId(null)}>
+      <div className="fixed inset-0 z-50 bg-background/95 backdrop-blur-md flex flex-col" onClick={() => setGalleryPreviewVersionId(null)}>
        {/* Header */}
-       <div className="flex items-center justify-between px-6 py-4 border-b border-white/10 shrink-0" onClick={e => e.stopPropagation()}>
+       <div className="flex items-center justify-between px-6 py-4 border-b border-border/50 shrink-0" onClick={e => e.stopPropagation()}>
         <div className="flex items-center gap-3">
          <SplitSquareVertical className="size-5 text-primary" />
-         <span className="text-sm font-black  text-white">Gallery · {activeProject.name}</span>
-         <Badge variant="outline" className="border-white/20 text-xs text-white/50">{versionImgs.length} ảnh</Badge>
+         <span className="text-sm font-black text-foreground">Gallery · {activeProject.name}</span>
+         <Badge variant="outline" className="border-border/60 text-xs text-muted-foreground">{versionImgs.length} ảnh</Badge>
         </div>
         <div className="flex items-center gap-2">
          {canCompare && (
           <Button
            size="sm"
-           className="h-8 rounded-full bg-primary px-3 text-xs hover:bg-primary/90"
+           className="h-8 rounded-full bg-primary px-3 text-xs hover:bg-primary/90 text-primary-foreground"
            onClick={() => { setShowComparator(true); setGalleryPreviewVersionId(null); }}
           >
            <SplitSquareVertical className="size-3" />
@@ -3261,11 +3328,11 @@ async function requestExportFolder() {
           </Button>
          )}
          {(compareVersionAId || compareVersionBId) && (
-          <Button variant="ghost" size="sm" className="h-8 rounded-full px-3 text-xs text-white/40 hover:text-white" onClick={() => { setCompareVersionAId(null); setCompareVersionBId(null); }}>
+          <Button variant="ghost" size="sm" className="h-8 rounded-full px-3 text-xs text-muted-foreground hover:text-foreground" onClick={() => { setCompareVersionAId(null); setCompareVersionBId(null); }}>
            Xóa chọn
           </Button>
          )}
-         <Button variant="ghost" size="icon" className="text-white/60 hover:text-white hover:bg-white/10 rounded-full" onClick={() => setGalleryPreviewVersionId(null)}>
+         <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-foreground hover:bg-muted/50 rounded-full" onClick={() => setGalleryPreviewVersionId(null)}>
           <X className="size-5" />
          </Button>
         </div>
@@ -3277,7 +3344,7 @@ async function requestExportFolder() {
         <Button
          variant="ghost"
          size="icon"
-         className="h-10 w-10 rounded-full bg-white/10 hover:bg-white/20 text-white shrink-0"
+         className="h-10 w-10 rounded-full bg-muted/50 hover:bg-muted text-foreground shrink-0"
          disabled={currentGalleryIdx <= 0}
          onClick={() => currentGalleryIdx > 0 && setGalleryPreviewVersionId(versionImgs[currentGalleryIdx - 1].id)}
         >
@@ -3288,27 +3355,16 @@ async function requestExportFolder() {
         {currentGalleryVersion && (
          <div className="flex-1 max-w-4xl h-full flex flex-col gap-3 min-h-0">
           {/* A/B slot badge on main image */}
-          <div className="relative flex-1 rounded-2xl overflow-hidden border border-white/10 shadow-2xl min-h-0 flex items-center justify-center bg-black/40">
-           <img
-            src={getThumbnailAssetUrl(currentGalleryVersion.outputImagePath)}
-            alt={currentGalleryVersion.buttonName}
-            className="max-h-full max-w-full object-contain"
-           />
-           {getSlot(currentGalleryVersion.id) && (
-            <div className={cn(
-             "absolute top-3 left-3 px-3 py-1 rounded-full text-xs font-black shadow-lg",
-             getSlot(currentGalleryVersion.id) === "A"
-              ? "bg-blue-500 text-white"
-              : "bg-rose-500 text-white"
-            )}>
-             {getSlot(currentGalleryVersion.id)}
-            </div>
-           )}
-          </div>
+          <ZoomableGalleryImage
+           src={getThumbnailAssetUrl(currentGalleryVersion.outputImagePath)}
+           alt={currentGalleryVersion.buttonName}
+           badge={getSlot(currentGalleryVersion.id)}
+           badgeClass={getSlot(currentGalleryVersion.id) === "A" ? "bg-blue-500 text-white" : "bg-rose-500 text-white"}
+          />
           <div className="flex items-center justify-between">
-           <div className="text-white/60 text-xs font-bold">
-            <span className="text-white">{currentGalleryVersion.buttonName}</span>
-            {currentGalleryVersion.note && <span className="ml-2 text-emerald-400">{currentGalleryVersion.note}</span>}
+           <div className="text-muted-foreground text-xs font-bold">
+            <span className="text-foreground">{currentGalleryVersion.buttonName}</span>
+            {currentGalleryVersion.note && <span className="ml-2 text-emerald-500">{currentGalleryVersion.note}</span>}
            </div>
            <div className="flex items-center gap-2">
             {/* Pick A / Pick B button */}
@@ -3317,9 +3373,9 @@ async function requestExportFolder() {
              size="sm"
              className={cn(
               "h-8 rounded-full px-3 text-xs font-medium",
-              getSlot(currentGalleryVersion.id) === "A" ? "border-blue-500 text-blue-400 hover:bg-blue-500/10" :
-              getSlot(currentGalleryVersion.id) === "B" ? "border-rose-500 text-rose-400 hover:bg-rose-500/10" :
-              "border-white/20 text-white/70 hover:bg-white/10"
+              getSlot(currentGalleryVersion.id) === "A" ? "border-blue-500 text-blue-500 hover:bg-blue-500/10" :
+              getSlot(currentGalleryVersion.id) === "B" ? "border-rose-500 text-rose-500 hover:bg-rose-500/10" :
+              "border-border/50 text-muted-foreground hover:bg-muted/50 hover:text-foreground"
              )}
              onClick={() => handlePickForCompare(currentGalleryVersion.id)}
             >
@@ -3332,7 +3388,7 @@ async function requestExportFolder() {
             <Button
              variant="outline"
              size="sm"
-             className="h-8 rounded-full border-white/20 px-3 text-xs text-white hover:bg-white/10"
+             className="h-8 rounded-full border-border/50 px-3 text-xs text-foreground hover:bg-muted/50"
              onClick={() => { void handleSelectVersion(currentGalleryVersion.id); setGalleryPreviewVersionId(null); }}
             >
              <Play className="size-3 mr-1.5" /> Dùng phiên bản này
@@ -3346,7 +3402,7 @@ async function requestExportFolder() {
         <Button
          variant="ghost"
          size="icon"
-         className="h-10 w-10 rounded-full bg-white/10 hover:bg-white/20 text-white shrink-0"
+         className="h-10 w-10 rounded-full bg-muted/50 hover:bg-muted text-foreground shrink-0"
          disabled={currentGalleryIdx >= versionImgs.length - 1}
          onClick={() => currentGalleryIdx < versionImgs.length - 1 && setGalleryPreviewVersionId(versionImgs[currentGalleryIdx + 1].id)}
         >
@@ -3355,8 +3411,8 @@ async function requestExportFolder() {
        </div>
 
        {/* Thumbnail strip with A/B labels */}
-       <div className="shrink-0 border-t border-white/10 p-4" onClick={e => e.stopPropagation()}>
-        <p className="mb-2 text-xs font-semibold  text-white/30">Chọn A và B để so sánh · click thumbnail để chọn</p>
+       <div className="shrink-0 border-t border-border/50 p-4" onClick={e => e.stopPropagation()}>
+        <p className="mb-2 text-xs font-semibold text-muted-foreground">Chọn A và B để so sánh · click thumbnail để chọn</p>
         <div className="flex gap-2 overflow-x-auto pb-1">
          {versionImgs.map((v) => {
           const slot = getSlot(v.id);
@@ -3369,7 +3425,7 @@ async function requestExportFolder() {
              slot === "A" ? "border-blue-500 ring-2 ring-blue-500/40 scale-105"
              : slot === "B" ? "border-rose-500 ring-2 ring-rose-500/40 scale-105"
              : v.id === galleryPreviewVersionId ? "border-primary"
-             : "border-white/10 hover:border-white/30 opacity-60 hover:opacity-100"
+             : "border-border/50 hover:border-primary/50 opacity-60 hover:opacity-100"
             )}
            >
             <img src={getThumbnailAssetUrl(v.outputImagePath)} alt={v.id} className="h-full w-full object-cover" />
