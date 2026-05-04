@@ -21,13 +21,15 @@ import {
  Settings2,
  Loader2,
  RefreshCw,
- Palette,
+ Moon,
+ Sun,
+ Monitor,
 } from "lucide-react";
 import CookiesManager from "./components/CookiesManager";
 import UpdaterDialog from "./components/UpdaterDialog";
-import AppearanceSettings from "./components/AppearanceSettings";
 import { useLocalStorage } from "./hooks/use-local-storage";
 import BrowserProfilesSettings from "./components/BrowserProfilesSettings";
+import { getThumbnailBootstrap, updateThumbnailSettings } from "./lib/api";
 
 import {
  AlertDialog,
@@ -162,7 +164,7 @@ const CacheManager = lazy(() => import("./components/CacheManager"));
 type TableMode = "preview" | "queue" | "empty";
 type BadgeVariant = "default" | "secondary" | "destructive" | "outline";
 type AppView = "downloader" | "thumbnail" | "tts" | "story" | "settings";
-type SettingsView = "cookies" | "browser-settings" | "cache" | "appearance";
+type SettingsView = "cookies" | "browser-settings" | "cache";
 type StoredView = AppView | SettingsView;
 
 type UnifiedTableRow = {
@@ -185,12 +187,6 @@ const SETTINGS_NAV_ITEMS: Array<{
  description: string;
  icon: typeof Cookie;
 }> = [
- {
-  id: "appearance",
-  label: "Giao diện",
-  description: "Cấu hình giao diện ứng dụng và Canvas Thumbnail.",
-  icon: Palette,
- },
  {
   id: "cookies",
   label: "Cookie thủ công",
@@ -1034,7 +1030,8 @@ function App() {
        </Button>
      </nav>
 
-     <div className="mt-auto pt-2 px-3">
+     <div className="mt-auto pt-2 px-3 flex flex-col items-center gap-2">
+       <ThemeToggleButton />
        <UpdaterDialog />
      </div>
     </aside>
@@ -1796,9 +1793,6 @@ function App() {
         {settingsView === "browser-settings" ? (
          <BrowserProfilesSettings />
         ) : null}
-        {settingsView === "appearance" ? (
-         <AppearanceSettings />
-        ) : null}
        </section>
       </div>
      </main>
@@ -1853,6 +1847,58 @@ function getErrorMessage(error: unknown) {
   return error.message;
  }
  return "Có lỗi xảy ra khi giao tiếp với backend cục bộ.";
+}
+
+function ThemeToggleButton() {
+  const [theme, setTheme] = useState<"light" | "dark" | "system">("system");
+
+  useEffect(() => {
+    let active = true;
+    getThumbnailBootstrap()
+      .then((payload) => {
+        if (active && payload.settings.app_theme) {
+          const nextTheme = payload.settings.app_theme as any;
+          setTheme(nextTheme);
+          const isDark = nextTheme === "dark" || (nextTheme === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+          document.documentElement.classList.toggle("dark", isDark);
+          document.documentElement.classList.toggle("light", !isDark);
+        }
+      })
+      .catch((err) => console.error(err));
+    return () => { active = false; };
+  }, []);
+
+  const handleToggle = async () => {
+    const nextTheme = theme === "dark" ? "light" : theme === "light" ? "system" : "dark";
+    setTheme(nextTheme);
+    
+    // Apply immediately to document
+    const isDark = nextTheme === "dark" || (nextTheme === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+    document.documentElement.classList.toggle("dark", isDark);
+    document.documentElement.classList.toggle("light", !isDark);
+
+    try {
+      const payload = await getThumbnailBootstrap();
+      await updateThumbnailSettings({ ...payload.settings, app_theme: nextTheme });
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const Icon = theme === "dark" ? Moon : theme === "light" ? Sun : Monitor;
+  const label = theme === "dark" ? "Giao diện Tối" : theme === "light" ? "Giao diện Sáng" : "Giao diện Hệ thống";
+
+  return (
+    <Button
+      variant="ghost"
+      className="w-full justify-center"
+      onClick={handleToggle}
+      title={label}
+      aria-label={label}
+    >
+      <Icon className="h-4 w-4" />
+    </Button>
+  );
 }
 
 export default App;

@@ -1897,18 +1897,19 @@ export default function MaskCanvas({
     opacity: canvasBgOpacity / 100,
     filter: `brightness(${canvasBgBrightness / 100})`,
     ...(canvasBgType === "custom" && canvasBgImage ? {
-     backgroundImage: `url(${canvasBgImage})`,
-     backgroundSize: canvasBgFit,
+     backgroundImage: `url('${canvasBgImage}')`,
+     backgroundSize: canvasBgFit === "fill" ? "100% 100%" : canvasBgFit,
      backgroundPosition: "center",
      backgroundRepeat: "no-repeat"
     } : {}),
     ...(canvasBgType === "grid" ? {
-     backgroundImage: 'linear-gradient(hsl(var(--foreground)/0.1) 1px, transparent 1px), linear-gradient(90deg, hsl(var(--foreground)/0.1) 1px, transparent 1px)',
+     backgroundImage: 'linear-gradient(rgba(128, 128, 128, 0.3) 1px, transparent 1px), linear-gradient(90deg, rgba(128, 128, 128, 0.3) 1px, transparent 1px)',
      backgroundSize: '20px 20px'
     } : {}),
     ...(canvasBgType === "dot" ? {
-     backgroundImage: 'radial-gradient(hsl(var(--foreground)/0.1) 1.5px, transparent 1.5px)',
-     backgroundSize: '20px 20px'
+     backgroundImage: 'radial-gradient(circle, rgba(128, 128, 128, 0.3) 1.5px, transparent 1.5px)',
+     backgroundSize: '20px 20px',
+     backgroundPosition: '0 0'
     } : {})
    }} />
    <div className="absolute top-4 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-full border border-border/50 bg-background/95 p-1.5 shadow-sm backdrop-blur">
