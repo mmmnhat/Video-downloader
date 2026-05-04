@@ -3153,8 +3153,8 @@ async function requestExportFolder() {
           Xem tất cả
          </Button>
         )}
-        <ScrollArea className="flex-1 w-full" viewportClassName="overflow-y-hidden">
-          <div className="flex h-full min-w-max flex-row items-center gap-3 px-4">
+        <div className="flex-1 w-full overflow-x-auto overflow-y-hidden scrollbar-hide">
+          <div className="flex min-w-max flex-row items-center gap-3 px-4 py-4 h-full">
             {/* History Versions */}
 
           {versions.slice().reverse().map((v) => (
@@ -3216,8 +3216,7 @@ async function requestExportFolder() {
            </div>
           ))}
          </div>
-         <ScrollBar orientation="horizontal" />
-      </ScrollArea>
+      </div>
      </Card>
     )}
 

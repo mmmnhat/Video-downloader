@@ -162,7 +162,17 @@ class DesktopWindow(QMainWindow):
     def __init__(self, url: str):
         super().__init__()
         self.setWindowTitle("Video Downloader")
-        self.resize(1280, 800)
+        
+        self.qsettings = QSettings("Nhat", "VideoDownloader")
+        geometry = self.qsettings.value("geometry")
+        state = self.qsettings.value("windowState")
+        if geometry is not None:
+            self.restoreGeometry(geometry)
+        else:
+            self.resize(1280, 800)
+            
+        if state is not None:
+            self.restoreState(state)
         
         # Set window icon
         icon_path = Path(__file__).resolve().parent.parent / "static" / "app_icon.png"
@@ -208,6 +218,11 @@ class DesktopWindow(QMainWindow):
     def _handle_permission_request(self, request):
         # Auto-grant clipboard and other basic permissions for our app
         request.grant()
+
+    def closeEvent(self, event):
+        self.qsettings.setValue("geometry", self.saveGeometry())
+        self.qsettings.setValue("windowState", self.saveState())
+        super().closeEvent(event)
 
 
 def run_desktop(url: str) -> int:
