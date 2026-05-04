@@ -21,9 +21,11 @@ import {
  Settings2,
  Loader2,
  RefreshCw,
+ Palette,
 } from "lucide-react";
 import CookiesManager from "./components/CookiesManager";
 import UpdaterDialog from "./components/UpdaterDialog";
+import AppearanceSettings from "./components/AppearanceSettings";
 import { useLocalStorage } from "./hooks/use-local-storage";
 import BrowserProfilesSettings from "./components/BrowserProfilesSettings";
 
@@ -160,7 +162,7 @@ const CacheManager = lazy(() => import("./components/CacheManager"));
 type TableMode = "preview" | "queue" | "empty";
 type BadgeVariant = "default" | "secondary" | "destructive" | "outline";
 type AppView = "downloader" | "thumbnail" | "tts" | "story" | "settings";
-type SettingsView = "cookies" | "browser-settings" | "cache";
+type SettingsView = "cookies" | "browser-settings" | "cache" | "appearance";
 type StoredView = AppView | SettingsView;
 
 type UnifiedTableRow = {
@@ -183,6 +185,12 @@ const SETTINGS_NAV_ITEMS: Array<{
  description: string;
  icon: typeof Cookie;
 }> = [
+ {
+  id: "appearance",
+  label: "Giao diện",
+  description: "Cấu hình giao diện ứng dụng và Canvas Thumbnail.",
+  icon: Palette,
+ },
  {
   id: "cookies",
   label: "Cookie thủ công",
@@ -1787,6 +1795,9 @@ function App() {
 
         {settingsView === "browser-settings" ? (
          <BrowserProfilesSettings />
+        ) : null}
+        {settingsView === "appearance" ? (
+         <AppearanceSettings />
         ) : null}
        </section>
       </div>

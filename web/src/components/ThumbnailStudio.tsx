@@ -786,7 +786,7 @@ function EmojiPicker({ selected, onSelect, className }: { selected: string, onSe
 type LeftPanelTab = "buttons" | "profiles" | "projects";
 type MainPanelTab = "canvas" | "config";
 type ConfigPanelTab = "button" | "profile";
-type EffectPanelTab = "effects" | "gemini" | "app";
+type EffectPanelTab = "effects" | "gemini";
 type EffectControlEffect = { id: string; buttonId: string; fields: ThumbnailButtonField[] };
 
 // ─── Version Comparator Component ──────────────────────────────────────────────
@@ -3458,7 +3458,6 @@ async function requestExportFolder() {
         <TabsList className={STUDIO_TOP_TABS_CLASS}>
          <TabsTrigger value="effects" className={STUDIO_TAB_TRIGGER_CLASS}>Hiệu ứng</TabsTrigger>
          <TabsTrigger value="gemini" className={STUDIO_TAB_TRIGGER_CLASS}>Gemini</TabsTrigger>
-         <TabsTrigger value="app" className={STUDIO_TAB_TRIGGER_CLASS}>Giao diện</TabsTrigger>
         </TabsList>
 
         <div className="flex items-center gap-2">
@@ -3643,129 +3642,6 @@ async function requestExportFolder() {
         </ScrollArea>
        </TabsContent>
 
-       <TabsContent value="app" className="flex-1 flex flex-col min-h-0 m-0 border-0">
-        <ScrollArea className="flex-1">
-         <div className="p-4 space-y-6">
-          <div>
-           <div className={cn(STUDIO_LABEL_CLASS, "mb-3 px-1 text-[13px] text-foreground/80")}>Cấu hình Ứng dụng</div>
-           <FieldGroup className="gap-5">
-           <Field>
-            <TooltipFieldLabel tooltip="Chọn giao diện sáng, tối, hoặc theo hệ thống." className={STUDIO_LABEL_CLASS}>Giao diện</TooltipFieldLabel>
-            <Select value={thumbnailSettingsDraft?.app_theme || "dark"} onValueChange={(v) => void handleSaveThumbnailSettings({ app_theme: v })}>
-             <SelectTrigger className={STUDIO_INPUT_CLASS}>
-              <SelectValue />
-             </SelectTrigger>
-             <SelectContent>
-              <SelectItem value="dark">Tối (Dark)</SelectItem>
-              <SelectItem value="light">Sáng (Light)</SelectItem>
-              <SelectItem value="system">Hệ thống (System)</SelectItem>
-             </SelectContent>
-            </Select>
-           </Field>
-          </FieldGroup>
-          </div>
-          <div>
-           <div className={cn(STUDIO_LABEL_CLASS, "mb-3 px-1 text-[13px] text-foreground/80")}>Cấu hình Canvas</div>
-           <FieldGroup className="gap-5">
-           <Field>
-            <TooltipFieldLabel tooltip="Thay đổi nền của vùng Canvas" className={STUDIO_LABEL_CLASS}>Dạng nền</TooltipFieldLabel>
-            <Select value={thumbnailSettingsDraft?.canvas_bg_type || "solid"} onValueChange={(v) => void handleSaveThumbnailSettings({ canvas_bg_type: v })}>
-             <SelectTrigger className={STUDIO_INPUT_CLASS}>
-              <SelectValue />
-             </SelectTrigger>
-             <SelectContent>
-              <SelectItem value="solid">Màu trơn</SelectItem>
-              <SelectItem value="grid">Lưới (Grid)</SelectItem>
-              <SelectItem value="dot">Chấm (Dot)</SelectItem>
-              <SelectItem value="custom">Ảnh tuỳ chỉnh</SelectItem>
-             </SelectContent>
-            </Select>
-           </Field>
-           
-           {thumbnailSettingsDraft?.canvas_bg_type === "custom" ? (
-             <>
-               <Field>
-                <TooltipFieldLabel tooltip="Upload ảnh làm nền Canvas" className={STUDIO_LABEL_CLASS}>Ảnh nền</TooltipFieldLabel>
-                <div className="flex gap-2">
-                 <Button variant="outline" className="flex-1 h-9 rounded-xl border-border/50 bg-background/50 text-xs" onClick={() => {
-                   const input = document.createElement("input");
-                   input.type = "file";
-                   input.accept = "image/*";
-                   input.onchange = (e) => {
-                    const file = (e.target as HTMLInputElement).files?.[0];
-                    if (file) {
-                     const reader = new FileReader();
-                     reader.onload = (ev) => void handleSaveThumbnailSettings({ canvas_bg_image: ev.target?.result as string });
-                     reader.readAsDataURL(file);
-                    }
-                   };
-                   input.click();
-                 }}>
-                  <Upload className="size-3 mr-2" /> Tải ảnh lên
-                 </Button>
-                 {thumbnailSettingsDraft?.canvas_bg_image && (
-                  <Button variant="ghost" size="icon" className="size-9 rounded-xl border border-border/50 bg-background/50 hover:bg-destructive/10 hover:text-destructive shrink-0" onClick={() => void handleSaveThumbnailSettings({ canvas_bg_image: "" })}>
-                   <Trash2 className="size-3" />
-                  </Button>
-                 )}
-                </div>
-               </Field>
-               <Field>
-                <TooltipFieldLabel tooltip="Cách ảnh nền vừa vặn" className={STUDIO_LABEL_CLASS}>Chế độ hiển thị</TooltipFieldLabel>
-                <Select value={thumbnailSettingsDraft?.canvas_bg_fit || "cover"} onValueChange={(v) => void handleSaveThumbnailSettings({ canvas_bg_fit: v })}>
-                 <SelectTrigger className={STUDIO_INPUT_CLASS}>
-                  <SelectValue />
-                 </SelectTrigger>
-                 <SelectContent>
-                  <SelectItem value="cover">Lấp đầy (Cover)</SelectItem>
-                  <SelectItem value="contain">Vừa vặn (Contain)</SelectItem>
-                  <SelectItem value="fill">Kéo giãn (Fill)</SelectItem>
-                 </SelectContent>
-                </Select>
-               </Field>
-             </>
-           ) : (
-             <Field>
-              <TooltipFieldLabel tooltip="Màu nền của Canvas" className={STUDIO_LABEL_CLASS}>Màu nền</TooltipFieldLabel>
-              <div className="flex gap-2">
-               <input
-                type="color"
-                value={thumbnailSettingsDraft?.canvas_bg_color || "#0f0f0f"}
-                onChange={(e) => void handleSaveThumbnailSettings({ canvas_bg_color: e.target.value })}
-                className="size-9 rounded-xl cursor-pointer"
-               />
-               <Input
-                value={thumbnailSettingsDraft?.canvas_bg_color || "#0f0f0f"}
-                onChange={(e) => void handleSaveThumbnailSettings({ canvas_bg_color: e.target.value })}
-                className={STUDIO_INPUT_CLASS}
-               />
-              </div>
-             </Field>
-           )}
-
-           <Field>
-            <TooltipFieldLabel tooltip="Độ mờ của nền" className={STUDIO_LABEL_CLASS}>Độ mờ ({thumbnailSettingsDraft?.canvas_bg_opacity ?? 100}%)</TooltipFieldLabel>
-            <Slider
-             value={[thumbnailSettingsDraft?.canvas_bg_opacity ?? 100]}
-             min={0} max={100} step={1}
-             onValueChange={(v) => void handleSaveThumbnailSettings({ canvas_bg_opacity: v[0] })}
-            />
-           </Field>
-
-           <Field>
-            <TooltipFieldLabel tooltip="Độ sáng của nền" className={STUDIO_LABEL_CLASS}>Độ sáng ({thumbnailSettingsDraft?.canvas_bg_brightness ?? 100}%)</TooltipFieldLabel>
-            <Slider
-             value={[thumbnailSettingsDraft?.canvas_bg_brightness ?? 100]}
-             min={0} max={200} step={1}
-             onValueChange={(v) => void handleSaveThumbnailSettings({ canvas_bg_brightness: v[0] })}
-            />
-           </Field>
-
-           </FieldGroup>
-          </div>
-         </div>
-        </ScrollArea>
-       </TabsContent>
       </Tabs>
 
       <div className="border-t border-border/50 bg-muted/10 p-4 space-y-3">
