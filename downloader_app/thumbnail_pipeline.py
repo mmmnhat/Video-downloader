@@ -196,6 +196,13 @@ class ThumbnailSettings:
     gemini_base_url: str = GEMINI_DEFAULT_URL
     gemini_response_timeout_ms: int = 120_000
     gemini_model: str = "flash"
+    app_theme: str = "dark"
+    canvas_bg_type: str = "solid"
+    canvas_bg_color: str = "#0f0f0f"
+    canvas_bg_image: str = ""
+    canvas_bg_fit: str = "cover"
+    canvas_bg_opacity: float = 100.0
+    canvas_bg_brightness: float = 100.0
 
 
 def default_buttons() -> list[ThumbnailButton]:
@@ -489,6 +496,13 @@ class ThumbnailPipelineManager:
                 gemini_base_url=gemini_base_url,
                 gemini_response_timeout_ms=max(20_000, min(300_000, gemini_response_timeout_ms)),
                 gemini_model=gemini_model,
+                app_theme=str(payload.get("app_theme", self._settings.app_theme)).strip() or self._settings.app_theme,
+                canvas_bg_type=str(payload.get("canvas_bg_type", self._settings.canvas_bg_type)).strip() or self._settings.canvas_bg_type,
+                canvas_bg_color=str(payload.get("canvas_bg_color", self._settings.canvas_bg_color)).strip() or self._settings.canvas_bg_color,
+                canvas_bg_image=str(payload.get("canvas_bg_image", self._settings.canvas_bg_image)),
+                canvas_bg_fit=str(payload.get("canvas_bg_fit", self._settings.canvas_bg_fit)).strip() or self._settings.canvas_bg_fit,
+                canvas_bg_opacity=float(payload.get("canvas_bg_opacity", self._settings.canvas_bg_opacity)),
+                canvas_bg_brightness=float(payload.get("canvas_bg_brightness", self._settings.canvas_bg_brightness)),
             )
             self._gems_cache = None
             self._gems_cache_time = 0.0

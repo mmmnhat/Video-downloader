@@ -50,6 +50,12 @@ interface MaskCanvasProps {
  requestedShapeOpacity?: number;
  requestedShapeHardness?: number;
  requestedShapeSize?: number;
+ canvasBgType?: string;
+ canvasBgColor?: string;
+ canvasBgImage?: string;
+ canvasBgFit?: string;
+ canvasBgOpacity?: number;
+ canvasBgBrightness?: number;
 }
 
 type Point = { x: number; y: number };
@@ -424,6 +430,12 @@ export default function MaskCanvas({
  requestedShapeOpacity,
  requestedShapeHardness,
  requestedShapeSize,
+ canvasBgType = "solid",
+ canvasBgColor = "#0f0f0f",
+ canvasBgImage = "",
+ canvasBgFit = "cover",
+ canvasBgOpacity = 100,
+ canvasBgBrightness = 100,
 }: MaskCanvasProps) {
  const containerRef = useRef<HTMLDivElement>(null);
  const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -1880,7 +1892,25 @@ export default function MaskCanvas({
  }, [activateFrameTool, activatePaintTool, activateShapeTool, handleRedo, handleUndo, notifyMaskChangeFrom, readMaskData, selectedShapeId]);
 
  return (
-  <div className={cn("relative flex h-full w-full flex-col bg-muted/10", className)}>
+  <div className={cn("relative flex h-full w-full flex-col overflow-hidden", className)} style={{ backgroundColor: canvasBgColor }}>
+   <div className="absolute inset-0 z-0 pointer-events-none" style={{
+    opacity: canvasBgOpacity / 100,
+    filter: `brightness(${canvasBgBrightness / 100})`,
+    ...(canvasBgType === "custom" && canvasBgImage ? {
+     backgroundImage: `url(${canvasBgImage})`,
+     backgroundSize: canvasBgFit,
+     backgroundPosition: "center",
+     backgroundRepeat: "no-repeat"
+    } : {}),
+    ...(canvasBgType === "grid" ? {
+     backgroundImage: 'linear-gradient(hsl(var(--foreground)/0.1) 1px, transparent 1px), linear-gradient(90deg, hsl(var(--foreground)/0.1) 1px, transparent 1px)',
+     backgroundSize: '20px 20px'
+    } : {}),
+    ...(canvasBgType === "dot" ? {
+     backgroundImage: 'radial-gradient(hsl(var(--foreground)/0.1) 1.5px, transparent 1.5px)',
+     backgroundSize: '20px 20px'
+    } : {})
+   }} />
    <div className="absolute top-4 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-full border border-border/50 bg-background/95 p-1.5 shadow-sm backdrop-blur">
     <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={handleUndo} disabled={historyIndex <= 0 || isSubmitting}>
      <Undo2 className="h-4 w-4" />

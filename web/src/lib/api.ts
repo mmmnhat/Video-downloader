@@ -411,6 +411,13 @@ export type ThumbnailSettings = {
   gemini_base_url: string;
   gemini_response_timeout_ms: number;
   gemini_model: string;
+  app_theme: "light" | "dark" | "system" | string;
+  canvas_bg_type: "solid" | "grid" | "dot" | "custom" | string;
+  canvas_bg_color: string;
+  canvas_bg_image: string;
+  canvas_bg_fit: "cover" | "contain" | "fill" | string;
+  canvas_bg_opacity: number;
+  canvas_bg_brightness: number;
 };
 
 export type ThumbnailButton = {
