@@ -871,6 +871,20 @@ class AppHandler(BaseHTTPRequestHandler):
             self._send_json({"path": image_path})
             return
 
+        if path == "/api/system/choose-file":
+            try:
+                payload = self._read_json_body() if self.headers.get("Content-Type", "").startswith("application/json") else {}
+            except Exception:
+                payload = {}
+            filters = payload.get("filters", [])
+            try:
+                file_path = self._choose_file(filters=filters)
+            except RuntimeError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                return
+            self._send_json({"path": file_path})
+            return
+
         if path == "/api/system/choose-browser":
             try:
                 browser_path = self._choose_browser()
@@ -1709,6 +1723,74 @@ class AppHandler(BaseHTTPRequestHandler):
         if not image_path:
             raise RuntimeError("Khong nhan duoc duong dan anh.")
         return image_path
+
+    def _choose_file(self, *, filters: list | None = None) -> str:
+        """Open a native file picker. filters = [{name, extensions: [...]}, ...]"""
+        from downloader_app.runtime import get_ui_bridge
+
+        # Build filetypes list for tkinter
+        filetypes_tk = []
+        if filters:
+            for f in filters:
+                name = f.get("name", "Files")
+                exts = f.get("extensions", [])
+                if exts:
+                    pattern = " ".join(f"*.{e}" for e in exts)
+                    filetypes_tk.append((name, pattern))
+        if not filetypes_tk:
+            filetypes_tk = [("All files", "*.*")]
+
+        if sys.platform == "darwin":
+            # Build AppleScript file type list
+            ext_list = []
+            if filters:
+                for f in filters:
+                    ext_list.extend(f.get("extensions", []))
+            if ext_list:
+                ext_script = "{" + ", ".join(f'"{e}"' for e in ext_list) + "}"
+                script = f'POSIX path of (choose file with prompt "Chon file" of type {ext_script})'
+            else:
+                script = 'POSIX path of (choose file with prompt "Chon file")'
+
+            completed = subprocess.run(
+                ["osascript", "-e", script],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if completed.returncode != 0:
+                message = (completed.stderr or completed.stdout or "Khong chon duoc file.").strip()
+                raise RuntimeError(message)
+            file_path = completed.stdout.strip()
+            if not file_path:
+                raise RuntimeError("Khong nhan duoc duong dan file.")
+            return file_path
+
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+        except Exception as exc:
+            raise RuntimeError("Khong mo duoc file picker.") from exc
+
+        root = tk.Tk()
+        root.withdraw()
+        root.update_idletasks()
+        try:
+            root.attributes("-topmost", True)
+        except Exception:
+            pass
+
+        try:
+            file_path = filedialog.askopenfilename(
+                title="Chon file",
+                filetypes=filetypes_tk + [("All files", "*.*")],
+            )
+        finally:
+            root.destroy()
+
+        if not file_path:
+            raise RuntimeError("Khong nhan duoc duong dan file.")
+        return file_path
 
 
 # Expected errors when a client disconnects mid-stream (Windows/Linux/Mac).
