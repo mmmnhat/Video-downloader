@@ -1,0 +1,1 @@
+var e=`gap-4`,t=`p-4 sm:p-6 lg:p-8`,n=`lg:top-8`,r=`lg:h-[calc(100dvh-4rem)]`;export{r as i,t as n,n as r,e as t};

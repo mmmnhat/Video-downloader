@@ -1,0 +1,506 @@
+{
+  "batches": [
+    {
+      "id": "8aac8409-7a31-4b2c-9f05-9b915dda078f",
+      "createdAt": "2026-05-04T18:51:55Z",
+      "lastUpdatedAt": "2026-05-04T18:54:02Z",
+      "status": "completed",
+      "sheetUrl": "https://docs.google.com/spreadsheets/d/1bi84D6hIO3k0svlhC9XZDMsSnhP4N6FK4DmI5aGo-6s/edit?gid=0#gid=0",
+      "textColumn": "Comment",
+      "filenamePrefix": null,
+      "channelPrefix": null,
+      "voiceQuery": "wXvR48IpOq9HACltTmt7",
+      "voiceId": "wXvR48IpOq9HACltTmt7",
+      "voiceName": "Dante - Growly and Menacing Monster",
+      "voiceLabel": "Dante - Growly and Menacing Monster",
+      "modelFamily": "v2",
+      "takeCount": 1,
+      "retryCount": 1,
+      "workerCount": 1,
+      "headless": false,
+      "stats": {
+        "queued": 0,
+        "running": 0,
+        "completed": 7,
+        "failed": 0,
+        "cancelled": 0,
+        "total": 7
+      },
+      "sheetId": "1bi84D6hIO3k0svlhC9XZDMsSnhP4N6FK4DmI5aGo-6s",
+      "gid": "0",
+      "sheetAccessMode": "browser_session",
+      "tagText": "",
+      "workDir": "/Volumes/External/Video-downloader/cache/tts/batches/8aac8409-7a31-4b2c-9f05-9b915dda078f",
+      "items": [
+        {
+          "id": "d8b4109b-9c0d-4123-a917-7a16ffd97757",
+          "sequenceLabel": "4",
+          "rowNumber": 6,
+          "text": "Go to help but fail too so got triples fail",
+          "status": "completed",
+          "pickedTakeId": "8aa146da-2c6a-4e6c-ae04-d11a5a0b8233",
+          "message": "4.mp3",
+          "startedAt": "2026-05-04T18:52:06Z",
+          "completedAt": "2026-05-04T18:52:11Z",
+          "takes": [
+            {
+              "id": "8aa146da-2c6a-4e6c-ae04-d11a5a0b8233",
+              "takeIndex": 1,
+              "takeLabel": "1",
+              "status": "completed",
+              "outputName": "4.mp3",
+              "outputPath": "/Volumes/External/Video-downloader/cache/tts/batches/8aac8409-7a31-4b2c-9f05-9b915dda078f/4.mp3",
+              "error": null,
+              "startedAt": "2026-05-04T18:52:06Z",
+              "completedAt": "2026-05-04T18:52:11Z",
+              "previewUrl": "/api/tts/audio/8aac8409-7a31-4b2c-9f05-9b915dda078f/8aa146da-2c6a-4e6c-ae04-d11a5a0b8233"
+            }
+          ]
+        },
+        {
+          "id": "4a3f9c49-4134-4dde-ae9b-da357cd09748",
+          "sequenceLabel": "11",
+          "rowNumber": 13,
+          "text": "That was the way let morning go of her",
+          "status": "completed",
+          "pickedTakeId": "c27f1023-beda-4c98-aa0a-b32b636e3704",
+          "message": "11.mp3",
+          "startedAt": "2026-05-04T18:52:11Z",
+          "completedAt": "2026-05-04T18:52:30Z",
+          "takes": [
+            {
+              "id": "c27f1023-beda-4c98-aa0a-b32b636e3704",
+              "takeIndex": 1,
+              "takeLabel": "1",
+              "status": "completed",
+              "outputName": "11.mp3",
+              "outputPath": "/Volumes/External/Video-downloader/cache/tts/batches/8aac8409-7a31-4b2c-9f05-9b915dda078f/11.mp3",
+              "error": null,
+              "startedAt": "2026-05-04T18:52:11Z",
+              "completedAt": "2026-05-04T18:52:30Z",
+              "previewUrl": "/api/tts/audio/8aac8409-7a31-4b2c-9f05-9b915dda078f/c27f1023-beda-4c98-aa0a-b32b636e3704"
+            }
+          ]
+        },
+        {
+          "id": "af85003e-7daf-4aa3-aec9-8e508e5f1e57",
+          "sequenceLabel": "13",
+          "rowNumber": 15,
+          "text": "Shock and funny all in one",
+          "status": "completed",
+          "pickedTakeId": "aa82a7fb-862f-4af3-bb88-bcd66337d217",
+          "message": "13.mp3",
+          "startedAt": "2026-05-04T18:52:30Z",
+          "completedAt": "2026-05-04T18:52:48Z",
+          "takes": [
+            {
+              "id": "aa82a7fb-862f-4af3-bb88-bcd66337d217",
+              "takeIndex": 1,
+              "takeLabel": "1",
+              "status": "completed",
+              "outputName": "13.mp3",
+              "outputPath": "/Volumes/External/Video-downloader/cache/tts/batches/8aac8409-7a31-4b2c-9f05-9b915dda078f/13.mp3",
+              "error": null,
+              "startedAt": "2026-05-04T18:52:30Z",
+              "completedAt": "2026-05-04T18:52:48Z",
+              "previewUrl": "/api/tts/audio/8aac8409-7a31-4b2c-9f05-9b915dda078f/aa82a7fb-862f-4af3-bb88-bcd66337d217"
+            }
+          ]
+        },
+        {
+          "id": "acd9198d-a56a-48aa-9679-9a9195b55a06",
+          "sequenceLabel": "15",
+          "rowNumber": 17,
+          "text": "By the way after this fail he still do it perfect",
+          "status": "completed",
+          "pickedTakeId": "5612a36f-95fd-4b6c-9b7e-41269129b627",
+          "message": "15.mp3",
+          "startedAt": "2026-05-04T18:52:48Z",
+          "completedAt": "2026-05-04T18:53:07Z",
+          "takes": [
+            {
+              "id": "5612a36f-95fd-4b6c-9b7e-41269129b627",
+              "takeIndex": 1,
+              "takeLabel": "1",
+              "status": "completed",
+              "outputName": "15.mp3",
+              "outputPath": "/Volumes/External/Video-downloader/cache/tts/batches/8aac8409-7a31-4b2c-9f05-9b915dda078f/15.mp3",
+              "error": null,
+              "startedAt": "2026-05-04T18:52:48Z",
+              "completedAt": "2026-05-04T18:53:07Z",
+              "previewUrl": "/api/tts/audio/8aac8409-7a31-4b2c-9f05-9b915dda078f/5612a36f-95fd-4b6c-9b7e-41269129b627"
+            }
+          ]
+        },
+        {
+          "id": "a95e284a-ef48-4ff7-8b0d-518434d37ef4",
+          "sequenceLabel": "18",
+          "rowNumber": 20,
+          "text": "His fail like a slow tumbling",
+          "status": "completed",
+          "pickedTakeId": "2d25bb8c-0c7a-4e75-9e3b-2bbaf98bebcc",
+          "message": "18.mp3",
+          "startedAt": "2026-05-04T18:53:07Z",
+          "completedAt": "2026-05-04T18:53:25Z",
+          "takes": [
+            {
+              "id": "2d25bb8c-0c7a-4e75-9e3b-2bbaf98bebcc",
+              "takeIndex": 1,
+              "takeLabel": "1",
+              "status": "completed",
+              "outputName": "18.mp3",
+              "outputPath": "/Volumes/External/Video-downloader/cache/tts/batches/8aac8409-7a31-4b2c-9f05-9b915dda078f/18.mp3",
+              "error": null,
+              "startedAt": "2026-05-04T18:53:07Z",
+              "completedAt": "2026-05-04T18:53:25Z",
+              "previewUrl": "/api/tts/audio/8aac8409-7a31-4b2c-9f05-9b915dda078f/2d25bb8c-0c7a-4e75-9e3b-2bbaf98bebcc"
+            }
+          ]
+        },
+        {
+          "id": "64de5b8f-a00a-489f-83bb-5e84dc0a76a2",
+          "sequenceLabel": "23",
+          "rowNumber": 25,
+          "text": "Look scary but funny",
+          "status": "completed",
+          "pickedTakeId": "b8cddc2c-5fb0-4c21-b7ed-e6d5c3ff3288",
+          "message": "23.mp3",
+          "startedAt": "2026-05-04T18:53:25Z",
+          "completedAt": "2026-05-04T18:53:43Z",
+          "takes": [
+            {
+              "id": "b8cddc2c-5fb0-4c21-b7ed-e6d5c3ff3288",
+              "takeIndex": 1,
+              "takeLabel": "1",
+              "status": "completed",
+              "outputName": "23.mp3",
+              "outputPath": "/Volumes/External/Video-downloader/cache/tts/batches/8aac8409-7a31-4b2c-9f05-9b915dda078f/23.mp3",
+              "error": null,
+              "startedAt": "2026-05-04T18:53:25Z",
+              "completedAt": "2026-05-04T18:53:43Z",
+              "previewUrl": "/api/tts/audio/8aac8409-7a31-4b2c-9f05-9b915dda078f/b8cddc2c-5fb0-4c21-b7ed-e6d5c3ff3288"
+            }
+          ]
+        },
+        {
+          "id": "5a46d57e-bb06-4aa7-9dc8-c3440fa3deed",
+          "sequenceLabel": "26",
+          "rowNumber": 28,
+          "text": "Try the best but made a mess of everything",
+          "status": "completed",
+          "pickedTakeId": "1569a7fa-db2d-4c84-9ddf-d092827bab93",
+          "message": "26.mp3",
+          "startedAt": "2026-05-04T18:53:43Z",
+          "completedAt": "2026-05-04T18:54:01Z",
+          "takes": [
+            {
+              "id": "1569a7fa-db2d-4c84-9ddf-d092827bab93",
+              "takeIndex": 1,
+              "takeLabel": "1",
+              "status": "completed",
+              "outputName": "26.mp3",
+              "outputPath": "/Volumes/External/Video-downloader/cache/tts/batches/8aac8409-7a31-4b2c-9f05-9b915dda078f/26.mp3",
+              "error": null,
+              "startedAt": "2026-05-04T18:53:43Z",
+              "completedAt": "2026-05-04T18:54:01Z",
+              "previewUrl": "/api/tts/audio/8aac8409-7a31-4b2c-9f05-9b915dda078f/1569a7fa-db2d-4c84-9ddf-d092827bab93"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "da0b0f0b-0b6e-42b0-97c6-55de41399be0",
+      "createdAt": "2026-04-28T18:47:03Z",
+      "lastUpdatedAt": "2026-05-04T18:28:54Z",
+      "status": "completed_with_errors",
+      "sheetUrl": "https://docs.google.com/spreadsheets/d/1bi84D6hIO3k0svlhC9XZDMsSnhP4N6FK4DmI5aGo-6s/edit?gid=0#gid=0",
+      "textColumn": "Comment",
+      "filenamePrefix": null,
+      "channelPrefix": "kb2",
+      "voiceQuery": "wXvR48IpOq9HACltTmt7",
+      "voiceId": "wXvR48IpOq9HACltTmt7",
+      "voiceName": "Dante - Growly and Menacing Monster",
+      "voiceLabel": "Dante - Growly and Menacing Monster",
+      "modelFamily": "v3",
+      "takeCount": 1,
+      "retryCount": 1,
+      "workerCount": 6,
+      "headless": false,
+      "stats": {
+        "queued": 0,
+        "running": 0,
+        "completed": 4,
+        "failed": 3,
+        "cancelled": 0,
+        "total": 7
+      },
+      "sheetId": "1bi84D6hIO3k0svlhC9XZDMsSnhP4N6FK4DmI5aGo-6s",
+      "gid": "0",
+      "sheetAccessMode": "browser_session",
+      "tagText": "[excited]",
+      "workDir": "/Volumes/External/Video-downloader/cache/tts/batches/da0b0f0b-0b6e-42b0-97c6-55de41399be0",
+      "items": [
+        {
+          "id": "508878f6-e6f9-4f8e-8a24-e6525852a90a",
+          "sequenceLabel": "4",
+          "rowNumber": 6,
+          "text": "Go to help but fail too so got triples fail",
+          "status": "failed",
+          "pickedTakeId": null,
+          "message": "Da gen xong nhung khong tim thay nut download tren ElevenLabs.",
+          "startedAt": "2026-04-28T18:47:31Z",
+          "completedAt": "2026-04-28T18:47:55Z",
+          "takes": [
+            {
+              "id": "f54fb478-3e8f-4c8b-b513-853c37dafe10",
+              "takeIndex": 1,
+              "takeLabel": "1.1",
+              "status": "failed",
+              "outputName": "kb2.4.1.mp3",
+              "outputPath": "/Volumes/External/Video-downloader/cache/tts/batches/da0b0f0b-0b6e-42b0-97c6-55de41399be0/kb2.4.1.mp3",
+              "error": "Da gen xong nhung khong tim thay nut download tren ElevenLabs.",
+              "startedAt": "2026-04-28T18:47:31Z",
+              "completedAt": "2026-04-28T18:47:55Z",
+              "previewUrl": null
+            },
+            {
+              "id": "aedf7483-79d5-4f18-a320-d3c916a40f02",
+              "takeIndex": 1,
+              "takeLabel": "1.2",
+              "status": "failed",
+              "outputName": "kb2.4.2.mp3",
+              "outputPath": "/Volumes/External/Video-downloader/cache/tts/batches/da0b0f0b-0b6e-42b0-97c6-55de41399be0/kb2.4.2.mp3",
+              "error": "Da gen xong nhung khong tim thay nut download tren ElevenLabs.",
+              "startedAt": "2026-04-28T18:47:31Z",
+              "completedAt": "2026-04-28T18:47:55Z",
+              "previewUrl": null
+            }
+          ]
+        },
+        {
+          "id": "de2888d5-1bbe-4616-8df0-ea7eddbed655",
+          "sequenceLabel": "11",
+          "rowNumber": 13,
+          "text": "That was the way let morning go of her",
+          "status": "completed",
+          "pickedTakeId": "b65e8511-2571-4219-8643-844fc129ef07",
+          "message": "kb2.11.1.mp3",
+          "startedAt": "2026-04-28T18:47:31Z",
+          "completedAt": "2026-04-28T18:47:58Z",
+          "takes": [
+            {
+              "id": "b65e8511-2571-4219-8643-844fc129ef07",
+              "takeIndex": 1,
+              "takeLabel": "1.1",
+              "status": "completed",
+              "outputName": "kb2.11.1.mp3",
+              "outputPath": "/Volumes/External/Video-downloader/cache/tts/batches/da0b0f0b-0b6e-42b0-97c6-55de41399be0/kb2.11.1.mp3",
+              "error": null,
+              "startedAt": "2026-04-28T18:47:31Z",
+              "completedAt": "2026-04-28T18:47:58Z",
+              "previewUrl": null
+            },
+            {
+              "id": "bdec01a3-db0d-4d6b-b724-87039a5a4499",
+              "takeIndex": 1,
+              "takeLabel": "1.2",
+              "status": "completed",
+              "outputName": "kb2.11.2.mp3",
+              "outputPath": "/Volumes/External/Video-downloader/cache/tts/batches/da0b0f0b-0b6e-42b0-97c6-55de41399be0/kb2.11.2.mp3",
+              "error": null,
+              "startedAt": "2026-04-28T18:47:31Z",
+              "completedAt": "2026-04-28T18:47:58Z",
+              "previewUrl": null
+            }
+          ]
+        },
+        {
+          "id": "9f97041e-e4f2-40b0-8d03-9a5a3938e839",
+          "sequenceLabel": "13",
+          "rowNumber": 15,
+          "text": "Shock and funny all in one",
+          "status": "failed",
+          "pickedTakeId": null,
+          "message": "Chi tim thay 1 nut download cho 2 take.",
+          "startedAt": "2026-04-28T18:47:32Z",
+          "completedAt": "2026-04-28T18:47:55Z",
+          "takes": [
+            {
+              "id": "9635a3dc-7e51-452c-a442-953e2e88c6b9",
+              "takeIndex": 1,
+              "takeLabel": "1.1",
+              "status": "failed",
+              "outputName": "kb2.13.1.mp3",
+              "outputPath": "/Volumes/External/Video-downloader/cache/tts/batches/da0b0f0b-0b6e-42b0-97c6-55de41399be0/kb2.13.1.mp3",
+              "error": "Chi tim thay 1 nut download cho 2 take.",
+              "startedAt": "2026-04-28T18:47:32Z",
+              "completedAt": "2026-04-28T18:47:55Z",
+              "previewUrl": null
+            },
+            {
+              "id": "66beac24-373e-437d-819a-7e4f68c7bd94",
+              "takeIndex": 1,
+              "takeLabel": "1.2",
+              "status": "failed",
+              "outputName": "kb2.13.2.mp3",
+              "outputPath": "/Volumes/External/Video-downloader/cache/tts/batches/da0b0f0b-0b6e-42b0-97c6-55de41399be0/kb2.13.2.mp3",
+              "error": "Chi tim thay 1 nut download cho 2 take.",
+              "startedAt": "2026-04-28T18:47:32Z",
+              "completedAt": "2026-04-28T18:47:55Z",
+              "previewUrl": null
+            }
+          ]
+        },
+        {
+          "id": "5ca7a926-4495-4a10-9306-76f995c7479a",
+          "sequenceLabel": "15",
+          "rowNumber": 17,
+          "text": "By the way after this fail he still do it perfect",
+          "status": "failed",
+          "pickedTakeId": null,
+          "message": "Da gen xong nhung khong tim thay nut download tren ElevenLabs.",
+          "startedAt": "2026-04-28T18:47:42Z",
+          "completedAt": "2026-04-28T18:48:07Z",
+          "takes": [
+            {
+              "id": "ec5d4e16-809e-4c4b-b106-8c2e6a77f469",
+              "takeIndex": 1,
+              "takeLabel": "1.1",
+              "status": "failed",
+              "outputName": "kb2.15.1.mp3",
+              "outputPath": "/Volumes/External/Video-downloader/cache/tts/batches/da0b0f0b-0b6e-42b0-97c6-55de41399be0/kb2.15.1.mp3",
+              "error": "Da gen xong nhung khong tim thay nut download tren ElevenLabs.",
+              "startedAt": "2026-04-28T18:47:42Z",
+              "completedAt": "2026-04-28T18:48:07Z",
+              "previewUrl": null
+            },
+            {
+              "id": "b88acacb-f511-45e3-b2cd-9cea92891a6c",
+              "takeIndex": 1,
+              "takeLabel": "1.2",
+              "status": "failed",
+              "outputName": "kb2.15.2.mp3",
+              "outputPath": "/Volumes/External/Video-downloader/cache/tts/batches/da0b0f0b-0b6e-42b0-97c6-55de41399be0/kb2.15.2.mp3",
+              "error": "Da gen xong nhung khong tim thay nut download tren ElevenLabs.",
+              "startedAt": "2026-04-28T18:47:42Z",
+              "completedAt": "2026-04-28T18:48:07Z",
+              "previewUrl": null
+            }
+          ]
+        },
+        {
+          "id": "b4e9ad83-8af2-41c0-ae4e-8959d20fda18",
+          "sequenceLabel": "18",
+          "rowNumber": 20,
+          "text": "His fail like a slow tumbling",
+          "status": "completed",
+          "pickedTakeId": "9d453ae5-6941-4cf8-826b-4418695c6887",
+          "message": "kb2.18.1.mp3",
+          "startedAt": "2026-04-28T18:47:55Z",
+          "completedAt": "2026-04-28T18:48:06Z",
+          "takes": [
+            {
+              "id": "9d453ae5-6941-4cf8-826b-4418695c6887",
+              "takeIndex": 1,
+              "takeLabel": "1.1",
+              "status": "completed",
+              "outputName": "kb2.18.1.mp3",
+              "outputPath": "/Volumes/External/Video-downloader/cache/tts/batches/da0b0f0b-0b6e-42b0-97c6-55de41399be0/kb2.18.1.mp3",
+              "error": null,
+              "startedAt": "2026-04-28T18:47:55Z",
+              "completedAt": "2026-04-28T18:48:06Z",
+              "previewUrl": null
+            },
+            {
+              "id": "a3a1dc65-5ba4-48cd-8dc5-9f62446d6333",
+              "takeIndex": 1,
+              "takeLabel": "1.2",
+              "status": "completed",
+              "outputName": "kb2.18.2.mp3",
+              "outputPath": "/Volumes/External/Video-downloader/cache/tts/batches/da0b0f0b-0b6e-42b0-97c6-55de41399be0/kb2.18.2.mp3",
+              "error": null,
+              "startedAt": "2026-04-28T18:47:55Z",
+              "completedAt": "2026-04-28T18:48:06Z",
+              "previewUrl": null
+            }
+          ]
+        },
+        {
+          "id": "fdd66a74-7868-46e2-9996-3aaf4c667ee6",
+          "sequenceLabel": "23",
+          "rowNumber": 25,
+          "text": "Look scary but funny",
+          "status": "completed",
+          "pickedTakeId": "a151839e-c3d1-4168-a964-3a19966ac69c",
+          "message": "kb2.23.1.mp3",
+          "startedAt": "2026-04-28T18:47:55Z",
+          "completedAt": "2026-04-28T18:48:16Z",
+          "takes": [
+            {
+              "id": "a151839e-c3d1-4168-a964-3a19966ac69c",
+              "takeIndex": 1,
+              "takeLabel": "1.1",
+              "status": "completed",
+              "outputName": "kb2.23.1.mp3",
+              "outputPath": "/Volumes/External/Video-downloader/cache/tts/batches/da0b0f0b-0b6e-42b0-97c6-55de41399be0/kb2.23.1.mp3",
+              "error": null,
+              "startedAt": "2026-04-28T18:47:55Z",
+              "completedAt": "2026-04-28T18:48:16Z",
+              "previewUrl": null
+            },
+            {
+              "id": "ee8994aa-189f-4bf0-a24b-e1fbff10f933",
+              "takeIndex": 1,
+              "takeLabel": "1.2",
+              "status": "completed",
+              "outputName": "kb2.23.2.mp3",
+              "outputPath": "/Volumes/External/Video-downloader/cache/tts/batches/da0b0f0b-0b6e-42b0-97c6-55de41399be0/kb2.23.2.mp3",
+              "error": null,
+              "startedAt": "2026-04-28T18:47:55Z",
+              "completedAt": "2026-04-28T18:48:16Z",
+              "previewUrl": null
+            }
+          ]
+        },
+        {
+          "id": "14cdc3f5-5719-4916-9c08-00644cf12f6a",
+          "sequenceLabel": "26",
+          "rowNumber": 28,
+          "text": "Try the best but made a mess of everything",
+          "status": "completed",
+          "pickedTakeId": "f7ab97fc-491f-44e8-a5bb-84f891d77991",
+          "message": "kb2.26.1.mp3",
+          "startedAt": "2026-04-28T18:47:58Z",
+          "completedAt": "2026-04-28T18:48:09Z",
+          "takes": [
+            {
+              "id": "f7ab97fc-491f-44e8-a5bb-84f891d77991",
+              "takeIndex": 1,
+              "takeLabel": "1.1",
+              "status": "completed",
+              "outputName": "kb2.26.1.mp3",
+              "outputPath": "/Volumes/External/Video-downloader/cache/tts/batches/da0b0f0b-0b6e-42b0-97c6-55de41399be0/kb2.26.1.mp3",
+              "error": null,
+              "startedAt": "2026-04-28T18:47:58Z",
+              "completedAt": "2026-04-28T18:48:09Z",
+              "previewUrl": null
+            },
+            {
+              "id": "8b0da95e-286f-4bcc-9ac0-b1206a8c5272",
+              "takeIndex": 1,
+              "takeLabel": "1.2",
+              "status": "completed",
+              "outputName": "kb2.26.2.mp3",
+              "outputPath": "/Volumes/External/Video-downloader/cache/tts/batches/da0b0f0b-0b6e-42b0-97c6-55de41399be0/kb2.26.2.mp3",
+              "error": null,
+              "startedAt": "2026-04-28T18:47:58Z",
+              "completedAt": "2026-04-28T18:48:09Z",
+              "previewUrl": null
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
