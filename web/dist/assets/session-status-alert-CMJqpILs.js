@@ -1,1 +1,0 @@
-import{zt as e}from"./api-C3Mhxf8y.js";import{n as t,r as n,t as r}from"./alert-DK7dD1mx.js";var i=e();function a({authenticated:e,notReadyTitle:a,message:o}){return e?null:(0,i.jsxs)(r,{children:[(0,i.jsx)(n,{children:a}),(0,i.jsx)(t,{className:`text-xs`,children:o})]})}export{a as t};

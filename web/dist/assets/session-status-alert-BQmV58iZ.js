@@ -1,0 +1,1 @@
+import{Rt as e}from"./api-tRRTyCA_.js";import{n as t,r as n,t as r}from"./alert-DJUekkSU.js";var i=e();function a({authenticated:e,notReadyTitle:a,message:o}){return e?null:(0,i.jsxs)(r,{children:[(0,i.jsx)(n,{children:a}),(0,i.jsx)(t,{className:`text-xs`,children:o})]})}export{a as t};

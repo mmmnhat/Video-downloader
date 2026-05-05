@@ -30,7 +30,6 @@ import {
  updateStoryGlobalPrompt, listStoryGems, controlStoryQueue,
  chooseFolder, openFolder, clearStoryVideos, exportStorySelected,
  selectStoryProject, renameStoryProject, deleteStoryProject, createStoryProject,
- chooseFile
 } from "@/lib/api";
 import type { StoryProjectSummary } from "@/lib/api";
 import { useLocalStorage } from "@/hooks/use-local-storage";
@@ -607,11 +606,7 @@ export function StoryStudio({ isActive = true }: StoryStudioProps) {
 
   const handleCreateProject = useCallback(async () => {
     try {
-      const { path } = await chooseFile({
-        filters: [
-          { name: "Video Files", extensions: ["mp4", "mov", "mkv", "avi", "m4v"] }
-        ]
-      });
+      const { path } = await chooseFolder();
       if (!path) return;
       setSourceFolderPath(path);
       const bootstrap = await createStoryProject("", path);
@@ -635,6 +630,7 @@ export function StoryStudio({ isActive = true }: StoryStudioProps) {
       toast.error(getErrorMessage(error));
     }
   }, [setProjects, setActiveProjectId, setVideoSummaries, setSelectedVideoId]);
+
 
  const handleSaveGlobalPrompt = useCallback(async () => {
   setSavingPrompt(true);
