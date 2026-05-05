@@ -409,6 +409,7 @@ class TtsBatch:
     work_dir: str
     filename_prefix: str | None = None
     channel_prefix: str | None = None
+    name: str | None = None
     items: list[TtsItem] = field(default_factory=list)
 
 
@@ -2528,6 +2529,28 @@ class TtsManager:
             self._persist_state_locked()
             return self._serialize_batch_detail(batch)
 
+    def delete_batch(self, batch_id: str) -> dict:
+        with self._lock:
+            batch = self._require_batch(batch_id)
+            if batch.status in {"queued", "running", "cancelling"}:
+                # Signal cancellation first
+                self._cancel_events.setdefault(batch_id, threading.Event()).set()
+                batch.status = "cancelled"
+                batch.last_updated_at = utc_now()
+            del self._batches[batch_id]
+            self._cancel_events.pop(batch_id, None)
+            self._pause_events.pop(batch_id, None)
+            self._persist_state_locked()
+        return {"ok": True, "deleted": batch_id}
+
+    def rename_batch(self, batch_id: str, name: str) -> dict:
+        with self._lock:
+            batch = self._require_batch(batch_id)
+            batch.name = name.strip() or None
+            batch.last_updated_at = utc_now()
+            self._persist_state_locked()
+            return self._serialize_batch_summary(batch)
+
     def retry_failed(self, batch_id: str) -> dict:
         with self._lock:
             batch = self._require_batch(batch_id)
@@ -3002,6 +3025,7 @@ class TtsManager:
         stats = self._batch_stats(batch)
         return {
             "id": batch.id,
+            "name": batch.name,
             "createdAt": batch.created_at,
             "lastUpdatedAt": batch.last_updated_at,
             "status": batch.status,

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef, useTransition
 import { 
  RefreshCw, Play, Pause, ChevronRight, ChevronDown, Trash2,
  Loader2, X, FileText, Video as VideoIcon, History as HistoryIcon,
- Layers, RotateCcw, Brain, Zap, Sparkles, Maximize2
+ Layers, RotateCcw, Brain, Zap, Sparkles, Maximize2, FolderTree, Pencil, Search, Plus
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { 
@@ -28,8 +28,11 @@ import {
  listStoryVideos, getStoryVideo, applyStoryAction, 
  updateStorySettings, getStoryBootstrap, getStoryAssetUrl,
  updateStoryGlobalPrompt, listStoryGems, controlStoryQueue,
- chooseFolder, openFolder, clearStoryVideos, exportStorySelected
+ chooseFolder, openFolder, clearStoryVideos, exportStorySelected,
+ selectStoryProject, renameStoryProject, deleteStoryProject, createStoryProject,
+ chooseFile
 } from "@/lib/api";
+import type { StoryProjectSummary } from "@/lib/api";
 import { useLocalStorage } from "@/hooks/use-local-storage";
 import {
  TAB_CARD_GAP_CLASS,
@@ -90,6 +93,8 @@ export type StoryMarker = {
  seedPrompt: string;
  status: string;
  steps: StoryStep[];
+ parentMarkerId: string | null;
+ variantIndex: number;
 };
 
 export type StoryVideoSummary = {
@@ -104,6 +109,7 @@ export type StoryVideoSummary = {
  acceptedSteps?: {
   videoId: string;
   videoName: string;
+  markerId: string;
   markerIndex: number;
   stepId: string;
   stepIndex: number;
@@ -119,7 +125,7 @@ export type StoryVideoDetail = StoryVideoSummary & {
 };
 
 type StoryPanelTab = "gemini" | "prompt";
-type StoryMainTab = "videos" | "collection" | "history";
+type StoryMainTab = "videos" | "collection" | "history" | "projects";
 type StoryQueueFilter = "all" | "running" | "review" | "queued";
 type StoryStepAction = "regenerate";
 
@@ -189,7 +195,10 @@ type StoryStudioProps = {
 };
 
 export function StoryStudio({ isActive = true }: StoryStudioProps) {
- const [selectedExportKeys, setSelectedExportKeys] = useState<Set<string>>(new Set());
+ const [projects, setProjects] = useState<StoryProjectSummary[]>([]);
+ const [activeProjectId, setActiveProjectId] = useLocalStorage<string | null>("story.activeProjectId", null);
+ const [projectSearchQuery, setProjectSearchQuery] = useState("");
+  const [selectedExportKeys, setSelectedExportKeys] = useState<Set<string>>(new Set());
  const [exportingCollection, setExportingCollection] = useState(false);
  const [bootLoading, setBootLoading] = useState(true);
  const [sessionStatus, setSessionStatus] = useState<StorySessionStatus | null>(null);
@@ -226,6 +235,38 @@ export function StoryStudio({ isActive = true }: StoryStudioProps) {
   useLocalStorage<string | null>("story.selectedStepId", null);
  const [selectedAttemptId, setSelectedAttemptId] =
   useLocalStorage<string | null>("story.selectedAttemptId", null);
+
+  const markerVariants = useMemo(() => {
+    if (!selectedVideo || !selectedMarkerId) return [];
+    const currentMarker = selectedVideo.markers.find(m => m.id === selectedMarkerId);
+    if (!currentMarker) return [];
+    const parentId = currentMarker.parentMarkerId || currentMarker.id;
+    return selectedVideo.markers
+      .filter(m => m.id === parentId || m.parentMarkerId === parentId)
+      .sort((a, b) => (a.variantIndex || 0) - (b.variantIndex || 0));
+  }, [selectedVideo, selectedMarkerId]);
+
+  const switchVariant = useCallback((targetMarkerId: string) => {
+    if (!selectedVideo) return;
+    const targetMarker = selectedVideo.markers.find(m => m.id === targetMarkerId);
+    if (!targetMarker) return;
+    
+    const currentStep = selectedVideo.markers.flatMap(m => m.steps).find(s => s.id === selectedStepId);
+    
+    setSelectedMarkerId(targetMarkerId);
+    
+    // Attempt to keep same step index if possible
+    if (currentStep) {
+      const matchingStep = targetMarker.steps.find(s => s.index === currentStep.index);
+      if (matchingStep) {
+        setSelectedStepId(matchingStep.id);
+        setSelectedAttemptId(matchingStep.selectedAttemptId || matchingStep.attempts.at(-1)?.id || null);
+      } else if (targetMarker.steps.length > 0) {
+        setSelectedStepId(targetMarker.steps[0].id);
+        setSelectedAttemptId(targetMarker.steps[0].selectedAttemptId || targetMarker.steps[0].attempts.at(-1)?.id || null);
+      }
+    }
+  }, [selectedVideo, selectedMarkerId, selectedStepId]);
  const selectedMarkerIdRef = useRef<string | null>(selectedMarkerId);
  const selectedStepIdRef = useRef<string | null>(selectedStepId);
  const selectedAttemptIdRef = useRef<string | null>(selectedAttemptId);
@@ -253,6 +294,48 @@ export function StoryStudio({ isActive = true }: StoryStudioProps) {
   }
   setActionBusyKey((current) => (current === key ? null : current));
  }, []);
+ const sortedProjects = useMemo(() => {
+  if (!projectSearchQuery) return projects;
+  return projects.filter(p => p.name.toLowerCase().includes(projectSearchQuery.toLowerCase()));
+ }, [projects, projectSearchQuery]);
+
+ const handleSelectProject = useCallback(async (projectId: string) => {
+  try {
+   const bootstrap = await selectStoryProject(projectId);
+   setProjects(bootstrap.projects || []);
+   setActiveProjectId(bootstrap.activeProjectId || null);
+   setVideoSummaries(bootstrap.videoSummaries);
+   setSelectedVideoId(bootstrap.activeVideoId || bootstrap.videoSummaries[0]?.id || null);
+  } catch (error) {
+   toast.error(getErrorMessage(error));
+  }
+ }, [setActiveProjectId, setSelectedVideoId]);
+
+ const handleRenameProject = useCallback(async (projectId: string, currentName: string) => {
+  const newName = window.prompt("Nhập tên mới cho dự án:", currentName);
+  if (!newName || newName === currentName) return;
+    try {
+      const bootstrap = await renameStoryProject(projectId, newName);
+      setProjects(bootstrap.projects || []);
+      toast.success("Đã đổi tên dự án.");
+    } catch (error) {
+      toast.error(getErrorMessage(error));
+    }
+ }, []);
+
+ const handleDeleteProject = useCallback(async (projectId: string) => {
+  if (!window.confirm("Bạn có chắc chắn muốn xóa dự án này? Toàn bộ video sẽ bị ẩn/xóa khỏi workspace (nhưng file gốc không bị xóa).")) return;
+  try {
+   const bootstrap = await deleteStoryProject(projectId);
+   setProjects(bootstrap.projects || []);
+   setActiveProjectId(bootstrap.activeProjectId || null);
+      setVideoSummaries(bootstrap.videoSummaries || []);
+      setSelectedVideoId(bootstrap.activeVideoId || bootstrap.videoSummaries[0]?.id || null);
+   toast.success("Đã xóa dự án.");
+  } catch (error) {
+   toast.error(getErrorMessage(error));
+  }
+ }, [setActiveProjectId, setSelectedVideoId]);
 
  useEffect(() => {
   selectedMarkerIdRef.current = selectedMarkerId;
@@ -336,6 +419,8 @@ export function StoryStudio({ isActive = true }: StoryStudioProps) {
        ? selectedVideoId
        : bootstrap.videoSummaries[0]?.id ?? null;
     setSessionStatus(bootstrap.sessionStatus);
+    setProjects(bootstrap.projects || []);
+    setActiveProjectId(bootstrap.activeProjectId || null);
     setVideoSummaries(bootstrap.videoSummaries);
     setSettingsDraft(bootstrap.settings);
     setGlobalPrompt(bootstrap.globalPrompt || "");
@@ -509,16 +594,47 @@ export function StoryStudio({ isActive = true }: StoryStudioProps) {
   }
  }, [refreshSummaries]);
 
- const handleChooseSourceFolder = useCallback(async () => {
-  try {
-   const { path } = await chooseFolder();
-   if (!path) return;
-   setSourceFolderPath(path);
-   await handleImportSourceFolder(path);
-  } catch (error) {
-   toast.error(getErrorMessage(error));
-  }
- }, [handleImportSourceFolder]);
+  const handleChooseSourceFolder = useCallback(async () => {
+    try {
+      const { path } = await chooseFolder();
+      if (!path) return;
+      setSourceFolderPath(path);
+      await handleImportSourceFolder(path);
+    } catch (error) {
+      toast.error(getErrorMessage(error));
+    }
+  }, [handleImportSourceFolder]);
+
+  const handleCreateProject = useCallback(async () => {
+    try {
+      const { path } = await chooseFile({
+        filters: [
+          { name: "Video Files", extensions: ["mp4", "mov", "mkv", "avi", "m4v"] }
+        ]
+      });
+      if (!path) return;
+      setSourceFolderPath(path);
+      const bootstrap = await createStoryProject("", path);
+      if (bootstrap.projects) {
+        setProjects(bootstrap.projects);
+        setActiveProjectId(bootstrap.activeProjectId || null);
+        setVideoSummaries(bootstrap.videoSummaries || []);
+        const targetVideoId = bootstrap.activeVideoId || bootstrap.videoSummaries[0]?.id || null;
+        setSelectedVideoId(targetVideoId);
+        
+        if (targetVideoId) {
+          void loadVideoDetail(targetVideoId);
+        }
+
+        const newProj = bootstrap.projects.find((p: any) => p.id === bootstrap.activeProjectId);
+        if (newProj) {
+          toast.success(`Đã tạo dự án mới: ${newProj.name}`);
+        }
+      }
+    } catch (error) {
+      toast.error(getErrorMessage(error));
+    }
+  }, [setProjects, setActiveProjectId, setVideoSummaries, setSelectedVideoId]);
 
  const handleSaveGlobalPrompt = useCallback(async () => {
   setSavingPrompt(true);
@@ -612,6 +728,7 @@ export function StoryStudio({ isActive = true }: StoryStudioProps) {
     video_id: selectedVideoId,
     marker_id: selectedMarkerId,
     step_id: selectedStepId,
+    attempt_id: selectedAttemptId || undefined,
     prompt
    });
    setSelectedVideo(detail);
@@ -627,7 +744,7 @@ export function StoryStudio({ isActive = true }: StoryStudioProps) {
   } finally {
    endAction(busyKey);
   }
- }, [beginAction, endAction, refinePromptDraft, selectedMarkerId, selectedStepId, selectedVideoId]);
+ }, [beginAction, endAction, refinePromptDraft, selectedMarkerId, selectedStepId, selectedVideoId, selectedAttemptId]);
 
  const handleAcceptAndNext = useCallback(async () => {
   if (!selectedVideoId || !selectedMarkerId || !selectedStepId) return;
@@ -657,9 +774,29 @@ export function StoryStudio({ isActive = true }: StoryStudioProps) {
   try {
    const detail = await applyStoryAction({ action, video_id: selectedVideoId, marker_id: markerId, step_id: stepId });
    setSelectedVideo(detail);
-   const newStep = findStep(detail.markers, markerId, stepId);
-   if (newStep && newStep.attempts && newStep.attempts.length > 0) {
-    setSelectedAttemptId(newStep.attempts.at(-1)!.id);
+   if (action === "regenerate") {
+     const originalMarker = detail.markers.find(m => m.id === markerId);
+     const parentId = originalMarker?.parentMarkerId || markerId;
+     const variants = detail.markers.filter(m => m.id === parentId || m.parentMarkerId === parentId)
+       .sort((a, b) => (b.variantIndex || 0) - (a.variantIndex || 0));
+     
+     const newMarker = variants[0];
+     if (newMarker) {
+       setSelectedMarkerId(newMarker.id);
+       const originalStep = originalMarker?.steps.find(s => s.id === stepId);
+       if (originalStep) {
+         const matchingStep = newMarker.steps.find(s => s.index === originalStep.index);
+         if (matchingStep) {
+           setSelectedStepId(matchingStep.id);
+           setSelectedAttemptId(matchingStep.selectedAttemptId || matchingStep.attempts.at(-1)?.id || null);
+         }
+       }
+     }
+   } else {
+     const newStep = findStep(detail.markers, markerId, stepId);
+     if (newStep && newStep.attempts && newStep.attempts.length > 0) {
+      setSelectedAttemptId(newStep.attempts.at(-1)!.id);
+     }
    }
    toast.success(`Đã thực hiện thao tác.`);
   } catch (error) {
@@ -677,6 +814,73 @@ export function StoryStudio({ isActive = true }: StoryStudioProps) {
    return next;
   });
  }, []);
+
+ const handleDeleteFromCollection = useCallback(async (videoId: string, markerId: string, stepId: string) => {
+  if (!window.confirm("Bạn có chắc chắn muốn xóa ảnh này khỏi bộ sưu tập?")) return;
+  const busyKey = `unaccept:${videoId}:${stepId}`;
+  if (!beginAction(busyKey)) return;
+  try {
+   const detail = await applyStoryAction({ action: "unaccept", video_id: videoId, marker_id: markerId, step_id: stepId });
+   if (selectedVideoId === videoId) setSelectedVideo(detail);
+   await refreshSummaries(true);
+   toast.success("Đã xóa khỏi bộ sưu tập.");
+  } catch (error) {
+   toast.error(getErrorMessage(error));
+  } finally {
+   endAction(busyKey);
+  }
+ }, [beginAction, endAction, refreshSummaries, selectedVideoId]);
+
+ const handleDeleteVideo = useCallback(async (videoId: string) => {
+  if (!window.confirm("Bạn có chắc chắn muốn xóa video này?")) return;
+  const busyKey = `delete_video:${videoId}`;
+  if (!beginAction(busyKey)) return;
+  try {
+   await applyStoryAction({ action: "delete_video", video_id: videoId });
+   if (selectedVideoId === videoId) {
+    setSelectedVideoId(null);
+    setSelectedVideo(null);
+   }
+   await refreshSummaries(true);
+   toast.success("Đã xóa video.");
+  } catch (error) {
+   toast.error(getErrorMessage(error));
+  } finally {
+   endAction(busyKey);
+  }
+ }, [beginAction, endAction, refreshSummaries, selectedVideoId]);
+
+ const handleDeleteMarker = useCallback(async (videoId: string, markerId: string) => {
+  if (!window.confirm("Bạn có chắc chắn muốn xóa Marker này?")) return;
+  const busyKey = `delete_marker:${markerId}`;
+  if (!beginAction(busyKey)) return;
+  try {
+   const detail = await applyStoryAction({ action: "delete_marker", video_id: videoId, marker_id: markerId });
+   if (selectedVideoId === videoId) setSelectedVideo(detail);
+   await refreshSummaries(true);
+   toast.success("Đã xóa Marker.");
+  } catch (error) {
+   toast.error(getErrorMessage(error));
+  } finally {
+   endAction(busyKey);
+  }
+ }, [beginAction, endAction, refreshSummaries, selectedVideoId]);
+
+ const handleDeleteStep = useCallback(async (videoId: string, markerId: string, stepId: string) => {
+  if (!window.confirm("Bạn có chắc chắn muốn xóa Bước này?")) return;
+  const busyKey = `delete_step:${stepId}`;
+  if (!beginAction(busyKey)) return;
+  try {
+   const detail = await applyStoryAction({ action: "delete_step", video_id: videoId, marker_id: markerId, step_id: stepId });
+   if (selectedVideoId === videoId) setSelectedVideo(detail);
+   await refreshSummaries(true);
+   toast.success("Đã xóa Bước.");
+  } catch (error) {
+   toast.error(getErrorMessage(error));
+  } finally {
+   endAction(busyKey);
+  }
+ }, [beginAction, endAction, refreshSummaries, selectedVideoId]);
 
  const handleExportCollection = useCallback(async () => {
   if (selectedExportKeys.size === 0) {
@@ -740,10 +944,19 @@ export function StoryStudio({ isActive = true }: StoryStudioProps) {
  const currentAttempt = selectedStep?.attempts.find(a => a.id === selectedAttemptId) || selectedStep?.attempts.at(-1);
 
  const allAcceptedSteps = useMemo(() => {
-  return videoSummaries.flatMap(v => (v.acceptedSteps || []).map(step => ({
+  const flat = videoSummaries.flatMap(v => (v.acceptedSteps || []).map(step => ({
    ...step,
    key: `${v.id}:${step.stepId}`
   })));
+  
+  const deduped: typeof flat = [];
+  const seenPaths = new Set<string>();
+  for (const s of flat) {
+   if (seenPaths.has(s.previewPath)) continue;
+   seenPaths.add(s.previewPath);
+   deduped.push(s);
+  }
+  return deduped;
  }, [videoSummaries]);
 
  const progressPercent = (v: StoryVideoSummary | StoryVideoDetail) => 
@@ -901,6 +1114,7 @@ export function StoryStudio({ isActive = true }: StoryStudioProps) {
     <div className="flex items-center justify-end px-4 pt-0 pb-2 flex-none">
      <Tabs value={mainPanelTab} onValueChange={(value) => setMainPanelTab(value as StoryMainTab)}>
       <TabsList className="h-8 bg-muted/20 p-0.5 border border-border/40">
+       <TabsTrigger value="projects" className="h-7 px-3 text-[11px] font-medium ">Dự án</TabsTrigger>
        <TabsTrigger value="videos" className="h-7 px-3 text-[11px] font-medium ">Tiến trình</TabsTrigger>
        <TabsTrigger value="collection" className="h-7 px-3 text-[11px] font-medium ">Bộ sưu tập</TabsTrigger>
        <TabsTrigger value="history" className="h-7 px-3 text-[11px] font-medium ">Lịch sử</TabsTrigger>
@@ -910,6 +1124,77 @@ export function StoryStudio({ isActive = true }: StoryStudioProps) {
 
     <CardContent className="flex-1 flex flex-col min-h-0 gap-4 p-4 pt-2 overflow-hidden">
      <Tabs value={mainPanelTab} className="flex-1 flex flex-col min-h-0">
+      <TabsContent value="projects" className="flex-1 flex flex-col gap-4">
+        <ScrollArea className="h-full">
+         <div className="space-y-3 pr-3">
+          <div className="flex items-center gap-2">
+           <div className="relative flex-1 group">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+            <Input placeholder="Tìm dự án..." className="h-9 pl-9 rounded-xl border-border/50 bg-muted/20" value={projectSearchQuery} onChange={e => setProjectSearchQuery(e.target.value)} />
+           </div>
+           <Button
+             variant="outline"
+             size="icon"
+             className="h-9 w-9 rounded-xl shrink-0 bg-card border-border/50 hover:border-primary/50 hover:bg-primary/5 shadow-sm"
+              onClick={handleCreateProject}
+              title="Tạo dự án mới từ thư mục"
+            >
+            <Plus className="size-4" />
+           </Button>
+          </div>
+          {sortedProjects.map(p => (
+           <div key={p.id} className="relative group">
+            <button
+             onClick={() => void handleSelectProject(p.id)}
+             className={`w-full flex items-center gap-3 p-3 rounded-2xl border transition-all text-left active:scale-[0.98] ${
+              activeProjectId === p.id
+               ? "border-primary bg-primary/5 ring-1 ring-primary/20"
+               : "border-border/50 bg-card hover:border-primary/30 hover:bg-muted/30"
+             }`}
+            >
+             <div className="size-10 rounded-lg bg-black/20 border border-border/20 flex items-center justify-center shrink-0">
+               <FolderTree className="size-5 text-muted-foreground" />
+             </div>
+             <div className="flex-1 min-w-0">
+              <div className="text-sm font-semibold truncate text-foreground/90">{p.name}</div>
+              <div className="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">
+               <span className="truncate max-w-[200px]">{p.folderPath}</span>
+               <span>•</span>
+               <span>{p.videoCount} videos</span>
+              </div>
+             </div>
+            </button>
+
+            <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1">
+             <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 rounded-lg bg-background/80 backdrop-blur-sm border border-border/50 hover:text-primary shadow-sm"
+              onClick={(e) => {
+               e.stopPropagation();
+               void handleRenameProject(p.id, p.name);
+              }}
+             >
+              <Pencil className="size-3" />
+             </Button>
+             <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 rounded-lg bg-background/80 backdrop-blur-sm border border-border/50 hover:text-destructive shadow-sm"
+              onClick={(e) => {
+               e.stopPropagation();
+               void handleDeleteProject(p.id);
+              }}
+             >
+              <Trash2 className="size-3" />
+             </Button>
+            </div>
+           </div>
+          ))}
+         </div>
+        </ScrollArea>
+      </TabsContent>
+
       <TabsContent value="videos" className="flex-1 flex flex-col gap-4">
      <div className="flex items-center justify-between">
       <div className="flex items-center gap-2">
@@ -976,8 +1261,8 @@ export function StoryStudio({ isActive = true }: StoryStudioProps) {
              </div>
             )}
            </div>
-           <div className="flex flex-col flex-1 gap-1.5 min-w-0">
-            <div className="flex justify-between items-center w-full min-w-0">
+           <div className="flex flex-col flex-1 gap-1.5 min-w-0 relative">
+            <div className="flex justify-between items-center w-full min-w-0 pr-6">
              <span className="font-bold text-[11px] truncate tracking-tight pr-2">
               {v.name || v.id}
              </span>
@@ -995,6 +1280,13 @@ export function StoryStudio({ isActive = true }: StoryStudioProps) {
               style={{ width: `${progressPercent(v)}%` }}
              />
             </div>
+            
+            <button 
+              className="absolute top-0 right-0 p-1 opacity-0 group-hover:opacity-100 hover:text-destructive transition-opacity"
+              onClick={(e) => { e.stopPropagation(); handleDeleteVideo(v.id); }}
+            >
+              <Trash2 className="size-3" />
+            </button>
            </div>
           </div>
          </Button>
@@ -1019,18 +1311,91 @@ export function StoryStudio({ isActive = true }: StoryStudioProps) {
          <CardContent className="flex-1 p-0 flex overflow-hidden">
           <ScrollArea className="w-[220px] border-r bg-muted/5">
            <div className="p-3 space-y-3">
-            {selectedVideo.markers.map((m) => (
-             <div key={m.id} className="space-y-1">
-              <button onClick={() => setExpandedMarkerIds(curr => curr.includes(m.id) ? curr.filter(id => id !== m.id) : [...curr, m.id])} className={cn("w-full flex items-center justify-between p-1.5 rounded hover:bg-muted text-[11px] font-bold text-muted-foreground", selectedMarkerId === m.id && "text-foreground")}>
-               <span className="truncate">Marker {m.index}</span>
-               {expandedMarkerIds.includes(m.id) ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
-              </button>
-              {expandedMarkerIds.includes(m.id) && m.steps.map((s) => (
-               <button key={s.id} onClick={() => { setSelectedMarkerId(m.id); setSelectedStepId(s.id); setSelectedAttemptId(s.attempts.at(-1)?.id || null); }} className={cn("w-full text-left pl-6 pr-2 py-1 text-[11px] rounded hover:text-primary", selectedStepId === s.id ? "text-primary font-bold" : "text-muted-foreground")}>
-                Bước {s.index} ({storyStatusLabel(s.status)})
-               </button>
-              ))}
-             </div>
+            {selectedVideo.markers.filter(m => !m.parentMarkerId).map((m) => (
+              <div key={m.id} className="space-y-1 group/marker">
+               <div className="flex items-center gap-1">
+                <button onClick={() => setExpandedMarkerIds(curr => curr.includes(m.id) ? curr.filter(id => id !== m.id) : [...curr, m.id])} className={cn("flex-1 flex items-center justify-between p-1.5 rounded hover:bg-muted text-[11px] font-bold text-muted-foreground", selectedMarkerId === m.id && "text-foreground")}>
+                 <span className="truncate">Marker {m.index}</span>
+                 {expandedMarkerIds.includes(m.id) ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
+                </button>
+                <button 
+                  className="size-6 shrink-0 flex items-center justify-center opacity-0 group-hover/marker:opacity-100 hover:text-destructive transition-opacity"
+                  onClick={() => handleDeleteMarker(selectedVideo.id, m.id)}
+                >
+                  <Trash2 className="size-3" />
+                </button>
+               </div>
+                {expandedMarkerIds.includes(m.id) && m.steps.map((s) => {
+                  const variants = selectedVideo.markers
+                    .filter(mv => mv.id === m.id || mv.parentMarkerId === m.id)
+                    .sort((a, b) => (a.variantIndex || 0) - (b.variantIndex || 0));
+                  
+                  return (
+                    <div key={s.id} className="flex flex-col group/step pl-6 pr-2 py-1 space-y-1">
+                      <div className="flex items-center justify-between gap-1">
+                        <button 
+                          onClick={() => { 
+                            const targetMarker = variants[0] || m;
+                            const targetStep = targetMarker.steps.find(ts => ts.index === s.index) || s;
+                            setSelectedMarkerId(targetMarker.id); 
+                            setSelectedStepId(targetStep.id); 
+                            setSelectedAttemptId(targetStep.attempts.at(-1)?.id || null); 
+                          }} 
+                          className={cn(
+                            "flex-1 text-left text-[11px] rounded hover:text-primary truncate", 
+                            selectedStepId === s.id || variants.some(v => v.steps.some(vs => vs.id === selectedStepId && vs.index === s.index)) 
+                              ? "text-primary font-bold" 
+                              : "text-muted-foreground"
+                          )}
+                        >
+                          Bước {s.index}
+                        </button>
+                        <button 
+                          className="size-5 shrink-0 flex items-center justify-center opacity-0 group-hover/step:opacity-100 hover:text-destructive transition-opacity"
+                          onClick={() => handleDeleteStep(selectedVideo.id, m.id, s.id)}
+                        >
+                          <Trash2 className="size-2.5" />
+                        </button>
+                      </div>
+                      
+                      <div className="flex flex-wrap gap-1">
+                        {variants.length > 1 ? variants.map((v, vIdx) => {
+                          const vStep = v.steps.find(vs => vs.index === s.index);
+                          if (!vStep) return null;
+                          const isCurrent = selectedStepId === vStep.id;
+                          
+                          return (
+                            <button
+                              key={v.id}
+                              onClick={() => {
+                                setSelectedMarkerId(v.id);
+                                setSelectedStepId(vStep.id);
+                                setSelectedAttemptId(vStep.attempts.at(-1)?.id || null);
+                              }}
+                              className={cn(
+                                "size-5 flex items-center justify-center text-[9px] rounded border transition-all",
+                                isCurrent 
+                                  ? "bg-primary border-primary text-primary-foreground font-bold shadow-sm" 
+                                  : "bg-background border-border/50 text-muted-foreground hover:border-primary/50 hover:text-primary"
+                              )}
+                            >
+                              {vIdx + 1}
+                            </button>
+                          );
+                        }) : (
+                          <button
+                            className={cn(
+                              "size-5 flex items-center justify-center text-[9px] rounded border bg-primary/10 border-primary/30 text-primary font-bold"
+                            )}
+                          >
+                            1
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             ))}
            </div>
           </ScrollArea>
@@ -1042,19 +1407,51 @@ export function StoryStudio({ isActive = true }: StoryStudioProps) {
                <Layers className="size-4 text-muted-foreground" />
                <span className="text-[11px] font-bold text-muted-foreground">Biến thể:</span>
                <div className="flex gap-1">
-                {selectedStep.attempts.map((a, i) => (
-                 <Button key={a.id} variant={selectedAttemptId === a.id ? "default" : "outline"} size="sm" className="size-7 p-0 text-[10px]" onClick={() => setSelectedAttemptId(a.id)}>
+                {markerVariants.length > 1 ? markerVariants.map((v, i) => (
+                 <Button 
+                   key={v.id} 
+                   variant={selectedMarkerId === v.id ? "default" : "outline"} 
+                   size="sm" 
+                   className="size-7 p-0 text-[10px]" 
+                   onClick={() => switchVariant(v.id)}
+                 >
                   {i + 1}
                  </Button>
-                ))}
+                )) : (
+                  <Button variant="default" size="sm" className="size-7 p-0 text-[10px]">1</Button>
+                )}
                </div>
               </div>
               {currentAttempt?.mode === "refine" && <Badge variant="outline" className="bg-indigo-50 text-indigo-600 border-indigo-200 text-[10px]">Đã tinh chỉnh</Badge>}
              </div>
 
              <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-1.5"><label className="text-[10px] font-bold text-muted-foreground">Gốc</label><div className="aspect-video bg-muted rounded-lg overflow-hidden border relative group">{selectedMarker?.inputFramePath && <VideoThumb path={selectedMarker.inputFramePath} className="cursor-zoom-in" onClick={() => setPreviewDialogPath(selectedMarker.inputFramePath)} />}<div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity"><Button size="icon" variant="secondary" className="size-7 rounded-full shadow-lg" onClick={() => setPreviewDialogPath(selectedMarker?.inputFramePath || null)}><Maximize2 className="size-3.5" /></Button></div></div></div>
-              <div className="space-y-1.5"><label className="text-[10px] font-bold text-muted-foreground">Kết quả ({currentAttempt?.mode || "gen"})</label><div className="aspect-video bg-muted rounded-lg overflow-hidden border relative group">{currentAttempt?.previewPath && <VideoThumb path={currentAttempt.previewPath} className="cursor-zoom-in" onClick={() => setPreviewDialogPath(currentAttempt?.previewPath || null)} />}<div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity"><Button size="icon" variant="secondary" className="size-7 rounded-full shadow-lg" onClick={() => setPreviewDialogPath(currentAttempt?.previewPath || null)}><Maximize2 className="size-3.5" /></Button></div></div></div>
+              <div className="space-y-1.5">
+               <label className="text-[10px] font-bold text-muted-foreground">
+                {currentAttempt?.mode === "refine" ? "Ảnh đầu vào (đã tinh chỉnh)" : "Gốc"}
+               </label>
+               <div className="aspect-video bg-muted rounded-lg overflow-hidden border relative group">
+                {currentAttempt?.inputImagePath ? (
+                 <VideoThumb path={currentAttempt.inputImagePath} className="cursor-zoom-in" onClick={() => setPreviewDialogPath(currentAttempt.inputImagePath)} />
+                ) : selectedMarker?.inputFramePath && (
+                 <VideoThumb path={selectedMarker.inputFramePath} className="cursor-zoom-in" onClick={() => setPreviewDialogPath(selectedMarker.inputFramePath)} />
+                )}
+                <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                 <Button size="icon" variant="secondary" className="size-7 rounded-full shadow-lg" onClick={() => setPreviewDialogPath(currentAttempt?.inputImagePath || selectedMarker?.inputFramePath || null)}>
+                  <Maximize2 className="size-3.5" />
+                 </Button>
+                </div>
+               </div>
+              </div>
+              <div className="space-y-1.5">
+               <label className="text-[10px] font-bold text-muted-foreground">Kết quả ({currentAttempt?.mode || "gen"})</label>
+               <div className="aspect-video bg-muted rounded-lg overflow-hidden border relative group">
+                {currentAttempt?.previewPath && <VideoThumb path={currentAttempt.previewPath} className="cursor-zoom-in" onClick={() => setPreviewDialogPath(currentAttempt?.previewPath || null)} />}
+                <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                 <Button size="icon" variant="secondary" className="size-7 rounded-full shadow-lg" onClick={() => setPreviewDialogPath(currentAttempt?.previewPath || null)}><Maximize2 className="size-3.5" /></Button>
+                </div>
+               </div>
+              </div>
              </div>
              
              {showRefinePrompt && (
@@ -1140,20 +1537,33 @@ export function StoryStudio({ isActive = true }: StoryStudioProps) {
          )}
          onClick={() => handleToggleExportSelection(s.key)}
         >
-         <div className="absolute top-2 right-2 z-10">
-          <div className={cn(
-           "size-5 rounded-full border-2 flex items-center justify-center transition-all",
-           selectedExportKeys.has(s.key) ? "bg-primary border-primary text-primary-foreground" : "bg-black/20 border-white/50 group-hover:border-white"
-          )}>
-           {selectedExportKeys.has(s.key) && <ChevronRight className="size-3.5 rotate-90" />}
+          <div className="absolute top-2 right-2 z-10">
+           <div className={cn(
+            "size-5 rounded-full border-2 flex items-center justify-center transition-all",
+            selectedExportKeys.has(s.key) ? "bg-primary border-primary text-primary-foreground" : "bg-black/20 border-white/50 group-hover:border-white"
+           )}>
+            {selectedExportKeys.has(s.key) && <ChevronRight className="size-3.5 rotate-90" />}
+           </div>
           </div>
-         </div>
          
          <div className="aspect-video bg-muted relative">
-          <VideoThumb path={s.previewPath} className="w-full h-full" />
+          <div className="w-full h-full cursor-zoom-in" onClick={(e) => { e.stopPropagation(); setPreviewDialogPath(s.previewPath); }}>
+           <VideoThumb path={s.previewPath} className="w-full h-full" />
+          </div>
           <div className="absolute top-2 left-2">
             <Badge className="bg-emerald-500 text-[9px] px-2 h-4 font-bold ">Duyệt</Badge>
           </div>
+          <Button 
+           variant="destructive" 
+           size="icon" 
+           className="absolute bottom-2 right-2 size-7 rounded-full opacity-0 group-hover:opacity-100 transition-opacity shadow-lg"
+           onClick={(e) => {
+             e.stopPropagation();
+             handleDeleteFromCollection(s.videoId, s.markerId, s.stepId);
+           }}
+          >
+           <Trash2 className="size-3.5" />
+          </Button>
          </div>
          <CardContent className="p-2.5">
           <div className="text-[10px] font-bold text-muted-foreground truncate mb-0.5">{s.videoName}</div>

@@ -108,6 +108,11 @@ def main(argv: list[str] | None = None) -> int:
 
     # Disable automatic browser opening by the server
     os.environ["VIDEO_DOWNLOADER_NO_BROWSER"] = "1"
+    
+    # Suppress annoying Qt/Chromium logs
+    os.environ["QT_LOGGING_RULES"] = "qt.gui.icc=false;qt.webenginecontext.debug=false"
+    os.environ["GL_SILENCE_DEPRECATION"] = "1"
+    
     server_thread.start()
 
     try:

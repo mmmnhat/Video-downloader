@@ -72,7 +72,7 @@ PROFILE_DIR_COOKIE_RELATIVE_PATHS = (
 )
 
 # Global registry to ensure only ONE browser process per (runtime_root, feature) pair.
-_GLOBAL_CONTEXT_REGISTRY: dict[tuple[Path, str], SharedBrowserContext] = {}
+_GLOBAL_CONTEXT_REGISTRY: dict[tuple[Path, str, int], SharedBrowserContext] = {}
 _GLOBAL_REGISTRY_LOCK = threading.Lock()
 
 GEMINI_GEMS_ROOT_EXTRA_ITEMS = (
@@ -183,18 +183,11 @@ class SharedBrowserContext:
             if self._idle_timer:
                 self._idle_timer.cancel()
                 self._idle_timer = None
-            # Playwright sync objects bị ràng buộc với thread đã tạo ra chúng.
-            # Chỉ tái sử dụng tab thuộc cùng worker thread để tránh lỗi greenlet.
+            
+            # RE-CHECK: Playwright Sync objects MUST stay in the thread that created them.
+            # In thread-isolated mode, we should only find pages belonging to THIS thread.
             for item in self._pages:
-                if (
-                    not item["in_use"]
-                    and item.get("owner_thread_id") == current_thread_id
-                ):
-                    item["in_use"] = True
-                    return item["id"], item["page"]
-
-            for item in self._pages:
-                if not item["in_use"] and item.get("owner_thread_id") is None:
+                if not item["in_use"]:
                     item["in_use"] = True
                     item["owner_thread_id"] = current_thread_id
                     return item["id"], item["page"]
@@ -376,6 +369,7 @@ class SharedBrowserContext:
         self._runtime_root.mkdir(parents=True, exist_ok=True)
         
         # Copy profile to isolated thread folder
+        self._thread_root = self._runtime_root
         _copy_gems_runtime_profile(self._profile, self._runtime_root)
         
         # Dọn dẹp lock cũ nếu có trong bản copy
@@ -1644,10 +1638,22 @@ class GeminiWebAdapter:
             self._ensure_workspace_ready(page, target_url=target_thread_url)
             stage = "select_image_tool"
             print(f"[GeminiWebAdapter] Stage: {stage}...")
-            self._ensure_image_tool_selected(page)
+            # Chi chon cong cu neu (1) dang dung Gemini mac dinh VA (2) khong co anh input.
+            # Neu co anh input, ta muon dung giao dien Chat/Vision thong thuong vi no on dinh hon cho upload.
+            if self._is_default_gemini_url() and not input_image_path:
+                self._ensure_image_tool_selected(page)
+            elif not self._is_default_gemini_url():
+                print("[GeminiWebAdapter] Dang dung Gem tuy chinh — bo qua select_image_tool.", flush=True)
+            else:
+                print("[GeminiWebAdapter] Co anh input — dung giao dien Vision mac dinh (bo qua select_image_tool).", flush=True)
             stage = "select_mode"
             print(f"[GeminiWebAdapter] Stage: {stage}...")
-            self._apply_generation_mode(page)
+            # Chi chon che do neu dang o che do chat thong thuong.
+            # Trong che do 'Tao hinh anh', model switcher thuong bi an hoac khong can thiet.
+            if not self._is_specialized_tool_active(page):
+                self._apply_generation_mode(page)
+            else:
+                print("[GeminiWebAdapter] Dang o che do cong cu chuyen dung — bo qua select_mode.", flush=True)
             self._dump_debug_state(
                 page,
                 debug_run_dir=debug_run_dir,
@@ -1667,7 +1673,7 @@ class GeminiWebAdapter:
                 baseline_keys=baseline_keys,
             )
 
-            if is_retry_followup:
+            if is_retry_followup and action_mode not in {"regenerate", "refine"}:
                 stage = "retry_response"
                 if not self._click_retry_action_for_latest_response(page):
                     raise GeminiWebError("Khong tim thay nut retry/regenerate trong thread Gemini hien tai.")
@@ -1681,29 +1687,37 @@ class GeminiWebAdapter:
                 )
             else:
                 stage = "upload_input"
-                self._upload_input_image(page, input_image_path)
-                self._dump_debug_state(
-                    page,
-                    debug_run_dir=debug_run_dir,
-                    stage="upload_input",
-                    context=context,
-                    prompt=prompt,
-                    baseline_keys=None,
-                )
-                stage = "collect_baseline_after_upload"
-                baseline_keys = self._collect_candidate_keys(page)
+                # Stage image to runtime cache so Chromium can always access it
+                # (e.g. files from /Volumes/External/_frames may be inaccessible directly)
+                staged_path = self._stage_input_image(input_image_path)
+                try:
+                    self._upload_input_image(page, staged_path)
+                    
+                    self._dump_debug_state(
+                        page,
+                        debug_run_dir=debug_run_dir,
+                        stage="upload_input",
+                        context=context,
+                        prompt=prompt,
+                        baseline_keys=None,
+                    )
+                    stage = "collect_baseline_after_upload"
+                    baseline_keys = self._collect_candidate_keys(page)
 
-                stage = "submit_prompt"
-                print(f"[GeminiWebAdapter] Stage: {stage} - Prompt: {prompt[:50]}...")
-                self._submit_prompt(page, prompt)
-                self._dump_debug_state(
-                    page,
-                    debug_run_dir=debug_run_dir,
-                    stage="submit_prompt",
-                    context=context,
-                    prompt=prompt,
-                    baseline_keys=baseline_keys,
-                )
+                    stage = "submit_prompt"
+                    print(f"[GeminiWebAdapter] Stage: {stage} - Prompt: {prompt[:50]}...")
+                    self._submit_prompt(page, prompt)
+                    self._dump_debug_state(
+                        page,
+                        debug_run_dir=debug_run_dir,
+                        stage="submit_prompt",
+                        context=context,
+                        prompt=prompt,
+                        baseline_keys=baseline_keys,
+                    )
+                finally:
+                    # Defer unlink to ensure Chromium finished reading
+                    staged_path.unlink(missing_ok=True)
 
             stage = "wait_preview"
             candidate = self._wait_for_new_preview(page, baseline_keys)
@@ -1764,8 +1778,9 @@ class GeminiWebAdapter:
 
     def shutdown(self) -> None:
         """Hủy bỏ browser context chung của adapter này."""
+        thread_id = threading.get_ident()
         with _GLOBAL_REGISTRY_LOCK:
-            shared = _GLOBAL_CONTEXT_REGISTRY.pop((self._runtime_root, self._feature), None)
+            shared = _GLOBAL_CONTEXT_REGISTRY.pop((self._runtime_root, self._feature, thread_id), None)
             if shared:
                 try:
                     shared.shutdown()
@@ -1773,15 +1788,27 @@ class GeminiWebAdapter:
                     pass
 
     def _get_or_create_shared_context(self) -> SharedBrowserContext:
-        """Shared browser context per feature instance to ensure session unity."""
+        """
+        Shared browser context per feature AND per thread.
+        
+        Playwright Sync API is NOT thread-safe. Sync objects (Context, Page) 
+        cannot be used across different Python threads (triggers greenlet error).
+        To support parallel workers, each thread MUST have its own independent 
+        Playwright instance and browser process.
+        """
+        thread_id = threading.get_ident()
         with _GLOBAL_REGISTRY_LOCK:
-            key = (self._runtime_root, self._feature)
+            # Key includes thread_id to ensure absolute thread isolation of Playwright sync objects
+            key = (self._runtime_root, self._feature, thread_id)
             shared = _GLOBAL_CONTEXT_REGISTRY.get(key)
+            
             if shared is None or shared.is_closed:
+                # Use a thread-specific sub-directory for the profile copy to avoid Chromium SingletonLock
+                thread_runtime_root = self._runtime_root / f"worker_{thread_id}"
                 shared = SharedBrowserContext(
                     profile=detect_gemini_browser_profile(self._feature),
                     headless=self._headless,
-                    runtime_root=self._runtime_root,
+                    runtime_root=thread_runtime_root,
                     max_tabs=self._max_tabs,
                     feature=self._feature,
                 )
@@ -2176,6 +2203,44 @@ class GeminiWebAdapter:
                 pass
             page.wait_for_timeout(350)
 
+    def _is_default_gemini_url(self) -> bool:
+        """
+        Tra ve True neu base_url la Gemini mac dinh (khong phai custom Gem).
+        Custom Gem URL chua cac marker nhu /gem/, /gems/, /app/gems/.
+        """
+        url = (self._base_url or "").strip().rstrip("/")
+        for marker in GEMINI_GEM_URL_MARKERS:
+            if marker in url:
+                # Neu chi la trang xem/quan ly gem -> van coi la default
+                for ignored in GEMINI_GEM_URL_IGNORED_SUFFIXES:
+                    if url.endswith(ignored):
+                        return True
+                return False  # La Gem tuy chinh thuc su
+        return True  # URL Gemini mac dinh
+
+    def _stage_input_image(self, source: Path) -> Path:
+        """
+        Copy anh input vao thu muc runtime cache truoc khi upload.
+        Giai quyet triet de loi khi anh nam tren external volume (e.g. /Volumes/External/_frames)
+        ma Chromium/Playwright sandbox khong the truy cap qua set_input_files.
+        """
+        staged_dir = self._runtime_root / "staged_inputs"
+        staged_dir.mkdir(parents=True, exist_ok=True)
+        
+        suffix = source.suffix or ".jpg"
+        dest = staged_dir / f"input_{uuid.uuid4().hex[:8]}{suffix}"
+        try:
+            shutil.copy2(str(source), str(dest))
+            # Set read permissions for everyone to avoid Chromium access issues
+            if dest.exists():
+                dest.chmod(0o644)
+            print(f"[GeminiWebAdapter] Staged: {source.name} -> {dest}", flush=True)
+        except Exception as e:
+            print(f"[GeminiWebAdapter] Failed to stage input: {e}", flush=True)
+            return source
+            
+        return dest
+
     def _ensure_image_tool_selected(self, page) -> None:
         """
         Chọn công cụ 'Tạo hình ảnh' (Image creation) trong Gemini trước khi gửi prompt.
@@ -2356,6 +2421,14 @@ class GeminiWebAdapter:
         )
         self._close_mode_menu(page, picker_button=picker_button)
 
+    def _is_specialized_tool_active(self, page) -> bool:
+        """Kiem tra xem co dang trong mot cong cu chuyen dung (nhu Image Tool) hay khong."""
+        try:
+            # Neu co nut 'Bo chon' (Deselect) hoac 'Huy' (Cancel) cho cong cu, nghia la dang active
+            return page.locator('button[aria-label*="bo chon" i], button[aria-label*="deselect" i]').count() > 0
+        except Exception:
+            return False
+
     def _close_mode_menu(self, page, picker_button=None) -> None:
         for _ in range(3):
             if not self._has_transient_overlay(page):
@@ -2522,48 +2595,78 @@ class GeminiWebAdapter:
         return re.sub(r"\s+", " ", text).strip().lower()
 
     def _upload_input_image(self, page, input_image_path: Path) -> None:
-        baseline_uploaded_keys = self._collect_uploaded_preview_keys(page)
+        """
+        Uploads the input image to Gemini.
+        Uses Paste simulation as the primary method for high reliability.
+        """
+        print(f"[Upload] Input: {input_image_path}", flush=True)
 
-        if self._set_file_via_existing_inputs(page, input_image_path, baseline_uploaded_keys):
-            return
+        # 1. Baseline
+        baseline_uploaded_keys = self._collect_candidate_keys(page)
 
-        composer = self._find_prompt_target(page)
-        attach_buttons = self._find_attachment_buttons(page, composer)
-        for button in attach_buttons:
-            # Nếu không phải menu button: thử mở file chooser trước
-            if not self._is_upload_menu_button(button):
-                try:
-                    if self._set_file_via_file_chooser_click(
-                        page,
-                        button,
-                        input_image_path,
-                        baseline_uploaded_keys=baseline_uploaded_keys,
-                    ):
-                        return
-                except Exception:
-                    pass
-
-            # Thử mở upload menu (dùng cho cả menu button lấn button thường không có file chooser)
-            if self._open_upload_menu_once(page, button):
-                if self._set_file_via_upload_menu_items(page, input_image_path, baseline_uploaded_keys):
-                    return
-
+        # Strategy 0: Direct set_input_files on any visible or hidden file inputs (Fast)
+        print("[Upload] Strategy 0: Global input scan...", flush=True)
+        try:
             if self._set_file_via_existing_inputs(page, input_image_path, baseline_uploaded_keys):
+                print("[Upload] Strategy 0 SUCCESS", flush=True)
                 return
-            if self._set_file_via_hidden_upload_triggers(page, input_image_path, baseline_uploaded_keys):
-                return
+        except Exception:
+            pass
 
-        if self._set_file_via_upload_menu_items(page, input_image_path, baseline_uploaded_keys):
+        # Strategy 1: Paste simulation (High Reliability)
+        print("[Upload] Strategy 1: Paste simulation...", flush=True)
+        # Focus composer before paste
+        try:
+            target = self._find_prompt_target(page)
+            if target:
+                target.click()
+                target.focus()
+                page.wait_for_timeout(300)
+        except Exception:
+            pass
+            
+        if self._set_file_via_paste(page, input_image_path, baseline_uploaded_keys):
+            print("[Upload] Strategy 1 SUCCESS", flush=True)
             return
-        if self._set_file_via_hidden_upload_triggers(page, input_image_path, baseline_uploaded_keys):
+
+        # Neu tat ca deu that bai
+        print("[Upload] FAILED to upload image via primary strategies.", flush=True)
+        # Tu dong chup anh man hinh khi failure de debug
+        try:
+            error_shot = story_runtime_root() / "failed_upload.png"
+            page.screenshot(path=str(error_shot))
+            print(f"[Upload] Screenshot saved to: {error_shot}", flush=True)
+        except Exception:
+            pass
+        
+        raise StoryPipelineError(f"Khong the upload anh: {input_image_path.name}")
+
+        # 8. Last resort: body-wide file input
+        print("[Upload] Strategy 7: body-wide file input scan...", flush=True)
+        if self._set_file_via_associated_input(page, page.locator("body"), input_image_path, baseline_uploaded_keys):
+            print("[Upload] Strategy 7 SUCCESS", flush=True)
             return
+
+        # Debug screenshot
+        try:
+            debug_dir = self._runtime_root / "_upload_debug"
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            ts = int(time.monotonic() * 1000)
+            page.screenshot(path=str(debug_dir / f"upload_fail_{ts}.png"))
+            print(f"[Upload] FAIL screenshot: {debug_dir}/upload_fail_{ts}.png", flush=True)
+        except Exception:
+            pass
 
         if self._page_requires_sign_in(page):
             raise GeminiWebAuthError(
-                "Gemini hien chua cho phep upload file trong profile Story hien tai. "
-                "Hay dang nhap lai trong tab Story roi thu lai."
+                f"Gemini yeu cau dang nhap de upload anh ({self._feature}). "
+                "Hay bam Dang nhap trong tab de mo browser va dang nhap lai."
             )
-        raise GeminiWebError("Khong tim thay file input de upload anh vao Gemini.")
+
+        raise GeminiWebError(
+            f"[Upload] That bai sau 7 chien luoc. File: {input_image_path}\n"
+            f"Xem screenshot debug tai: {self._runtime_root}/_upload_debug/"
+        )
 
     def _submit_prompt(self, page, prompt: str) -> None:
         clean_prompt = prompt.strip()
@@ -3047,7 +3150,7 @@ class GeminiWebAdapter:
     ) -> bool:
         if baseline_uploaded_keys is None:
             return True
-        deadline = time.monotonic() + 3.5
+        deadline = time.monotonic() + 5.5  # Tang timeout len 5.5s
         stable_key: str | None = None
         stable_count = 0
         while time.monotonic() < deadline:
@@ -3062,7 +3165,7 @@ class GeminiWebAdapter:
                     stable_count = 1
                 if stable_count >= 2:
                     return True
-            page.wait_for_timeout(250)
+            page.wait_for_timeout(300)
         return False
 
     def _set_file_via_associated_input(
@@ -3205,6 +3308,77 @@ class GeminiWebAdapter:
                 continue
         return False
 
+    def _set_file_via_paste(self, page, input_image_path: Path, baseline_uploaded_keys: set[str] | None = None) -> bool:
+        """
+        Gia lap thao tac dan (Paste) anh vao composer.
+        Cuc ky on dinh vi no bo qua menu dinh kem va nut bam.
+        """
+        try:
+            import base64
+            with open(input_image_path, "rb") as f:
+                img_data = base64.b64encode(f.read()).decode("utf-8")
+            
+            suffix = input_image_path.suffix.lower()
+            mime_type = "image/png" if suffix == ".png" else "image/jpeg"
+
+            # Focus composer truoc khi dan
+            page.evaluate(
+                """
+                () => {
+                    const composer = document.querySelector('div[contenteditable="true"]') || 
+                                     document.querySelector('[role="textbox"]') || 
+                                     document.body;
+                    if (composer) {
+                        composer.focus();
+                        const range = document.createRange();
+                        const selection = window.getSelection();
+                        range.selectNodeContents(composer);
+                        range.collapse(false);
+                        selection.removeAllRanges();
+                        selection.addRange(range);
+                    }
+                }
+                """
+            )
+            page.wait_for_timeout(200)
+
+            page.evaluate(
+                """
+                async ([base64Data, mimeType]) => {
+                    const composer = document.querySelector('div[contenteditable="true"]') || 
+                                     document.querySelector('[role="textbox"]') || 
+                                     document.body;
+                    
+                    // Chuyen base64 sang Blob truc tiep (tranh fetch/CSP)
+                    const byteCharacters = atob(base64Data);
+                    const byteNumbers = new Array(byteCharacters.length);
+                    for (let i = 0; i < byteCharacters.length; i++) {
+                        byteNumbers[i] = byteCharacters.charCodeAt(i);
+                    }
+                    const byteArray = new Uint8Array(byteNumbers);
+                    const blob = new Blob([byteArray], { type: mimeType });
+                    const file = new File([blob], "upload.jpg", { type: mimeType });
+                    
+                    const dataTransfer = new DataTransfer();
+                    dataTransfer.items.add(file);
+                    
+                    const event = new ClipboardEvent('paste', {
+                        clipboardData: dataTransfer,
+                        bubbles: true,
+                        cancelable: true
+                    });
+                    composer.dispatchEvent(event);
+                }
+                """,
+                [img_data, mime_type]
+            )
+            # Doi anh xuat hien
+            page.wait_for_timeout(1000)
+            return self._confirm_uploaded_preview(page, baseline_uploaded_keys)
+        except Exception as e:
+            print(f"[Upload] Paste strategy error: {e}", flush=True)
+            return False
+
     def _set_file_via_hidden_upload_triggers(
         self,
         page,
@@ -3266,6 +3440,7 @@ class GeminiWebAdapter:
             "[role='menu'] *",
         ]
         preferred_patterns = [
+            r"tải\s*lên\s*từ\s*máy\s*tính",
             r"tải\s*tệp\s*lên",
             r"thêm\s*tệp",
             r"tải\s*file\s*lên",
@@ -3298,13 +3473,13 @@ class GeminiWebAdapter:
             except Exception:
                 count = 0
 
-            for index in range(min(count, 80)):
+            # Limit scan aggressively to avoid hangs
+            for index in range(min(count, 40)):
                 item = locator.nth(index)
                 try:
-                    if not item.is_visible():
-                        continue
+                    # is_visible() is slow, skip if we can
                     box = item.bounding_box()
-                    if not box or box["width"] < 60 or box["height"] < 24:
+                    if not box or box["width"] < 40 or box["height"] < 20:
                         continue
                     text_blob = self._button_text_blob(item)
                     if not text_blob or text_blob in seen:
@@ -3776,6 +3951,115 @@ class GeminiWebAdapter:
         reject_tokens = ("send", "gui", "microphone", "voice", "toolbox", "model", "mode", "cong cu", "tao hinh anh", "nhan de dung")
         return any(token in normalized for token in strong_tokens) and not any(token in normalized for token in reject_tokens)
 
+    def _set_file_via_drag_and_drop(
+        self,
+        page,
+        input_image_path: Path,
+        baseline_uploaded_keys: set[str] | None = None,
+    ) -> bool:
+        """Fallback: Try to drag and drop the file into the composer area."""
+        try:
+            composer = self._find_prompt_target(page)
+            if not composer:
+                return False
+            
+            # Create a DataTransfer object and dispatch drop event
+            # This is a complex but often effective fallback in Playwright
+            # Note: set_input_files is usually enough, but some sites need real events
+            page.evaluate(
+                """
+                async ([path, selector]) => {
+                  const el = document.querySelector(selector) || document.body;
+                  // Note: Real file content cannot be fully simulated via JS alone for security,
+                  // but we can try to trigger the 'dragging' UI which might reveal the input.
+                  const event = new DragEvent('dragover', { bubbles: true, cancelable: true });
+                  el.dispatchEvent(event);
+                }
+                """,
+                [str(input_image_path), 'div[contenteditable="true"]']
+            )
+            # Re-check for inputs that might have appeared
+            page.wait_for_timeout(500)
+            return self._set_file_via_existing_inputs(page, input_image_path, baseline_uploaded_keys)
+        except Exception:
+            return False
+
+    def _set_file_via_brute_force_buttons(
+        self,
+        page,
+        input_image_path: Path,
+        baseline_uploaded_keys: set[str] | None,
+        composer,
+    ) -> bool:
+        """
+        Nuclear option: clicks every visible button on the page (or near the composer)
+        that looks like an icon, while listening for a file chooser.
+        Bypasses any ARIA/text filtering that might be broken by Custom Gem UI.
+        """
+        try:
+            # Gather all buttons and role="button"
+            all_buttons = page.locator('button, [role="button"]')
+            count = all_buttons.count()
+            candidates = []
+            
+            for i in range(count):
+                btn = all_buttons.nth(i)
+                try:
+                    if not btn.is_visible(timeout=100):
+                        continue
+                    box = btn.bounding_box()
+                    if not box:
+                        continue
+                        
+                    # Filter out massive buttons (we want small icon buttons, e.g. 24-48px)
+                    # And exclude things that are clearly too wide (like submit/generate full text buttons)
+                    if box["width"] > 80 or box["height"] > 80:
+                        continue
+                        
+                    # Usually, attachment buttons are in the lower half of the screen
+                    viewport = page.viewport_size
+                    if viewport and box["y"] < viewport["height"] / 2:
+                        continue
+                        
+                    candidates.append(btn)
+                except Exception:
+                    continue
+
+            print(f"[Upload] Brute-force found {len(candidates)} candidate icon buttons", flush=True)
+
+            for i, btn in enumerate(candidates):
+                try:
+                    # Try clicking it with expect_file_chooser
+                    with page.expect_file_chooser(timeout=1000) as chooser_info:
+                        btn.click(force=True)
+                    chooser = chooser_info.value
+                    chooser.set_files(str(input_image_path))
+                    page.wait_for_timeout(500)
+                    
+                    if self._confirm_uploaded_preview(page, baseline_uploaded_keys):
+                        print(f"[Upload] Brute-force SUCCESS on button index {i}", flush=True)
+                        return True
+                        
+                except Exception:
+                    # If it didn't spawn a chooser, it might have opened a menu. 
+                    # Re-check for new file inputs or menu items
+                    if self._set_file_via_existing_inputs(page, input_image_path, baseline_uploaded_keys):
+                        return True
+                    if self._set_file_via_hidden_upload_triggers(page, input_image_path, baseline_uploaded_keys):
+                        return True
+                        
+                    # Close the menu if it opened one (click elsewhere, e.g. body)
+                    try:
+                        page.locator("body").click(position={"x": 0, "y": 0}, force=True)
+                        page.wait_for_timeout(100)
+                    except Exception:
+                        pass
+                        
+            return False
+        except Exception as e:
+            print(f"[Upload] Brute-force strategy failed completely: {e}", flush=True)
+            return False
+
     def _find_attachment_buttons(self, page, composer) -> list[object]:
         """
         Locates buttons used for attaching files/images.
@@ -3791,24 +4075,30 @@ class GeminiWebAdapter:
             '[data-testid*="image" i]',
             'button[aria-label*="file" i]',
             'button[aria-label*="photo" i]',
+            'button[aria-label*="upload" i]',
+            'button[aria-label*="attach" i]',
+            'button[aria-label*="plus" i]',
+            'button[aria-label*="thêm" i]',
+            'button[aria-label*="tải" i]',
+            'button[aria-label*="đính" i]',
+            'button[aria-label*="ảnh" i]',
+            'button[aria-label*="chọn" i]',
             '[role="button"][aria-label*="upload" i]',
             '[role="button"][aria-label*="attach" i]',
             '[role="button"][aria-label*="file" i]',
             '[role="button"][aria-label*="image" i]',
             '[role="button"][aria-label*="photo" i]',
+            '[role="button"][aria-label*="plus" i]',
             'button:has(mat-icon:has-text("attach_file"))',
             'button:has(mat-icon:has-text("add_photo_alternate"))',
             'button:has(mat-icon:has-text("add"))',
-            'button[aria-label*="upload" i]',
-            'button[aria-label*="attach" i]',
-            'button[aria-label*="add" i]',
-            'button[aria-label*="tải" i]',
-            'button[aria-label*="đính" i]',
-            'button[aria-label*="ảnh" i]',
-            'button[aria-label*="image" i]',
+            'button:has(mat-icon:has-text("upload"))',
             'button:has(svg[path*="upload"])',
             'button:has(svg[path*="attach"])',
             'button:has(svg[path*="image"])',
+            'button:has(svg:has(path[d*="M19 13"]))', # Generic plus icon path
+            'button:has(svg:has(path[d*="M12 5v14M5 12h14"]))', # Generic plus icon path
+            'button:has(svg:has(path[d*="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zM6 20V4h7v5h5v11H6z"]))', # File icon
         ]
         
         candidates = []

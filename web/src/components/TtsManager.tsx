@@ -1,5 +1,7 @@
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { RefreshCw, Loader2 } from "lucide-react";
+import { 
+  RefreshCw, Loader2, ChevronRight, Clock, Pencil, Trash2, Plus
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -12,6 +14,8 @@ import {
  CardHeader,
  CardTitle,
 } from "@/components/ui/card";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { Field, FieldGroup } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import {
@@ -46,6 +50,8 @@ import {
  pauseTtsBatch,
  resumeTtsBatch,
  retryTtsItem,
+ deleteTtsBatch,
+ renameTtsBatch,
  type TtsBatchDetail,
  type TtsBatchSummary,
  type TtsItem,
@@ -150,7 +156,7 @@ export default function TtsManager() {
  const [preview, setPreview] = useState<TtsPreview | null>(null);
  const [voices, setVoices] = useState<TtsVoice[]>([]);
  const [batchSummaries, setBatchSummaries] = useState<TtsBatchSummary[]>([]);
- const [selectedBatchId, setSelectedBatchId] = useState<string | null>(null);
+ const [selectedBatchId, setSelectedBatchId] = useLocalStorage<string | null>("tts.selectedBatchId", null);
  const [selectedBatch, setSelectedBatch] = useState<TtsBatchDetail | null>(null);
  const [selectedItemIds, setSelectedItemIds] = useState<string[]>([]);
  const [manuallyDeselectedItemIds, setManuallyDeselectedItemIds] = useState<string[]>([]);
@@ -675,6 +681,33 @@ export default function TtsManager() {
   });
  }
 
+ async function handleDeleteBatch(batchId: string) {
+  if (!window.confirm("Bạn có chắc muốn xóa dự án TTS này?")) return;
+  try {
+   await deleteTtsBatch(batchId);
+   setBatchSummaries(prev => prev.filter(b => b.id !== batchId));
+   if (selectedBatchId === batchId) {
+    setSelectedBatchId(null);
+    setSelectedBatch(null);
+   }
+   toast.success("Đã xóa dự án TTS.");
+  } catch (error) {
+   toast.error(getErrorMessage(error));
+  }
+ }
+
+ async function handleRenameBatch(batchId: string, currentName: string) {
+  const name = window.prompt("Nhập tên mới cho dự án TTS:", currentName || "");
+  if (name === null) return;
+  try {
+   const updated = await renameTtsBatch(batchId, name);
+   setBatchSummaries(prev => prev.map(b => b.id === batchId ? { ...b, name: updated.name } : b));
+   toast.success("Đã đổi tên dự án TTS.");
+  } catch (error) {
+   toast.error(getErrorMessage(error));
+  }
+ }
+
  return (
   <div className={cn("min-w-0 grid lg:grid-cols-[minmax(22rem,28rem)_minmax(0,1fr)]", TAB_CARD_GAP_CLASS)}>
    {errorMessage ? (
@@ -773,6 +806,24 @@ export default function TtsManager() {
         >
          Dán
         </Button>
+        <div className="w-[1px] h-3 bg-border/50 mx-1 shrink-0" />
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-7 px-2 text-xs hover:bg-primary/10 hover:text-primary rounded-full shrink-0 flex items-center gap-1"
+          onClick={() => {
+            if (!sheetUrl.trim()) {
+              toast.error("Vui lòng dán link GG Sheet trước.");
+              return;
+            }
+            void handleStart();
+          }}
+          title="Tạo dự án mới với link này"
+        >
+          <Plus className="size-3" />
+          <span>Tạo mới</span>
+        </Button>
        </div>
       </Field>
 
@@ -816,19 +867,21 @@ export default function TtsManager() {
          <SelectTrigger className="h-8 rounded-full bg-muted/20 border-border/70 text-xs flex-1">
           <SelectValue placeholder="Chọn giọng đọc..." />
          </SelectTrigger>
-         <SelectContent className="max-h-72">
-          {voices.map((v) => (
-           <SelectItem key={v.voiceId} value={v.voiceId}>
-            <div className="flex items-center gap-2">
-             {v.previewUrl && (
-              <div className="size-4 rounded-full overflow-hidden border border-border/50">
-               <img src={v.previewUrl} alt="" className="size-full object-cover" />
-              </div>
-             )}
-             <span className="truncate">{v.name}</span>
-            </div>
-           </SelectItem>
-          ))}
+         <SelectContent className="w-[280px]">
+          <ScrollArea className="h-[300px]">
+           {voices.map((v) => (
+            <SelectItem key={v.voiceId} value={v.voiceId}>
+             <div className="flex items-center gap-2">
+              {v.previewUrl && (
+               <div className="size-4 rounded-full overflow-hidden border border-border/50">
+                <img src={v.previewUrl} alt="" className="size-full object-cover" />
+               </div>
+              )}
+              <span className="truncate max-w-[180px]">{v.name}</span>
+             </div>
+            </SelectItem>
+           ))}
+          </ScrollArea>
          </SelectContent>
         </Select>
         <Button
@@ -1074,117 +1127,231 @@ export default function TtsManager() {
     </CardFooter>
    </Card>
 
-   <Card className={`border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)] ${TAB_VIEWPORT_CARD_HEIGHT_CLASS} lg:overflow-hidden`}>
-    <CardContent className="flex min-h-0 flex-1 flex-col gap-5">
-     <div className="flex flex-wrap items-center gap-2">
-      {selectedBatch ? (
-       <>
-        <Button
-         type="button"
-         variant="outline"
-         onClick={() => selectAllCompletedRows()}
-         disabled={completedItems.length === 0}
-        >
-         Chọn các dòng hoàn tất
-        </Button>
-        <Button
-         type="button"
-         variant="outline"
-         onClick={() => clearSelection()}
-         disabled={selectedItemIds.length === 0}
-        >
-         Bỏ chọn
-        </Button>
-        <Button
-         type="button"
-         onClick={() => void handleExportSelected()}
-         disabled={selectedItemIds.length === 0 || exporting}
-        >
-         {exporting ? "Đang xuất..." : `Xuất mục đã chọn (${selectedItemIds.length})`}
-        </Button>
-        {selectedBatch.status === "running" || selectedBatch.status === "queued" ? (
-         <Button type="button" variant="secondary" onClick={() => void handlePauseBatch()}>
-          Tạm dừng
-         </Button>
-        ) : null}
-        {selectedBatch.status === "paused" ? (
-         <Button type="button" variant="default" onClick={() => void handleResumeBatch()}>
-          Tiếp tục
-         </Button>
-        ) : null}
-        {ACTIVE_BATCH_STATUSES.has(selectedBatch.status) || selectedBatch.status === "paused" ? (
-         <Button type="button" variant="destructive" onClick={() => void handleCancelBatch()}>
-          Dừng
-         </Button>
-        ) : null}
-       </>
-      ) : null}
-      <Button
-       type="button"
-       variant="outline"
-       disabled={!showingPreview && !selectedBatch}
-       onClick={handleClearTable}
-      >
-       Xóa bảng
-      </Button>
+   <Card className={`border-border/70 shadow-[0_24px_90px_rgba(15,23,42,0.08)] ${TAB_VIEWPORT_CARD_HEIGHT_CLASS} lg:overflow-hidden flex flex-col`}>
+    <Tabs defaultValue="progress" className="flex-1 flex flex-col min-h-0">
+     <div className="flex items-center justify-between px-4 border-b border-border/70 shrink-0 h-11 bg-muted/5">
+      <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">TTS</span>
+      <TabsList className="h-7 bg-muted/40 p-0.5 rounded-lg border border-border/50">
+       <TabsTrigger value="progress" className="h-6 text-[10px] px-3 font-bold uppercase tracking-wider data-[state=active]:bg-background data-[state=active]:shadow-sm">
+        Tiến trình
+       </TabsTrigger>
+       <TabsTrigger value="projects" className="h-6 text-[10px] px-3 font-bold uppercase tracking-wider data-[state=active]:bg-background data-[state=active]:shadow-sm">
+        Dự án
+       </TabsTrigger>
+      </TabsList>
      </div>
 
-     {showingPreview && preview ? (
-      <div className="min-h-[22rem] overflow-auto rounded-xl border border-border/70 p-4 lg:flex-1 lg:min-h-0">
-       <div className="space-y-3">
-        {preview.rows.map((row) => (
-         <div
-          key={`${row.rowNumber}-${row.sequenceLabel}`}
-          className="rounded-xl border border-border/70 p-4"
-         >
-          <div className="flex items-baseline gap-2">
-           <span className="shrink-0 text-sm font-medium">{row.sequenceLabel}</span>
-           <p className="text-sm text-muted-foreground">{row.text}</p>
+     <TabsContent value="progress" className="flex-1 flex flex-col min-h-0 m-0 border-0">
+      <CardContent className="flex min-h-0 flex-1 flex-col gap-5 p-4 overflow-y-auto">
+       <div className="flex flex-wrap items-center gap-2">
+        {selectedBatch ? (
+         <>
+          <Button
+           type="button"
+           variant="outline"
+           size="sm"
+           className="h-8 text-[11px]"
+           onClick={() => selectAllCompletedRows()}
+           disabled={completedItems.length === 0}
+          >
+           Chọn dòng hoàn tất
+          </Button>
+          <Button
+           type="button"
+           variant="outline"
+           size="sm"
+           className="h-8 text-[11px]"
+           onClick={() => clearSelection()}
+           disabled={selectedItemIds.length === 0}
+          >
+           Bỏ chọn
+          </Button>
+          <Button
+           type="button"
+           size="sm"
+           className="h-8 text-[11px]"
+           onClick={() => void handleExportSelected()}
+           disabled={selectedItemIds.length === 0 || exporting}
+          >
+           {exporting ? "Đang xuất..." : `Xuất (${selectedItemIds.length})`}
+          </Button>
+          {selectedBatch.status === "running" || selectedBatch.status === "queued" ? (
+           <Button type="button" variant="secondary" size="sm" className="h-8 text-[11px]" onClick={() => void handlePauseBatch()}>
+            Tạm dừng
+           </Button>
+          ) : null}
+          {selectedBatch.status === "paused" ? (
+           <Button type="button" variant="default" size="sm" className="h-8 text-[11px]" onClick={() => void handleResumeBatch()}>
+            Tiếp tục
+           </Button>
+          ) : null}
+          {ACTIVE_BATCH_STATUSES.has(selectedBatch.status) || selectedBatch.status === "paused" ? (
+           <Button type="button" variant="destructive" size="sm" className="h-8 text-[11px]" onClick={() => void handleCancelBatch()}>
+            Dừng
+           </Button>
+          ) : null}
+         </>
+        ) : null}
+        <Button
+         type="button"
+         variant="outline"
+         size="sm"
+         className="h-8 text-[11px]"
+         disabled={!showingPreview && !selectedBatch}
+         onClick={handleClearTable}
+        >
+         Xóa bảng
+        </Button>
+       </div>
+
+       {showingPreview && preview ? (
+        <div className="min-h-[22rem] overflow-auto rounded-xl border border-border/70 p-4 lg:flex-1 lg:min-h-0">
+         <div className="space-y-3">
+          {preview.rows.map((row) => (
+           <div
+            key={`${row.rowNumber}-${row.sequenceLabel}`}
+            className="rounded-xl border border-border/70 p-4"
+           >
+            <div className="flex items-baseline gap-2">
+             <span className="shrink-0 text-sm font-medium">{row.sequenceLabel}</span>
+             <p className="text-sm text-muted-foreground">{row.text}</p>
+            </div>
+           </div>
+          ))}
+         </div>
+        </div>
+       ) : selectedBatch ? (
+        <>
+         <div className="min-h-[22rem] overflow-auto rounded-xl border border-border/70 p-4 lg:flex-1 lg:min-h-0">
+          <div className="space-y-4">
+           {detailLoading && !selectedBatch.items.length ? (
+            <Card className="border-border/70">
+             <CardContent className="pt-6 text-sm text-muted-foreground">
+              Đang tải chi tiết batch...
+             </CardContent>
+            </Card>
+           ) : null}
+
+           {selectedBatch.items.map((item) => (
+            <TtsItemCard
+             key={item.id}
+             item={item}
+             selected={selectedItemIds.includes(item.id)}
+             canRetry={item.status === "failed" && !selectedBatchActive}
+             retrying={retryingItemId === item.id}
+             onPickTake={(takeId) => void handlePickTake(item.id, takeId)}
+             onToggleExport={() => handleToggleExportFromTakeCard(item.id)}
+             onRetry={() => void handleRetryItem(item.id)}
+            />
+           ))}
           </div>
          </div>
-        ))}
-       </div>
-      </div>
-     ) : selectedBatch ? (
-      <>
-       <div className="min-h-[22rem] overflow-auto rounded-xl border border-border/70 p-4 lg:flex-1 lg:min-h-0">
-        <div className="space-y-4">
-         {detailLoading && !selectedBatch.items.length ? (
-          <Card className="border-border/70">
-           <CardContent className="pt-6 text-sm text-muted-foreground">
-            Đang tải chi tiết batch...
-           </CardContent>
-          </Card>
-         ) : null}
-
-         {selectedBatch.items.map((item) => (
-          <TtsItemCard
-           key={item.id}
-           item={item}
-           selected={selectedItemIds.includes(item.id)}
-           canRetry={item.status === "failed" && !selectedBatchActive}
-           retrying={retryingItemId === item.id}
-           onPickTake={(takeId) => void handlePickTake(item.id, takeId)}
-           onToggleExport={() => handleToggleExportFromTakeCard(item.id)}
-           onRetry={() => void handleRetryItem(item.id)}
-          />
-         ))}
+        </>
+       ) : (
+        <div className="flex min-h-[22rem] items-center justify-center px-6 text-center lg:flex-1 lg:min-h-0">
+         <div className="max-w-md space-y-3">
+          <p className="text-2xl font-semibold tracking-tight text-foreground">
+           Chưa có dữ liệu
+          </p>
+          <p className="text-sm leading-7 text-muted-foreground">
+           Xem trước một sheet hoặc chọn một dự án đã lưu từ tab &ldquo;Dự án&rdquo; để xem chi tiết.
+          </p>
+         </div>
         </div>
+       )}
+      </CardContent>
+     </TabsContent>
+
+     <TabsContent value="projects" className="flex-1 flex flex-col min-h-0 m-0 border-0 p-0">
+      <ScrollArea className="flex-1">
+       <div className="p-4 space-y-3">
+        {batchSummaries.length === 0 ? (
+          <div className="text-center py-20 text-muted-foreground text-sm">
+            Chưa có dự án TTS nào được lưu.
+          </div>
+        ) : (
+          batchSummaries.map((b) => (
+            <div 
+              key={b.id} 
+              className={cn(
+                "p-4 rounded-xl border border-border/70 cursor-pointer transition-all hover:bg-muted/30 group relative",
+                selectedBatchId === b.id ? "bg-muted/40 border-primary/40 ring-1 ring-primary/20 shadow-sm" : "bg-card"
+              )}
+              onClick={() => {
+                setSelectedBatchId(b.id);
+              }}
+            >
+              <div className="flex items-start justify-between gap-4 mb-2">
+                <div className="min-w-0 flex-1 pr-16">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-xs font-bold text-muted-foreground">#{b.id.slice(-6)}</span>
+                    <Badge variant={ttsStatusVariant(b.status)} className="h-4 text-[9px] px-1.5 uppercase font-black">
+                      {ttsStatusLabel(b.status)}
+                    </Badge>
+                  </div>
+                  <h4 className="text-sm font-bold truncate">
+                    {b.name || b.voiceName || "Dự án TTS"}
+                  </h4>
+                  <div className="text-[10px] text-muted-foreground flex items-center gap-1 mt-1">
+                    <Clock className="size-2.5" />
+                    {new Date(b.createdAt).toLocaleDateString("vi-VN")}
+                    {b.voiceName && !b.name && <span className="ml-1 truncate">• {b.voiceName}</span>}
+                  </div>
+                </div>
+              </div>
+              
+              <div className="flex items-center gap-3">
+                <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
+                  <div 
+                    className="h-full bg-primary transition-all duration-500" 
+                    style={{ width: `${b.stats.total > 0 ? (b.stats.completed / b.stats.total) * 100 : 0}%` }}
+                  />
+                </div>
+                <span className="text-[10px] font-bold tabular-nums">
+                  {b.stats.completed}/{b.stats.total}
+                </span>
+              </div>
+              
+              {/* Action buttons */}
+              <div className="absolute top-3 right-3 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 rounded-lg bg-background/80 backdrop-blur-sm border border-border/50 hover:text-primary shadow-sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void handleRenameBatch(b.id, b.name || b.voiceName || "");
+                  }}
+                  title="Đổi tên"
+                >
+                  <Pencil className="size-3" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 rounded-lg bg-background/80 backdrop-blur-sm border border-border/50 hover:text-destructive shadow-sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void handleDeleteBatch(b.id);
+                  }}
+                  title="Xóa dự án"
+                >
+                  <Trash2 className="size-3" />
+                </Button>
+              </div>
+              
+              {selectedBatchId !== b.id && (
+                <div className="absolute top-1/2 -translate-y-1/2 right-3 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+                  <ChevronRight className="size-4 text-primary" />
+                </div>
+              )}
+            </div>
+          ))
+        )}
        </div>
-      </>
-     ) : (
-      <div className="flex min-h-[22rem] items-center justify-center px-6 text-center lg:flex-1 lg:min-h-0">
-       <div className="max-w-md space-y-3">
-        <p className="text-2xl font-semibold tracking-tight text-foreground">
-         Chưa chọn xem trước hoặc hàng đợi
-        </p>
-        <p className="text-sm leading-7 text-muted-foreground">
-         Xem trước một sheet để điền dữ liệu vào bảng ngay, hoặc chọn một batch TTS đã lưu để nghe và xuất từng lượt tạo.
-        </p>
-       </div>
-      </div>
-     )}
-    </CardContent>
+      </ScrollArea>
+     </TabsContent>
+    </Tabs>
    </Card>
   </div>
  );

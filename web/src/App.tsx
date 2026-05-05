@@ -1850,23 +1850,41 @@ function getErrorMessage(error: unknown) {
 }
 
 function ThemeToggleButton() {
-  const [theme, setTheme] = useState<"light" | "dark" | "system">("system");
+  // Initialize theme from localStorage first for instant feedback, then sync with server
+  const [theme, setTheme] = useLocalStorage<"light" | "dark" | "system">("app.theme", "system");
 
   useEffect(() => {
     let active = true;
     getThumbnailBootstrap()
       .then((payload) => {
         if (active && payload.settings.app_theme) {
-          const nextTheme = payload.settings.app_theme as any;
-          setTheme(nextTheme);
-          const isDark = nextTheme === "dark" || (nextTheme === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
-          document.documentElement.classList.toggle("dark", isDark);
-          document.documentElement.classList.toggle("light", !isDark);
+          const remoteTheme = payload.settings.app_theme as any;
+          if (remoteTheme !== theme) {
+            setTheme(remoteTheme);
+          }
         }
       })
-      .catch((err) => console.error(err));
+      .catch((err) => console.error("Theme sync error:", err));
     return () => { active = false; };
-  }, []);
+  }, [theme, setTheme]);
+
+  // Apply theme to document
+  useEffect(() => {
+    const isDark = theme === "dark" || (theme === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+    document.documentElement.classList.toggle("dark", isDark);
+    document.documentElement.classList.toggle("light", !isDark);
+    
+    // Listen for system theme changes if in system mode
+    if (theme === "system") {
+      const media = window.matchMedia("(prefers-color-scheme: dark)");
+      const listener = (e: MediaQueryListEvent) => {
+        document.documentElement.classList.toggle("dark", e.matches);
+        document.documentElement.classList.toggle("light", !e.matches);
+      };
+      media.addEventListener("change", listener);
+      return () => media.removeEventListener("change", listener);
+    }
+  }, [theme]);
 
   const handleToggle = async () => {
     const nextTheme = theme === "dark" ? "light" : theme === "light" ? "system" : "dark";

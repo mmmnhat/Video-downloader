@@ -620,6 +620,39 @@ class AppHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
 
+        if path == "/api/story/projects/create":
+            try:
+                payload = self._read_json_body()
+                self._send_json(story_pipeline.create_project(payload), status=HTTPStatus.CREATED)
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path.startswith("/api/story/projects/") and path.endswith("/select"):
+            project_id = path.split("/")[4]
+            try:
+                self._send_json(story_pipeline.select_project(project_id))
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path.startswith("/api/story/projects/") and path.endswith("/delete"):
+            project_id = path.split("/")[4]
+            try:
+                self._send_json(story_pipeline.delete_project(project_id))
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path.startswith("/api/story/projects/") and path.endswith("/rename"):
+            project_id = path.split("/")[4]
+            try:
+                payload = self._read_json_body()
+                self._send_json(story_pipeline.rename_project(project_id, payload))
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
         if path == "/api/story/videos/import":
             try:
                 payload = self._read_json_body()
@@ -1018,6 +1051,28 @@ class AppHandler(BaseHTTPRequestHandler):
                         destination_dir=destination_dir,
                     )
                 )
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path.startswith("/api/tts/batches/") and path.endswith("/rename"):
+            batch_id = path.split("/")[-2]
+            try:
+                payload = self._read_json_body()
+            except json.JSONDecodeError:
+                self._send_json({"error": "Body must be valid JSON."}, status=HTTPStatus.BAD_REQUEST)
+                return
+            name = str(payload.get("name", "")).strip()
+            try:
+                self._send_json(tts_manager.rename_batch(batch_id, name))
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if path.startswith("/api/tts/batches/") and path.endswith("/delete"):
+            batch_id = path.split("/")[-2]
+            try:
+                self._send_json(tts_manager.delete_batch(batch_id))
             except ValueError as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return

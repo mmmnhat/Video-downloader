@@ -1338,10 +1338,16 @@ export default function MaskCanvas({
  };
 
  const handleWheel = (e: React.WheelEvent) => {
+  e.preventDefault();
   if (e.ctrlKey || e.metaKey) {
-   e.preventDefault();
    const delta = -e.deltaY * 0.001;
    setScale((currentScale) => clamp(currentScale + delta, MIN_SCALE, MAX_SCALE));
+   setHasZoomed(true);
+  } else {
+   setPan((currentPan) => ({
+    x: currentPan.x - e.deltaX,
+    y: currentPan.y - e.deltaY,
+   }));
    setHasZoomed(true);
   }
  };
@@ -2106,6 +2112,24 @@ export default function MaskCanvas({
         transformOrigin: "center center",
        }}
       >
+        {/* Background layer */}
+        <div 
+          className="absolute inset-0 pointer-events-none overflow-hidden"
+          style={{
+            zIndex: -1,
+            backgroundColor: canvasBgType === "solid" ? (canvasBgColor || "#000000") : "transparent",
+            backgroundImage: canvasBgType === "transparent" 
+              ? "linear-gradient(45deg, #808080 25%, transparent 25%), linear-gradient(-45deg, #808080 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #808080 75%), linear-gradient(-45deg, transparent 75%, #808080 75%)"
+              : canvasBgType === "custom" && canvasBgImage
+                ? `url(${canvasBgImage})`
+                : "none",
+            backgroundSize: canvasBgType === "transparent" ? "20px 20px" : canvasBgFit === "cover" ? "cover" : canvasBgFit === "contain" ? "contain" : "100% 100%",
+            backgroundPosition: canvasBgType === "transparent" ? "0 0, 0 10px, 10px -10px, -10px 0px" : "center center",
+            backgroundRepeat: canvasBgType === "transparent" ? "repeat" : "no-repeat",
+            opacity: canvasBgType === "custom" ? (canvasBgOpacity ?? 100) / 100 : 1,
+            filter: canvasBgType === "custom" ? `brightness(${(canvasBgBrightness ?? 100) / 100})` : "none",
+          }}
+        />
        <img
         ref={imageRef}
         src={imageUrl}

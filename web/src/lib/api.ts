@@ -222,6 +222,7 @@ export type TtsBatchStats = {
 
 export type TtsBatchSummary = {
   id: string;
+  name?: string | null;
   createdAt: string;
   lastUpdatedAt: string;
   status: string;
@@ -362,6 +363,7 @@ export type StoryVideoSummary = {
   completedSteps: number;
   reviewSteps: number;
   error: string | null;
+  lastInsertedStepId?: string | null;
 };
 
 export type StoryVideoDetail = StoryVideoSummary & {
@@ -369,9 +371,20 @@ export type StoryVideoDetail = StoryVideoSummary & {
   markers: StoryMarker[];
 };
 
+export type StoryProjectSummary = {
+  id: string;
+  name: string;
+  folderPath: string;
+  videoCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type StoryBootstrapPayload = {
   settings: StorySettings;
   globalPrompt: string;
+  projects: StoryProjectSummary[];
+  activeProjectId: string | null;
   videoSummaries: StoryVideoSummary[];
   activeVideoId: string | null;
   sessionStatus: StorySessionStatus;
@@ -817,6 +830,14 @@ export async function chooseFolder() {
   });
 }
 
+export async function chooseFile(options?: { filters?: Array<{ name: string; extensions: string[] }> }) {
+  return requestJson<{ path: string }>("/api/system/choose-file", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(options || {}),
+  });
+}
+
 export async function chooseBrowser() {
   return requestJson<{ path: string }>("/api/system/choose-browser", {
     method: "POST",
@@ -1014,6 +1035,24 @@ export async function exportTtsBatch(batchId: string, itemIds: string[], destina
   );
 }
 
+export async function deleteTtsBatch(batchId: string) {
+  return requestJson<{ ok: boolean; deleted: string }>(
+    `/api/tts/batches/${batchId}/delete`,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+  );
+}
+
+export async function renameTtsBatch(batchId: string, name: string) {
+  return requestJson<TtsBatchSummary>(
+    `/api/tts/batches/${batchId}/rename`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    },
+  );
+}
+
 export async function getCacheBootstrap() {
   return requestJson<CacheBootstrapPayload>("/api/cache/bootstrap");
 }
@@ -1077,10 +1116,38 @@ export async function openStoryLogin() {
 }
 
 export async function scanStoryFolder(folderPath: string) {
-  return requestJson<StoryVideoDetail[]>("/api/story/videos/scan-folder", {
+  return requestJson<StoryBootstrapPayload>("/api/story/videos/scan-folder", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ folder_path: folderPath }),
+  });
+}
+
+export async function createStoryProject(name: string, folderPath: string) {
+  return requestJson<StoryBootstrapPayload>("/api/story/projects/create", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, folder: folderPath }),
+  });
+}
+
+export async function selectStoryProject(projectId: string) {
+  return requestJson<StoryBootstrapPayload>(`/api/story/projects/${projectId}/select`, {
+    method: "POST",
+  });
+}
+
+export async function deleteStoryProject(projectId: string) {
+  return requestJson<StoryBootstrapPayload>(`/api/story/projects/${projectId}/delete`, {
+    method: "POST",
+  });
+}
+
+export async function renameStoryProject(projectId: string, name: string) {
+  return requestJson<StoryBootstrapPayload>(`/api/story/projects/${projectId}/rename`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
   });
 }
 

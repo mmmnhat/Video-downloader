@@ -219,6 +219,15 @@ class DesktopWindow(QMainWindow):
         # Auto-grant clipboard and other basic permissions for our app
         request.grant()
 
+    def resizeEvent(self, event):
+        self.qsettings.setValue("geometry", self.saveGeometry())
+        self.qsettings.setValue("windowState", self.saveState())
+        super().resizeEvent(event)
+
+    def moveEvent(self, event):
+        self.qsettings.setValue("geometry", self.saveGeometry())
+        super().moveEvent(event)
+
     def closeEvent(self, event):
         self.qsettings.setValue("geometry", self.saveGeometry())
         self.qsettings.setValue("windowState", self.saveState())
@@ -229,6 +238,7 @@ class DesktopWindow(QMainWindow):
 def run_desktop(url: str) -> int:
     app = QApplication(sys.argv)
     app.setOrganizationName("Nhat")
+    app.setOrganizationDomain("nhat.com")
     app.setApplicationName("VideoDownloader")
     window = DesktopWindow(url)
     window.show()

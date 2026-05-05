@@ -38,30 +38,44 @@ class XmpScanner:
         self.last_scan_diagnostics: XmpScanDiagnostics | None = None
         self._logged_missing_exiftool = False
 
-    def scan_folder(self, folder_path: str) -> tuple[list[dict], XmpScanDiagnostics]:
+    def scan_folder(self, folder_path: str, output_dir: Path | None = None) -> tuple[list[dict], XmpScanDiagnostics]:
         """
         Scans a folder for video files, extracts markers, and prepares a manifest-like list.
         """
-        folder = Path(folder_path).expanduser().resolve()
-        if not folder.exists() or not folder.is_dir():
-            raise ValueError(f"Thu muc khong ton tai: {folder_path}")
+        target = Path(folder_path).expanduser().resolve()
+        if not target.exists():
+            raise ValueError(f"Duong dan khong ton tai: {folder_path}")
 
         video_extensions = {".mp4", ".mov", ".mkv", ".avi", ".m4v"}
+        
+        if target.is_file():
+            folder = target.parent
+            video_files = [target] if target.suffix.lower() in video_extensions else []
+            # For a single file, we also want its sidecar .xmp if it exists nearby
+            xmp_files = sorted(
+                file_path
+                for file_path in folder.glob("*.xmp")
+                if file_path.is_file()
+                and not self._should_skip_path(file_path, folder)
+            )
+        else:
+            folder = target
+            video_files = sorted(
+                file_path
+                for file_path in folder.rglob("*")
+                if file_path.is_file()
+                and file_path.suffix.lower() in video_extensions
+                and not self._should_skip_path(file_path, folder)
+            )
+            xmp_files = sorted(
+                file_path
+                for file_path in folder.rglob("*")
+                if file_path.is_file()
+                and file_path.suffix.lower() == ".xmp"
+                and not self._should_skip_path(file_path, folder)
+            )
+        
         results = []
-        video_files = sorted(
-            file_path
-            for file_path in folder.rglob("*")
-            if file_path.is_file()
-            and file_path.suffix.lower() in video_extensions
-            and not self._should_skip_path(file_path, folder)
-        )
-        xmp_files = sorted(
-            file_path
-            for file_path in folder.rglob("*")
-            if file_path.is_file()
-            and file_path.suffix.lower() == ".xmp"
-            and not self._should_skip_path(file_path, folder)
-        )
         xmp_index = self._build_xmp_index(xmp_files)
         videos_with_markers: list[str] = []
         videos_without_markers: list[str] = []
@@ -82,8 +96,9 @@ class XmpScanner:
                 "markers": []
             }
 
-            # Mirror subfolders to avoid collisions between same-named clips.
-            frames_dir = folder / "_frames" / file_path.relative_to(folder).with_suffix("")
+            # Use output_dir if provided, otherwise fallback to folder (source dir)
+            base_frames_dir = output_dir if output_dir else folder
+            frames_dir = base_frames_dir / ".frames" / file_path.relative_to(folder).with_suffix("")
             frames_dir.mkdir(parents=True, exist_ok=True)
 
             prepared_markers: list[dict] = []

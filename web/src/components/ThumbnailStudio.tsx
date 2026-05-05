@@ -3737,7 +3737,7 @@ async function requestExportFolder() {
                    input.click();
                  }}>
                   {thumbnailSettingsDraft?.canvas_bg_image ? (
-                   <><Upload className="size-3 mr-2" /> Thay đổi ảnh</>
+                   <><RefreshCw className="size-3 mr-2" /> Thay đổi ảnh</>
                   ) : (
                    <><Upload className="size-3 mr-2" /> Tải ảnh lên</>
                   )}
