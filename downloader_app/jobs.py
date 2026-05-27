@@ -1319,17 +1319,17 @@ class DownloadManager:
     def _platform_yt_dlp_args(self, item: DownloadItem) -> list[str]:
         # Concurrent fragments speeds up downloads but too many can trigger rate limiting
         if item.platform == "youtube":
-            # YouTube is sensitive to too many connections - keep lower
-            return ["--concurrent-fragments", "2"]
+            # YouTube is sensitive to too many connections - keep optimized
+            return ["--concurrent-fragments", "5"]
         if item.platform == "dumpert":
             # Dumpert CDN may not support many concurrent range requests
             return []
         if item.platform == "nicovideo":
             # Nico can throttle aggressively when segment concurrency is high.
-            return ["--concurrent-fragments", "2"]
+            return ["--concurrent-fragments", "3"]
         if item.platform == "28lab":
             return []
-        return ["--concurrent-fragments", "4"]
+        return ["--concurrent-fragments", "6"]
 
     def _run_yt_dlp_command(
         self,
@@ -1873,6 +1873,67 @@ class DownloadManager:
             clipped_path = source_path.with_name(
                 f"{source_path.stem}.{clip_index}.mp4"
             )
+
+            # Step 1: Try fast copy-remux first (extremely fast, < 0.1 seconds!)
+            copy_command = [
+                self._require_ffmpeg(),
+                "-threads", "2",
+                "-y",
+                "-ss", self._format_ffmpeg_timestamp(clip_range.start_seconds),
+            ]
+            if clip_range.end_seconds is not None:
+                copy_command.extend(
+                    [
+                        "-to",
+                        self._format_ffmpeg_timestamp(clip_range.end_seconds),
+                    ]
+                )
+            copy_command.extend(
+                [
+                    "-i", str(source_path),
+                    "-map", "0:v:0",
+                    "-map", "0:a?",
+                    "-c", "copy",
+                    "-avoid_negative_ts", "make_zero",
+                    "-movflags", "+faststart",
+                    str(clipped_path),
+                ]
+            )
+
+            _proc_key = f"{item.id}:clip:{clip_index}"
+            process = subprocess.Popen(
+                copy_command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                **SUBPROCESS_KWARGS,
+            )
+            with self._lock:
+                self._active_processes.setdefault(batch_id, {})[_proc_key] = process
+            try:
+                stdout, stderr = process.communicate()
+            finally:
+                with self._lock:
+                    self._active_processes.get(batch_id, {}).pop(_proc_key, None)
+
+            if cancel_event.is_set():
+                clipped_path.unlink(missing_ok=True)
+                for path in created_paths:
+                    path.unlink(missing_ok=True)
+                raise BatchCancelledError("Batch stopped by user.")
+
+            if process.returncode == 0 and clipped_path.exists() and clipped_path.stat().st_size > 0:
+                created_paths.append(clipped_path)
+                continue
+
+            # Step 2: Fallback to slow H.264 transcoding if copy-remux fails
+            clipped_path.unlink(missing_ok=True)
+
+            cut_preset = "veryfast"
+            height = self._probe_video_height(source_path)
+            if height is not None and height > VIDEO_REPAIR_TARGET_HEIGHT:
+                cut_preset = "ultrafast"
+
             command = [
                 self._require_ffmpeg(),
                 "-threads",
@@ -1899,7 +1960,7 @@ class DownloadManager:
                     "-c:v",
                     "libx264",
                     "-preset",
-                    "veryfast",
+                    cut_preset,
                     "-crf",
                     "18",
                     "-c:a",
@@ -1912,7 +1973,6 @@ class DownloadManager:
                 ]
             )
 
-            _proc_key = f"{item.id}:clip:{clip_index}"
             process = subprocess.Popen(
                 command,
                 stdout=subprocess.PIPE,
@@ -2066,6 +2126,32 @@ class DownloadManager:
         remux_path.unlink(missing_ok=True)
         return str(target_path)
 
+    def _probe_video_duration(self, source_path: Path) -> float | None:
+        if not self._ffprobe_cmd:
+            return None
+
+        process = subprocess.run(
+            [
+                self._ffprobe_cmd,
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(source_path),
+            ],
+            capture_output=True,
+            text=True,
+            **SUBPROCESS_KWARGS,
+        )
+        if process.returncode != 0:
+            return None
+        try:
+            return float(process.stdout.strip())
+        except ValueError:
+            return None
+
     def _verify_video_integrity(
         self,
         batch_id: str,
@@ -2079,17 +2165,28 @@ class DownloadManager:
         if not self._ffmpeg_cmd:
             return True, None
 
-        command = [
+        # 1. Quick probe using ffprobe to check format and streams
+        codec = self._probe_video_codec(source_path)
+        if codec is None:
+            return False, "Cannot parse video metadata/streams (corrupted or unsupported format)."
+
+        duration = self._probe_video_duration(source_path)
+
+        # 2. Fast check of the first 2 seconds
+        check_duration = 2.0
+        if duration is not None and duration < check_duration:
+            check_duration = max(0.5, duration)
+
+        command_start = [
             self._require_ffmpeg(),
             "-threads",
             "2",
             "-v",
             "error",
-            "-xerror",
-            "-err_detect",
-            "explode",
             "-i",
             str(source_path),
+            "-t",
+            f"{check_duration:.1f}",
             "-map",
             "0:v:0",
             "-f",
@@ -2098,26 +2195,45 @@ class DownloadManager:
         ]
         returncode, stdout, stderr = self._run_ffmpeg_command(
             batch_id=batch_id,
-            item_id=item.id,
-            command=command,
+            item_id=f"{item.id}:integrity_start",
+            command=command_start,
         )
         if cancel_event.is_set():
             raise BatchCancelledError("Batch stopped by user.")
-        if returncode == 0:
-            return True, None
+        if returncode != 0:
+            return False, self._summarize_process_message(stdout, stderr, "ffmpeg start check failed")
 
-        message = self._summarize_process_message(stdout, stderr, "ffmpeg integrity check failed")
-        lowered = message.lower()
-        if (
-            "unknown decoder" in lowered
-            or "decoder not found" in lowered
-            or "unsupported codec" in lowered
-            or "could not find codec parameters" in lowered
-        ):
-            # Decoder support varies by bundled ffmpeg build. Skip strict integrity
-            # rejection if this runtime cannot decode the source codec.
-            return True, None
-        return False, message
+        # 3. Fast check of the last 2 seconds (to detect truncation)
+        # Only run if duration is known and is long enough
+        if duration is not None and duration > 5.0:
+            seek_start = max(0.0, duration - 2.0)
+            command_end = [
+                self._require_ffmpeg(),
+                "-threads",
+                "2",
+                "-v",
+                "error",
+                "-ss",
+                f"{seek_start:.2f}",
+                "-i",
+                str(source_path),
+                "-map",
+                "0:v:0",
+                "-f",
+                "null",
+                "-",
+            ]
+            returncode, stdout, stderr = self._run_ffmpeg_command(
+                batch_id=batch_id,
+                item_id=f"{item.id}:integrity_end",
+                command=command_end,
+            )
+            if cancel_event.is_set():
+                raise BatchCancelledError("Batch stopped by user.")
+            if returncode != 0:
+                return False, self._summarize_process_message(stdout, stderr, "ffmpeg end check failed (video might be truncated)")
+
+        return True, None
 
     def _run_ffmpeg_command(
         self,
@@ -2165,9 +2281,52 @@ class DownloadManager:
         if not source_path.exists():
             return output_path
 
-        if not self._output_requires_h264_transcode(source_path):
-            return output_path
+        # 1. If it is not .mp4, try a fast copy remux to .mp4 first (siêu tốc dưới 1s)
+        if source_path.suffix.lower() != ".mp4":
+            temp_mp4 = source_path.with_name(f"{source_path.stem}.temp_remux.mp4")
+            remux_command = [
+                self._require_ffmpeg(),
+                "-threads", "2",
+                "-y",
+                "-i", str(source_path),
+                "-map", "0:v:0",
+                "-map", "0:a?",
+                "-c", "copy",
+                "-movflags", "+faststart",
+                str(temp_mp4),
+            ]
+            process = subprocess.Popen(
+                remux_command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                **SUBPROCESS_KWARGS,
+            )
+            with self._lock:
+                self._active_processes.setdefault(batch_id, {})[item.id] = process
+            try:
+                stdout, stderr = process.communicate()
+            finally:
+                with self._lock:
+                    self._active_processes.get(batch_id, {}).pop(item.id, None)
 
+            if cancel_event.is_set():
+                temp_mp4.unlink(missing_ok=True)
+                raise BatchCancelledError("Batch stopped by user.")
+
+            if process.returncode == 0 and temp_mp4.exists() and temp_mp4.stat().st_size > 0:
+                source_path.unlink(missing_ok=True)
+                target_mp4 = source_path.with_suffix(".mp4")
+                temp_mp4.replace(target_mp4)
+                source_path = target_mp4
+            else:
+                temp_mp4.unlink(missing_ok=True)
+
+        # 2. Check if the (potentially remuxed) file requires transcoding
+        if not self._output_requires_h264_transcode(source_path):
+            return str(source_path)
+
+        # 3. Transcode to H264 (will only run if <= 1080p and not already H264)
         normalized_path = source_path.with_name(f"{source_path.stem}.h264.mp4")
         command = [
             self._require_ffmpeg(),
@@ -2235,6 +2394,13 @@ class DownloadManager:
             # ffprobe unavailable — assume the .mp4 from yt-dlp is already
             # H264-compatible rather than triggering a transcode that fails.
             return False
+
+        if codec != "h264":
+            height = self._probe_video_height(source_path)
+            if height is not None and height > VIDEO_REPAIR_TARGET_HEIGHT:
+                # YouTube serves 2K/4K as VP9/AV1 DASH streams. Preserve those
+                # MP4s instead of spending a long post-process pass on H.264.
+                return False
 
         return codec != "h264"
 
