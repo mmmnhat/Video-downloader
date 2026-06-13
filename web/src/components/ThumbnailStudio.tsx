@@ -1117,7 +1117,8 @@ export default function ThumbnailStudio({ isActive = true }: ThumbnailStudioProp
  const [importingButtonPreset, setImportingButtonPreset] = useState(false);
  const [importingProfilePreset, setImportingProfilePreset] = useState(false);
  const [exportingButtonPresetId, setExportingButtonPresetId] = useState<string | null>(null);
-  const selectedVersion = activeProject?.currentVersion || null; const [exportingProfilePresetId, setExportingProfilePresetId] = useState<string | null>(null);
+ const [exportingProfilePresetId, setExportingProfilePresetId] = useState<string | null>(null);
+ const selectedVersion = activeProject?.currentVersion || null;
 
  const applyCanvasStateToFields = useCallback((
   fields: ThumbnailButtonField[],
@@ -3289,9 +3290,10 @@ async function requestExportFolder() {
 
     {/* -------------------- GALLERY PREVIEW OVERLAY -------------------- */}
     {galleryPreviewVersionId !== null && activeProject && (() => {
-     const versionImgs = versions.filter(v => v.outputImagePath);
-     const currentGalleryIdx = versionImgs.findIndex(v => v.id === galleryPreviewVersionId);
-     const currentGalleryVersion = versionImgs[currentGalleryIdx];
+    const versionImgs = versions.filter(v => v.outputImagePath);
+    const currentGalleryIdx = versionImgs.findIndex(v => v.id === galleryPreviewVersionId);
+    const currentGalleryVersion = versionImgs[currentGalleryIdx];
+    if (!currentGalleryVersion) return null;
      // Resolve which slot this version belongs to for A/B badge
      const getSlot = (id: string) => {
       if (id === compareVersionAId) return "A";

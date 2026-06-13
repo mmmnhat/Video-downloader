@@ -118,6 +118,63 @@ function isExportableItem(item: TtsItem) {
  return item.takes.some((take) => take.status === "completed");
 }
 
+function isValidTtsBatchDetail(value: unknown): value is TtsBatchDetail {
+ if (!value || typeof value !== "object") {
+  return false;
+ }
+ const batch = value as Partial<TtsBatchDetail>;
+ return typeof batch.id === "string" && Array.isArray(batch.items);
+}
+
+function applyPickedTakeLocally(
+ batch: TtsBatchDetail,
+ itemId: string,
+ takeId: string,
+): TtsBatchDetail {
+ return {
+  ...batch,
+  items: batch.items.map((item) =>
+   item.id === itemId ? { ...item, pickedTakeId: takeId } : item,
+  ),
+ };
+}
+
+function mergeTtsBatchDetail(
+ current: TtsBatchDetail | null,
+ detail: TtsBatchDetail,
+): TtsBatchDetail {
+ if (!current || current.id !== detail.id) {
+  return detail;
+ }
+
+ const currentItems = new Map(current.items.map((item) => [item.id, item]));
+ return {
+  ...detail,
+  items: detail.items.map((item) => {
+   const currentItem = currentItems.get(item.id);
+   if (!currentItem) {
+    return item;
+   }
+
+   const currentTakes = new Map(currentItem.takes.map((take) => [take.id, take]));
+   return {
+    ...item,
+    takes: item.takes.map((take) => {
+     const currentTake = currentTakes.get(take.id);
+     if (!currentTake) {
+      return take;
+     }
+     return {
+      ...take,
+      outputPath: take.outputPath ?? currentTake.outputPath,
+      previewUrl: take.previewUrl ?? currentTake.previewUrl,
+     };
+    }),
+   };
+  }),
+ };
+}
+
 function isMyVoice(voice: TtsVoice) {
  if (voice.isMyVoice === true) {
   return true;
@@ -201,7 +258,11 @@ export default function TtsManager() {
     .filter((item) => isExportableItem(item) && !manuallyDeselectedItemIds.includes(item.id))
     .map((item) => item.id);
    startTransition(() => {
-    setSelectedBatch(detail);
+    setSelectedBatch((current) =>
+     detail.items.length === 0 && current?.id === detail.id
+      ? current
+      : mergeTtsBatchDetail(current, detail),
+    );
     setPreview(null);
     setSelectedItemIds((current) => {
      const validCurrent = current.filter((itemId) =>
@@ -550,7 +611,13 @@ export default function TtsManager() {
   try {
    const detail = await pickTtsTake(selectedBatch.id, itemId, takeId);
    startTransition(() => {
-    setSelectedBatch(detail);
+    setSelectedBatch((current) => {
+     const fallback = current ? applyPickedTakeLocally(current, itemId, takeId) : current;
+     if (!isValidTtsBatchDetail(detail) || detail.items.length === 0) {
+      return fallback;
+     }
+     return mergeTtsBatchDetail(fallback, detail);
+    });
     setSelectedItemIds((current) => (current.includes(itemId) ? current : [...current, itemId]));
     setManuallyDeselectedItemIds((current) => current.filter((value) => value !== itemId));
    });

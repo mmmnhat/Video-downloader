@@ -496,6 +496,7 @@ export default function MaskCanvas({
  const lastPosRef = useRef<Point | null>(null);
  const guideRef = useRef<CanvasGuide | null>(null);
  const shapesRef = useRef<CanvasShape[]>([]);
+ const fitFrameRef = useRef<number | null>(null);
 
  const selectedRatio = useMemo(
   () => ARTBOARD_RATIOS.find((item) => item.label === selectedRatioLabel) ?? ARTBOARD_RATIOS[0],
@@ -624,7 +625,6 @@ export default function MaskCanvas({
   const container = containerRef.current;
   const canvas = canvasRef.current;
   if (container.clientWidth === 0 || container.clientHeight === 0) {
-   requestAnimationFrame(() => fitToScreen(force));
    return;
   }
 
@@ -632,9 +632,10 @@ export default function MaskCanvas({
   const scaleX = (container.clientWidth - padding) / canvas.width;
   const scaleY = (container.clientHeight - padding) / canvas.height;
   const nextScale = Math.min(scaleX, scaleY, 1);
+  const normalizedScale = nextScale > 0 ? nextScale : 1;
 
-  setScale(nextScale > 0 ? nextScale : 1);
-  setPan({ x: 0, y: 0 });
+  setScale((current) => (Math.abs(current - normalizedScale) > 0.001 ? normalizedScale : current));
+  setPan((current) => (current.x === 0 && current.y === 0 ? current : { x: 0, y: 0 }));
   if (force) {
    setHasZoomed(false);
   }
@@ -767,10 +768,20 @@ export default function MaskCanvas({
  useEffect(() => {
   if (!containerRef.current || hasZoomed) return;
   const observer = new ResizeObserver(() => {
-   if (!hasZoomed) fitToScreen();
+   if (hasZoomed || fitFrameRef.current !== null) return;
+   fitFrameRef.current = window.requestAnimationFrame(() => {
+    fitFrameRef.current = null;
+    fitToScreen();
+   });
   });
   observer.observe(containerRef.current);
-  return () => observer.disconnect();
+  return () => {
+   observer.disconnect();
+   if (fitFrameRef.current !== null) {
+    window.cancelAnimationFrame(fitFrameRef.current);
+    fitFrameRef.current = null;
+   }
+  };
  }, [fitToScreen, hasZoomed]);
 
  useEffect(() => {

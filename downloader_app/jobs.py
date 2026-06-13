@@ -29,11 +29,18 @@ from downloader_app.sheets import (
     scan_sheet,
 )
 
-SUBPROCESS_KWARGS = {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)} if os.name == "nt" else {}
+# On Windows: run yt-dlp/ffmpeg at BELOW_NORMAL priority so they don't lag
+# the UI or other apps. CREATE_NO_WINDOW hides the console window.
+if os.name == "nt":
+    _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    _BELOW_NORMAL_PRIORITY = 0x00004000  # BELOW_NORMAL_PRIORITY_CLASS
+    SUBPROCESS_KWARGS = {"creationflags": _CREATE_NO_WINDOW | _BELOW_NORMAL_PRIORITY}
+else:
+    SUBPROCESS_KWARGS = {}
 
 DEFAULT_OUTPUT_DIR = app_path("downloads")
 STATE_FILE = app_path("app_state.json")
-QUALITY_OPTIONS = {"auto", "1080", "720", "480", "360"}
+QUALITY_OPTIONS = {"auto", "2160", "1440", "1080", "720", "480", "360"}
 VIDEO_REPAIR_TARGET_HEIGHT = 1080
 COOKIE_DOMAIN_HINTS = {
     "youtube": ["youtube.com", "google.com", "youtu.be"],
@@ -164,6 +171,11 @@ class DownloadManager:
         self._yt_dlp_cmd = self._resolve_yt_dlp_command()
         self._ffmpeg_cmd = resolve_binary("ffmpeg", env_var="VIDEO_DOWNLOADER_FFMPEG_BIN")
         self._ffprobe_cmd = resolve_binary("ffprobe", env_var="VIDEO_DOWNLOADER_FFPROBE_BIN")
+        self._node_cmd = (
+            resolve_binary("node", env_var="VIDEO_DOWNLOADER_NODE_BIN")
+            or shutil.which("node")
+            or shutil.which("node.exe")
+        )
         self._impersonate_target = self._resolve_impersonate_target()
         self._settings = DownloadSettings(output_dir=str(DEFAULT_OUTPUT_DIR))
         self._direct_url_cache: dict[str, str] = {}
@@ -172,6 +184,7 @@ class DownloadManager:
         # Locks to prevent multiple threads from trampling on the same output file
         self._file_locks: dict[str, threading.RLock] = {}
         self._load_state()
+        print(f"[DEBUG] node.js runtime: {self._node_cmd}", flush=True)
 
     def list_batches(self) -> list[dict]:
         with self._lock:
@@ -1293,6 +1306,11 @@ class DownloadManager:
             command.extend(["--ffmpeg-location", str(Path(self._ffmpeg_cmd).parent)])
         if use_cookie_file and cookie_file_path:
             command.extend(["--cookies", cookie_file_path])
+        # Pass node.js runtime so yt-dlp can solve YouTube JS challenges and
+        # access all quality formats (without this YouTube often returns 360p only)
+        if self._node_cmd and item.platform in ("youtube", "unknown"):
+            command.extend(["--js-runtimes", f"node:{self._node_cmd}"])
+            command.extend(["--remote-components", "ejs:github"])
         command.extend(self._quality_args(quality))
         command.extend(self._platform_yt_dlp_args(item))
         command.extend(extra_args)
@@ -1320,7 +1338,7 @@ class DownloadManager:
         # Concurrent fragments speeds up downloads but too many can trigger rate limiting
         if item.platform == "youtube":
             # YouTube is sensitive to too many connections - keep optimized
-            return ["--concurrent-fragments", "5"]
+            return ["--concurrent-fragments", "8"]
         if item.platform == "dumpert":
             # Dumpert CDN may not support many concurrent range requests
             return []
@@ -1329,7 +1347,7 @@ class DownloadManager:
             return ["--concurrent-fragments", "3"]
         if item.platform == "28lab":
             return []
-        return ["--concurrent-fragments", "6"]
+        return ["--concurrent-fragments", "8"]
 
     def _run_yt_dlp_command(
         self,
@@ -1877,7 +1895,7 @@ class DownloadManager:
             # Step 1: Try fast copy-remux first (extremely fast, < 0.1 seconds!)
             copy_command = [
                 self._require_ffmpeg(),
-                "-threads", "2",
+                "-threads", "0",
                 "-y",
                 "-ss", self._format_ffmpeg_timestamp(clip_range.start_seconds),
             ]
@@ -1929,15 +1947,12 @@ class DownloadManager:
             # Step 2: Fallback to slow H.264 transcoding if copy-remux fails
             clipped_path.unlink(missing_ok=True)
 
-            cut_preset = "veryfast"
-            height = self._probe_video_height(source_path)
-            if height is not None and height > VIDEO_REPAIR_TARGET_HEIGHT:
-                cut_preset = "ultrafast"
+            cut_preset = "ultrafast"
 
             command = [
                 self._require_ffmpeg(),
                 "-threads",
-                "2",
+                "0",
                 "-y",
                 "-ss",
                 self._format_ffmpeg_timestamp(clip_range.start_seconds),
@@ -2180,7 +2195,7 @@ class DownloadManager:
         command_start = [
             self._require_ffmpeg(),
             "-threads",
-            "2",
+            "0",
             "-v",
             "error",
             "-i",
@@ -2210,7 +2225,7 @@ class DownloadManager:
             command_end = [
                 self._require_ffmpeg(),
                 "-threads",
-                "2",
+                "0",
                 "-v",
                 "error",
                 "-ss",
@@ -2286,7 +2301,7 @@ class DownloadManager:
             temp_mp4 = source_path.with_name(f"{source_path.stem}.temp_remux.mp4")
             remux_command = [
                 self._require_ffmpeg(),
-                "-threads", "2",
+                "-threads", "0",
                 "-y",
                 "-i", str(source_path),
                 "-map", "0:v:0",
@@ -2331,7 +2346,7 @@ class DownloadManager:
         command = [
             self._require_ffmpeg(),
             "-threads",
-            "2",
+            "0",
             "-y",
             "-i",
             str(source_path),
@@ -2342,7 +2357,7 @@ class DownloadManager:
             "-c:v",
             "libx264",
             "-preset",
-            "veryfast",
+            "ultrafast",
             "-crf",
             "18",
             "-pix_fmt",
@@ -2431,6 +2446,35 @@ class DownloadManager:
         codec = process.stdout.strip().lower()
         return codec or None
 
+    def _probe_video_height(self, source_path: Path) -> int | None:
+        if not self._ffprobe_cmd:
+            return None
+
+        process = subprocess.run(
+            [
+                self._ffprobe_cmd,
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=height",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(source_path),
+            ],
+            capture_output=True,
+            text=True,
+            **SUBPROCESS_KWARGS,
+        )
+        if process.returncode != 0:
+            return None
+
+        try:
+            return int(process.stdout.strip())
+        except ValueError:
+            return None
+
     def _materialize_manual_cookie_file(self, cookies_text: str) -> tuple[str, bool]:
         candidate = Path(cookies_text.strip()).expanduser()
         if candidate.exists():
@@ -2464,14 +2508,16 @@ class DownloadManager:
         return added
 
     def _quality_args(self, quality: str) -> list[str]:
-        if quality == "auto":
-            return []
-
-        target_height = int(quality)
-        return [
-            "-f",
-            f"bestvideo*[height<={target_height}]+bestaudio/best[height<={target_height}]/best",
-        ]
+        # Always download the best quality available on all platforms.
+        # yt-dlp will use ffmpeg (bundled in vendor/) to merge the best
+        # separate video+audio streams. We never restrict by height so the
+        # user always gets the highest resolution the platform offers.
+        #
+        # Format selector priority:
+        #   1. Best video stream + best audio stream (merged via ffmpeg)
+        #   2. Best single pre-muxed stream (fallback when no separate streams)
+        _ = quality  # kept for API compatibility; no longer used
+        return ["-f", "bestvideo+bestaudio/best"]
 
     def _format_ffmpeg_timestamp(self, total_seconds: int) -> str:
         minutes, seconds = divmod(max(0, total_seconds), 60)

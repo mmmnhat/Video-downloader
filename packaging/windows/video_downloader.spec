@@ -87,6 +87,11 @@ for exiftool_name in ("exiftool.exe", "exiftool(-k).exe", "exiftool_k.exe"):
     if exiftool_path.exists():
         datas.append((str(exiftool_path), "vendor/windows/bin"))
 
+# node.exe — required by yt-dlp --js-runtimes for YouTube JS challenge solving
+node_path = REPO_ROOT / "vendor" / "windows" / "bin" / "node.exe"
+if node_path.exists():
+    datas.append((str(node_path), "vendor/windows/bin"))
+
 a = Analysis(
     [str(REPO_ROOT / "main.py")],
     pathex=[str(REPO_ROOT)],

@@ -1459,6 +1459,7 @@ def open_gemini_login_window(feature: str = "story", user_data_dir: Path = None)
                 "--no-first-run",
                 "--no-default-browser-check",
                 "--disable-sync",
+                "--disable-background-mode",
                 # Stealth flags
                 "--ignore-certificate-errors",
                 "--disable-automation",

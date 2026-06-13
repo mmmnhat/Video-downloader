@@ -249,6 +249,12 @@ def _looks_like_elevenlabs_voice_id(value: str) -> bool:
 
 
 def _is_my_voice_entry(voice: dict) -> bool:
+    is_my_voice = voice.get("is_my_voice")
+    if not isinstance(is_my_voice, bool):
+        is_my_voice = voice.get("isMyVoice")
+    if isinstance(is_my_voice, bool) and is_my_voice:
+        return True
+
     is_owner = voice.get("is_owner")
     if isinstance(is_owner, bool):
         if is_owner:
@@ -267,10 +273,10 @@ def _is_my_voice_entry(voice: dict) -> bool:
     category = str(voice.get("category", "")).strip().lower()
     if not category:
         return False
-    if category in {"premade", "professional"}:
+    if category == "premade":
         return False
 
-    return category in {"generated", "cloned", "designed", "voice_design"}
+    return True
 
 
 def _is_elevenlabs_api_url(url: str) -> bool:
@@ -334,6 +340,18 @@ def _query_match_patterns(query: str) -> list[re.Pattern[str]]:
             patterns.append(re.compile(r"[\s\S]*?".join(re.escape(part) for part in parts), re.I))
 
     return patterns
+
+
+def _voice_selection_variants(query: str) -> list[str]:
+    variants = _voice_query_variants(query)
+    query_token_count = len(re.findall(r"[A-Za-z0-9]+", query))
+    if query_token_count <= 1:
+        return variants
+    return [
+        variant
+        for variant in variants
+        if len(re.findall(r"[A-Za-z0-9]+", variant)) >= 2
+    ]
 
 
 def _format_exception_message(exc: Exception) -> str:
@@ -1041,13 +1059,14 @@ class ElevenLabsAutomation:
             return
 
         self._open_voice_picker(trigger)
+        self._ensure_my_voice_picker_tab()
 
         selection_queries: list[str] = []
-        query_candidates = [resolved_query]
+        query_candidates = [voice_query, resolved_query] if _looks_like_elevenlabs_voice_id(voice_query) else [resolved_query]
         if voice_query != resolved_query and not _looks_like_elevenlabs_voice_id(voice_query):
             query_candidates.append(voice_query)
         for candidate in query_candidates:
-            for variant in _voice_query_variants(candidate):
+            for variant in _voice_selection_variants(candidate):
                 if variant not in selection_queries:
                     selection_queries.append(variant)
 
@@ -1062,6 +1081,7 @@ class ElevenLabsAutomation:
 
         search_input = self._find_voice_search_input()
         for selection_query in selection_queries:
+            self._ensure_my_voice_picker_tab()
             if search_input is not None:
                 try:
                     search_input.scroll_into_view_if_needed()
@@ -1238,7 +1258,12 @@ class ElevenLabsAutomation:
                 except Exception:
                     continue
 
-        patterns = _query_match_patterns(query)
+        patterns: list[re.Pattern[str]] = []
+        for variant in _voice_selection_variants(query):
+            parts = [part for part in re.findall(r"[A-Za-z0-9]+", variant) if part]
+            patterns.append(re.compile(re.escape(variant), re.I))
+            if len(parts) >= 2:
+                patterns.append(re.compile(r"[\s\S]*?".join(re.escape(part) for part in parts), re.I))
         candidates = [
             self._page.get_by_role("option"),
             self._page.locator("[cmdk-item]"),
@@ -1277,8 +1302,13 @@ class ElevenLabsAutomation:
         # JavaScript fallback: scan all visible elements containing the query text
         query_lower = normalized_query.lower()
         tokens = [t for t in re.findall(r"[A-Za-z0-9]+", query_lower) if t]
-        # Try full query, then just the first token (e.g. "Adam" for "Adam American")
-        for token_subset in ([query_lower] + ([tokens[0]] if tokens else [])):
+        # Try the full query. Only use a single-token fallback when the user query
+        # itself is single-token, otherwise voices like "Leo - Vibrant..." can
+        # incorrectly match a different voice that only shares "Leo".
+        token_subsets = [query_lower]
+        if len(tokens) == 1:
+            token_subsets.append(tokens[0])
+        for token_subset in token_subsets:
             try:
                 # We try a few times in JS to wait for results
                 for _ in range(3):
@@ -1328,7 +1358,7 @@ class ElevenLabsAutomation:
         normalized_query = query.strip()
         if not normalized_query:
             raise ElevenLabsError("Query voice trong.")
-        query_variants = [variant.lower() for variant in _voice_query_variants(normalized_query)]
+        query_variants = [variant.lower() for variant in _voice_selection_variants(normalized_query)]
         query_tokens = [token.lower() for token in re.findall(r"[A-Za-z0-9]+", normalized_query) if token]
         for _ in range(3):
             try:
@@ -1341,20 +1371,44 @@ class ElevenLabsAutomation:
                             return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
                         };
                         const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+                        const tokenBoundary = (value) => value.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');
+                        const originalQuery = queryVariants[0] || queryTokens.join(' ');
+                        const scoreItem = (item) => {
+                            const text = normalize(item.innerText || item.textContent || '');
+                            const attrs = [
+                                item.getAttribute('data-agent-id'),
+                                item.getAttribute('data-voice-id'),
+                                item.getAttribute('data-value'),
+                                item.getAttribute('data-id'),
+                                item.id,
+                            ].map(normalize).filter(Boolean);
+                            if (attrs.some((attr) => attr === originalQuery)) return 10000;
+                            if (!text) return 0;
+                            if (text === originalQuery) return 9000;
+                            if (originalQuery && new RegExp(`(^|[^a-z0-9])${tokenBoundary(originalQuery)}([^a-z0-9]|$)`, 'i').test(text)) return 8500;
+                            if (queryTokens.length > 1 && queryTokens.every((token) => text.includes(token))) {
+                                return 7000 + queryTokens.length;
+                            }
+                            const strongVariant = queryVariants.find((variant) => {
+                                if (!variant || variant === originalQuery) return false;
+                                const variantTokens = variant.match(/[a-z0-9]+/g) || [];
+                                return variantTokens.length >= Math.min(queryTokens.length, 2) && text.includes(variant);
+                            });
+                            if (strongVariant) return 5000 + strongVariant.length;
+                            if (queryTokens.length === 1 && queryTokens[0].length > 1 && text.includes(queryTokens[0])) return 2500;
+                            return 0;
+                        };
                         const items = Array.from(document.querySelectorAll('li, [role="option"], [role="listitem"], [role="menuitem"], [cmdk-item], [data-slot="command-item"], [data-slot="item"]'))
                             .filter((el) => isVisible(el));
-                        for (const item of items) {
-                            const text = normalize(item.innerText || item.textContent || '');
-                            if (!text) continue;
-                            const variantMatch = queryVariants.some((variant) => variant && text.includes(variant));
-                            const tokenMatch = queryTokens.length > 0 && queryTokens.every((token) => text.includes(token));
-                            if (!variantMatch && !tokenMatch) continue;
-                            const overlay = item.querySelector('button[data-type="list-item-trigger-overlay"]');
-                            const target = overlay && isVisible(overlay) ? overlay : item;
-                            target.click();
-                            return true;
-                        }
-                        return false;
+                        const best = items
+                            .map((item) => ({ item, score: scoreItem(item) }))
+                            .filter((entry) => entry.score > 0)
+                            .sort((a, b) => b.score - a.score)[0];
+                        if (!best) return false;
+                        const overlay = best.item.querySelector('button[data-type="list-item-trigger-overlay"]');
+                        const target = overlay && isVisible(overlay) ? overlay : best.item;
+                        target.click();
+                        return true;
                     }""",
                     {"queryVariants": query_variants, "queryTokens": query_tokens},
                 )
@@ -1618,6 +1672,7 @@ class ElevenLabsAutomation:
         assert self._page is not None
         self._wait_for_idle_ui()
         if self._is_voice_picker_open():
+            self._ensure_my_voice_picker_tab()
             return
 
         trigger_candidates = []
@@ -1654,6 +1709,7 @@ class ElevenLabsAutomation:
                     self._click_with_retries(node, description="voice selector")
                     self._page.wait_for_timeout(700)
                     if self._is_voice_picker_open():
+                        self._ensure_my_voice_picker_tab()
                         search_input = self._find_voice_search_input()
                         if search_input is not None:
                             try:
@@ -1672,6 +1728,61 @@ class ElevenLabsAutomation:
                     pass
 
         raise ElevenLabsError("Khong tim thay nut chon voice tren ElevenLabs.")
+
+    def _ensure_my_voice_picker_tab(self) -> None:
+        assert self._page is not None
+        try:
+            clicked = self._page.evaluate(
+                """() => {
+                    const isVisible = (el) => {
+                        if (!el) return false;
+                        const rect = el.getBoundingClientRect();
+                        const style = window.getComputedStyle(el);
+                        return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+                    };
+                    const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+                    const roots = Array.from(document.querySelectorAll(
+                        '[role="dialog"], [role="listbox"], [cmdk-root], [data-radix-popper-content-wrapper], [data-slot="popover-content"]'
+                    )).filter((root) => isVisible(root));
+                    if (!roots.length) roots.push(document.body);
+
+                    const positive = [
+                        'my voice', 'my voices', 'your voice', 'your voices',
+                        'cloned', 'professional voice', 'voice lab'
+                    ];
+                    const negative = ['explore', 'library', 'community', 'premade', 'discover'];
+
+                    const candidates = [];
+                    for (const root of roots) {
+                        const nodes = Array.from(root.querySelectorAll(
+                            'button, [role="tab"], [role="menuitem"], a, [data-testid], [data-value]'
+                        )).filter((el) => isVisible(el));
+                        for (const el of nodes) {
+                            const text = normalize(el.innerText || el.textContent || el.getAttribute('aria-label') || el.getAttribute('data-value') || '');
+                            if (!text) continue;
+                            if (!positive.some((marker) => text.includes(marker))) continue;
+                            if (negative.some((marker) => text === marker || text.startsWith(`${marker} `))) continue;
+                            const selected = (
+                                el.getAttribute('aria-selected') === 'true' ||
+                                el.getAttribute('data-state') === 'active' ||
+                                el.getAttribute('aria-current') === 'true'
+                            );
+                            const score = (selected ? 1000 : 0) + positive.reduce((total, marker) => total + (text.includes(marker) ? marker.length : 0), 0);
+                            candidates.push({ el, score, selected });
+                        }
+                    }
+                    candidates.sort((a, b) => b.score - a.score);
+                    const best = candidates[0];
+                    if (!best) return false;
+                    if (best.selected) return true;
+                    best.el.click();
+                    return true;
+                }"""
+            )
+            if clicked:
+                self._page.wait_for_timeout(500)
+        except Exception:
+            pass
 
     def _find_voice_search_input(self):
         assert self._page is not None
@@ -1897,6 +2008,7 @@ class ElevenLabsAutomation:
         try:
             if open_picker:
                 self._open_voice_picker()
+                self._ensure_my_voice_picker_tab()
             else:
                 self._page.wait_for_timeout(500)
 
@@ -1961,7 +2073,13 @@ class ElevenLabsAutomation:
                                 el.getAttribute('data-key') || el.getAttribute('aria-label') || name
                             ).trim();
                             const description = lines.slice(1).join(', ');
-                            results.push({ voice_id: voiceId || name, name, labels: description ? { description } : {} });
+                            results.push({
+                                voice_id: voiceId || name,
+                                name,
+                                labels: description ? { description } : {},
+                                isMyVoice: true,
+                                category: 'custom',
+                            });
                         }
                     }
                     return results;
@@ -2197,7 +2315,7 @@ class TtsManager:
             _clear_voice_cache()
         elif self._voice_cache is not None:
             cache_has_ownership_flag = any(
-                isinstance(voice, dict) and ("isOwner" in voice or "is_owner" in voice)
+                isinstance(voice, dict) and ("isOwner" in voice or "is_owner" in voice or "isMyVoice" in voice)
                 for voice in self._voice_cache
             )
             if not cache_has_ownership_flag:
@@ -2210,7 +2328,7 @@ class TtsManager:
                 if isinstance(cached_data, dict) and "voices" in cached_data and "time" in cached_data:
                     cached_voices = cached_data["voices"] if isinstance(cached_data["voices"], list) else []
                     cache_has_ownership_flag = any(
-                        isinstance(voice, dict) and ("isOwner" in voice or "is_owner" in voice)
+                        isinstance(voice, dict) and ("isOwner" in voice or "is_owner" in voice or "isMyVoice" in voice)
                         for voice in cached_voices
                     )
                     if cached_voices and not cache_has_ownership_flag:
@@ -2395,6 +2513,10 @@ class TtsManager:
         allowed_voices = self.list_available_voices(refresh=False)
         allowed_map = {str(voice.get("voiceId", "")).strip(): voice for voice in allowed_voices if isinstance(voice, dict)}
         selected_voice = allowed_map.get(normalized_voice_id)
+        if selected_voice is None:
+            allowed_voices = self.list_available_voices(refresh=True)
+            allowed_map = {str(voice.get("voiceId", "")).strip(): voice for voice in allowed_voices if isinstance(voice, dict)}
+            selected_voice = allowed_map.get(normalized_voice_id)
         if selected_voice is None:
             raise ValueError("Voice da chon khong thuoc My Voice cua phien hien tai. Hay Lam moi phien va chon lai.")
         if model_family.strip().lower() not in {"v2", "v3"}:

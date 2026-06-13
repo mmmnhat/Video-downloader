@@ -39,14 +39,18 @@ def main():
     python_exe = venv_dir / 'Scripts' / 'python.exe'
     pip_exe = venv_dir / 'Scripts' / 'pip.exe'
 
-    # 2. Install nodeenv and Node.js/npm into venv
-    print_step("Installing nodeenv and Node.js/npm into venv")
-    run_cmd([str(pip_exe), "install", "nodeenv"])
-    nodeenv_exe = venv_dir / 'Scripts' / 'nodeenv.exe'
-    run_cmd([str(nodeenv_exe), "-p"])
-    
-    # On Windows, nodeenv puts 'npm.cmd' in the Scripts folder
-    npm_cmd = venv_dir / 'Scripts' / 'npm.cmd'
+    # 2. Find npm (use system npm — nodeenv inside venv is unreliable)
+    print_step("Locating npm")
+    npm_cmd = shutil.which("npm")
+    if not npm_cmd:
+        # Fallback: nodeenv-installed npm inside venv
+        venv_npm = venv_dir / 'Scripts' / 'npm.cmd'
+        if venv_npm.exists():
+            npm_cmd = str(venv_npm)
+    if not npm_cmd:
+        print("WARNING: npm not found on PATH. Web frontend build will be skipped.")
+    else:
+        print(f"Using npm: {npm_cmd}")
 
     # 3. Download and extract FFmpeg/FFprobe
     vendor_bin_dir = repo_root / "vendor" / "windows" / "bin"
@@ -95,35 +99,26 @@ def main():
     # Add venv/Scripts to path so tools find node and npm
     env["PATH"] = str(venv_dir / 'Scripts') + os.pathsep + env.get("PATH", "")
 
-    if (web_dir / "package.json").exists():
+    if npm_cmd and (web_dir / "package.json").exists():
         print_step("Building Web frontend via npm")
-        if npm_cmd.exists():
-            run_cmd([str(npm_cmd), "install"], cwd=str(web_dir), env=env)
-            run_cmd([str(npm_cmd), "run", "build"], cwd=str(web_dir), env=env)
-        else:
-            print("Warning: Could not find npm.cmd inside venv. Trying system global npm...")
-            sh_npm = shutil.which("npm")
-            if sh_npm:
-                run_cmd([sh_npm, "install"], cwd=str(web_dir), env=env)
-                run_cmd([sh_npm, "run", "build"], cwd=str(web_dir), env=env)
-            else:
-                print("Could not find global npm. Skipping web build.")
+        run_cmd([npm_cmd, "install"], cwd=str(web_dir), env=env)
+        run_cmd([npm_cmd, "run", "build"], cwd=str(web_dir), env=env)
+    elif (web_dir / "package.json").exists():
+        print("Skipping web build: npm not found.")
+
 
     # 6. Run PyInstaller
     print_step("Running PyInstaller to package the application...")
-    build_dir = repo_root / "build"
     dist_dir = repo_root / "dist"
-    
-    if build_dir.exists():
-        try:
-            shutil.rmtree(build_dir, ignore_errors=True)
-        except Exception:
-            pass
-            
+    # NOTE: We intentionally keep the build/ cache directory between runs.
+    # PyInstaller uses it for incremental compilation — deleting it forces a
+    # full rebuild every time (very slow). Only delete build/ manually if you
+    # see stale/broken artifacts.
+    # We also omit --clean so PyInstaller reuses its own internal dep cache.
     pyinstaller_exe = venv_dir / 'Scripts' / 'pyinstaller.exe'
     spec_file = repo_root / "packaging" / "windows" / "video_downloader.spec"
-    
-    run_cmd([str(pyinstaller_exe), str(spec_file), "--noconfirm", "--clean"], cwd=str(repo_root), env=env)
+
+    run_cmd([str(pyinstaller_exe), str(spec_file), "--noconfirm"], cwd=str(repo_root), env=env)
     
     print_step("SUCCESS! BUILD COMPLETE!")
     print(f"Output folder: {dist_dir / 'VideoDownloader'}")

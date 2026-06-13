@@ -1,225 +1,54 @@
 {
-  "activeProjectId": "thumb-a139f75584",
-  "buttons": [
-    {
-      "id": "change-color",
-      "name": "Đổi màu vật thể",
-      "icon": "🎨",
-      "category": "Màu sắc",
-      "prompt_template": "Change only the selected {object} to {color}.\nKeep face, pose, background, lighting, and all unmasked areas unchanged.",
-      "requires_mask": true,
-      "create_new_chat": true,
-      "allow_regenerate": true,
-      "summary": "Đổi đúng màu vùng đã chọn mà không làm lệch phần còn lại.",
-      "required_tools": [
-        "paint"
-      ],
-      "is_pinned": false,
-      "fields": [
-        {
-          "key": "object",
-          "label": "Vật thể",
-          "type": "text",
-          "value": "áo",
-          "tooltip": "Mô tả ngắn vật thể cần đổi màu, ví dụ áo, tóc, mũ hoặc ghế.",
-          "options": [],
-          "min": null,
-          "max": null,
-          "required": true,
-          "visible_if": null
-        },
-        {
-          "key": "color",
-          "label": "Màu mới",
-          "type": "text",
-          "value": "đỏ",
-          "tooltip": "Nhập màu đích muốn áp dụng cho vật thể đã chọn.",
-          "options": [],
-          "min": null,
-          "max": null,
-          "required": true,
-          "visible_if": null
-        }
-      ]
-    },
-    {
-      "id": "remove-object",
-      "name": "Xóa vật thể",
-      "icon": "🧽",
-      "category": "Dọn ảnh",
-      "prompt_template": "Remove the object in the red masked area.\nReconstruct the hidden area naturally.\nKeep all unmasked areas unchanged.",
-      "requires_mask": true,
-      "create_new_chat": true,
-      "allow_regenerate": true,
-      "summary": "Xóa logo, chữ hoặc chi tiết thừa theo vùng mask đỏ.",
-      "required_tools": [
-        "paint"
-      ],
-      "is_pinned": false,
-      "fields": []
-    },
-    {
-      "id": "extend-wide",
-      "name": "Extend Canvas",
-      "icon": "🖼️",
-      "category": "Khung hình",
-      "prompt_template": "Extend this image to a clean {target_ratio} thumbnail composition.\n{artboard_hint}\nPreserve the subject scale, identity, and lighting.\nFill new space naturally for the new frame while respecting the intended composition.",
-      "requires_mask": false,
-      "create_new_chat": true,
-      "allow_regenerate": true,
-      "summary": "Mở rộng khung hình theo tỉ lệ mong muốn để chuẩn bị xuất thumbnail.",
-      "required_tools": [
-        "frame"
-      ],
-      "is_pinned": false,
-      "fields": [
-        {
-          "key": "target_ratio",
-          "label": "Tỉ lệ đích",
-          "type": "select",
-          "value": "16:9",
-          "tooltip": "Chọn tỉ lệ khung hình muốn mở rộng tới.",
-          "options": [
-            "16:9",
-            "4:5",
-            "1:1",
-            "3:4",
-            "2:3",
-            "9:16",
-            "21:9",
-            "custom"
-          ],
-          "min": null,
-          "max": null,
-          "required": true,
-          "visible_if": null
-        },
-        {
-          "key": "custom_ratio",
-          "label": "Tỉ lệ custom",
-          "type": "text",
-          "value": "",
-          "tooltip": "Nhập tỉ lệ tự do, ví dụ 5:4 hoặc 7:10.",
-          "options": [],
-          "min": null,
-          "max": null,
-          "required": false,
-          "visible_if": {
-            "target_ratio": "custom"
-          }
-        },
-        {
-          "key": "artboard_hint",
-          "label": "Ghi chú artboard",
-          "type": "textarea",
-          "value": "Keep the main subject balanced inside the new frame.",
-          "tooltip": "Gợi ý bố cục bổ sung, có thể tự động cập nhật từ tool artboard trên canvas.",
-          "options": [],
-          "min": null,
-          "max": null,
-          "required": false,
-          "visible_if": null
-        }
-      ]
-    },
-    {
-      "id": "shock-face",
-      "name": "Làm mặt sốc hơn",
-      "icon": "😱",
-      "category": "Biểu cảm",
-      "prompt_template": "Make the character expression more {expression}, intensity {intensity}/10.\nKeep identity, pose, outfit and background unchanged.",
-      "requires_mask": false,
-      "create_new_chat": true,
-      "allow_regenerate": true,
-      "summary": "Đẩy biểu cảm khuôn mặt mạnh hơn nhưng giữ nhận diện nhân vật.",
-      "required_tools": [],
-      "is_pinned": false,
-      "fields": [
-        {
-          "key": "expression",
-          "label": "Biểu cảm",
-          "type": "select",
-          "value": "shocked",
-          "tooltip": "Chọn kiểu biểu cảm muốn đẩy mạnh trên gương mặt.",
-          "options": [
-            "shocked",
-            "scared",
-            "crying",
-            "angry"
-          ],
-          "min": null,
-          "max": null,
-          "required": true,
-          "visible_if": null
-        },
-        {
-          "key": "intensity",
-          "label": "Cường độ",
-          "type": "slider",
-          "value": 8,
-          "tooltip": "Điều chỉnh độ mạnh của biểu cảm từ nhẹ đến rất gắt.",
-          "options": [],
-          "min": 1.0,
-          "max": 10.0,
-          "required": true,
-          "visible_if": null
-        }
-      ]
-    }
-  ],
+  "activeProjectId": "thumb-8a9d1e8ff3",
+  "sessionStatus": {
+    "backend": "gemini_web",
+    "dependencies_ready": true,
+    "authenticated": true,
+    "browser": "CocCoc",
+    "profile_dir": "D:\\New\\Video-downloader\\cache\\browser_profiles\\thumbnail\\Default\\Default",
+    "message": "Da san sang voi profile Gemini rieng cua app tren CocCoc (feature: thumbnail)."
+  },
   "projects": [
     {
-      "id": "thumb-a139f75584",
+      "id": "thumb-8a9d1e8ff3",
       "name": "Dự án mới",
-      "folder": "/Volumes/External/Video-downloader/cache/thumbnail_pipeline/projects/D_n_m_i-thumb-a139f75584",
-      "source_image_path": "/Volumes/External/Video-downloader/cache/thumbnail_pipeline/projects/D_n_m_i-thumb-a139f75584/versions/original/original.png",
-      "created_at": "2026-05-01T14:28:35Z",
-      "updated_at": "2026-05-01T14:32:51Z",
-      "selected_version_id": "original",
+      "folder": "D:\\New\\Video-downloader\\cache\\thumbnail_pipeline\\projects\\D_n_m_i-thumb-8a9d1e8ff3",
+      "source_image_path": "D:\\New\\Video-downloader\\cache\\thumbnail_pipeline\\projects\\D_n_m_i-thumb-8a9d1e8ff3\\versions\\original\\original.png",
+      "created_at": "2026-05-05T06:28:19Z",
+      "updated_at": "2026-05-05T06:29:29Z",
+      "selected_version_id": "v1",
       "versions": [
         {
           "id": "original",
-          "label": "Version 0 - Original",
+          "label": "v0",
           "note": "Ảnh gốc vừa tạo project",
           "prompt": "Ảnh gốc chưa chỉnh sửa.",
           "button_name": "Original",
           "fields": {},
           "mask_mode": "none",
-          "created_at": "01/05/2026 21:28",
-          "status": "current",
-          "source_image_path": "/Volumes/External/Video-downloader/cache/thumbnail_pipeline/projects/D_n_m_i-thumb-a139f75584/versions/original/original.png",
-          "output_image_path": "/Volumes/External/Video-downloader/cache/thumbnail_pipeline/projects/D_n_m_i-thumb-a139f75584/versions/original/original.png",
+          "created_at": "05/05/2026 13:28",
+          "status": "history",
+          "source_image_path": "D:\\New\\Video-downloader\\cache\\thumbnail_pipeline\\projects\\D_n_m_i-thumb-8a9d1e8ff3\\versions\\original\\original.png",
+          "output_image_path": "D:\\New\\Video-downloader\\cache\\thumbnail_pipeline\\projects\\D_n_m_i-thumb-8a9d1e8ff3\\versions\\original\\original.png",
           "thread_url": null,
           "parent_version_id": null
         },
         {
           "id": "v1",
-          "label": "Version 1 - Batch Effects (2)",
+          "label": "v1",
           "note": "G gem2 Custom Gem gem2 said",
-          "prompt": "Perform the following improvements simultaneously:\n1. Extend this image to a clean 16:9 thumbnail composition.\nRespect the 16:9 artboard guide and keep the subject balanced inside the new frame.\nPreserve the subject scale, identity, and lighting.\nFill new space naturally for the new frame while respecting the intended composition.\n2. Change only the selected áo to đỏ.\nKeep face, pose, background, lighting, and all unmasked areas unchanged.\n\nKeep the overall composition and all unmentioned details consistent with the original image.",
-          "button_name": "Batch Effects (2)",
-          "fields": {},
+          "prompt": "Change only the selected áo to đỏ.\nKeep face, pose, background, lighting, and all unmasked areas unchanged.",
+          "button_name": "Đổi màu vật thể",
+          "fields": {
+            "object": "áo",
+            "color": "đỏ"
+          },
           "mask_mode": "selected",
-          "created_at": "01/05/2026 21:29",
-          "status": "history",
-          "source_image_path": "/Volumes/External/Video-downloader/cache/thumbnail_pipeline/projects/D_n_m_i-thumb-a139f75584/versions/original/original.png",
-          "output_image_path": "/Volumes/External/Video-downloader/cache/thumbnail_pipeline/projects/D_n_m_i-thumb-a139f75584/versions/v1/normalized.png",
-          "thread_url": "https://gemini.google.com/gem/b25da0bbb225/0569715ac11028a0",
-          "parent_version_id": "original"
-        },
-        {
-          "id": "v2",
-          "label": "Version 2 - Batch Effects (3)",
-          "note": "G gem2 Custom Gem gem2 said",
-          "prompt": "Perform the following improvements simultaneously:\n1. Extend this image to a clean 16:9 thumbnail composition.\nRespect the 16:9 artboard guide and keep the subject balanced inside the new frame.\nPreserve the subject scale, identity, and lighting.\nFill new space naturally for the new frame while respecting the intended composition.\n2. Change only the selected áo to đỏ.\nKeep face, pose, background, lighting, and all unmasked areas unchanged.\n3. Make the character expression more shocked, intensity 8/10.\nKeep identity, pose, outfit and background unchanged.\n\nKeep the overall composition and all unmentioned details consistent with the original image.",
-          "button_name": "Batch Effects (3)",
-          "fields": {},
-          "mask_mode": "selected",
-          "created_at": "01/05/2026 21:31",
-          "status": "history",
-          "source_image_path": "/Volumes/External/Video-downloader/cache/thumbnail_pipeline/projects/D_n_m_i-thumb-a139f75584/versions/original/original.png",
-          "output_image_path": "/Volumes/External/Video-downloader/cache/thumbnail_pipeline/projects/D_n_m_i-thumb-a139f75584/versions/v2/normalized.png",
-          "thread_url": "https://gemini.google.com/gem/b25da0bbb225/286ef52002b7dd8c",
+          "created_at": "05/05/2026 13:28",
+          "status": "current",
+          "source_image_path": "D:\\New\\Video-downloader\\cache\\thumbnail_pipeline\\projects\\D_n_m_i-thumb-8a9d1e8ff3\\versions\\original\\original.png",
+          "output_image_path": "D:\\New\\Video-downloader\\cache\\thumbnail_pipeline\\projects\\D_n_m_i-thumb-8a9d1e8ff3\\versions\\v1\\normalized.png",
+          "thread_url": "https://gemini.google.com/gem/b25da0bbb225/bec6dcf4f2cb23a7",
           "parent_version_id": "original"
         }
       ]
@@ -253,7 +82,8 @@
               "min": null,
               "max": null,
               "required": true,
-              "visible_if": null
+              "visible_if": null,
+              "bind_to_canvas": "artboard_ratio"
             },
             {
               "key": "custom_ratio",
@@ -267,7 +97,8 @@
               "required": false,
               "visible_if": {
                 "target_ratio": "custom"
-              }
+              },
+              "bind_to_canvas": null
             },
             {
               "key": "artboard_hint",
@@ -279,7 +110,8 @@
               "min": null,
               "max": null,
               "required": false,
-              "visible_if": null
+              "visible_if": null,
+              "bind_to_canvas": null
             }
           ]
         },
@@ -301,7 +133,8 @@
               "min": null,
               "max": null,
               "required": true,
-              "visible_if": null
+              "visible_if": null,
+              "bind_to_canvas": null
             },
             {
               "key": "intensity",
@@ -313,7 +146,8 @@
               "min": 1.0,
               "max": 10.0,
               "required": true,
-              "visible_if": null
+              "visible_if": null,
+              "bind_to_canvas": null
             }
           ]
         }
@@ -326,6 +160,13 @@
     "gemini_headless": true,
     "gemini_base_url": "https://gemini.google.com/gem/b25da0bbb225",
     "gemini_response_timeout_ms": 120000,
-    "gemini_model": "flash"
+    "gemini_model": "flash",
+    "app_theme": "dark",
+    "canvas_bg_type": "solid",
+    "canvas_bg_color": "#0f0f0f",
+    "canvas_bg_image": "",
+    "canvas_bg_fit": "cover",
+    "canvas_bg_opacity": 100.0,
+    "canvas_bg_brightness": 100.0
   }
 }

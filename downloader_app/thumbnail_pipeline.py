@@ -1820,7 +1820,7 @@ class ThumbnailPipelineManager:
 
     def open_login(self) -> dict:
         try:
-            payload = open_gemini_login_window(feature="thumbnail", user_data_dir=thumbnail_runtime_root())
+            payload = open_gemini_login_window(feature="thumbnail")
         except GeminiWebError as exc:
             raise ThumbnailPipelineError(str(exc)) from exc
         with self._lock:

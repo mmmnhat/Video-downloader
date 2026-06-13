@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import mmap
 import os
 import re
 import shutil
@@ -32,7 +33,17 @@ class XmpScanDiagnostics(TypedDict):
 class XmpScanner:
     def __init__(self):
         self.exiftool_cmd = resolve_binary("exiftool")
+        if not self.exiftool_cmd:
+            vendor_path = Path(__file__).resolve().parent.parent / "vendor" / "windows" / "bin" / "exiftool.exe"
+            if vendor_path.exists():
+                self.exiftool_cmd = str(vendor_path)
         self.ffmpeg_cmd = resolve_binary("ffmpeg")
+        self.ffprobe_cmd = resolve_binary("ffprobe")
+        if not self.ffprobe_cmd and self.ffmpeg_cmd:
+            probe_path = Path(self.ffmpeg_cmd).parent / "ffprobe.exe"
+            if probe_path.exists():
+                self.ffprobe_cmd = str(probe_path)
+        
         # Adobe Premiere default timebase for ticks
         self.ticks_per_second = 254016000000
         self.last_scan_diagnostics: XmpScanDiagnostics | None = None
@@ -98,7 +109,12 @@ class XmpScanner:
 
             # Use output_dir if provided, otherwise fallback to folder (source dir)
             base_frames_dir = output_dir if output_dir else folder
-            frames_dir = base_frames_dir / ".frames" / file_path.relative_to(folder).with_suffix("")
+            
+            # Use mtime and size to invalidate cache if video changes
+            stats = file_path.stat()
+            cache_key = f"{int(stats.st_mtime)}_{stats.st_size}"
+            
+            frames_dir = base_frames_dir / ".frames" / file_path.relative_to(folder).with_suffix("") / cache_key
             frames_dir.mkdir(parents=True, exist_ok=True)
 
             prepared_markers: list[dict] = []
@@ -115,14 +131,7 @@ class XmpScanner:
                         print(f"[DEBUG] Skip marker {idx} for {file_path.name}: {exc}")
 
                 if not frame_path.exists() or frame_path.stat().st_size <= 0:
-                    # Fallback: reuse previous successful frame to keep marker alignment.
-                    if prepared_markers:
-                        prev_frame = Path(prepared_markers[-1]["input_frame"])
-                        if prev_frame.exists() and prev_frame.stat().st_size > 0:
-                            try:
-                                shutil.copy2(prev_frame, frame_path)
-                            except Exception:
-                                pass
+                    continue
 
                 if not frame_path.exists() or frame_path.stat().st_size <= 0:
                     continue
@@ -289,35 +298,44 @@ class XmpScanner:
 
     def _extract_xmp_from_binary(self, file_path: Path) -> list[str]:
         """
-        Extracts ALL potential XMP XML blocks from binary file.
+        Extracts ALL potential XMP XML blocks from binary file using mmap for fast scanning.
         """
-        size = file_path.stat().st_size
-        chunks = []
-        
-        with file_path.open("rb") as f:
-            # Read first 8MB (markers can be further in for large 4K files)
-            chunks.append(f.read(8 * 1024 * 1024))
-            # Read last 4MB
-            if size > 12 * 1024 * 1024:
-                f.seek(-4 * 1024 * 1024, os.SEEK_END)
-                chunks.append(f.read())
-        
-        combined = b"".join(chunks)
         blocks = []
-        
-        # Search for xmpmeta blocks
-        for match in re.finditer(rb"(<(?:[a-zA-Z0-9]+:)?xmpmeta.*?</(?:[a-zA-Z0-9]+:)?xmpmeta>)", combined, re.DOTALL | re.IGNORECASE):
-            blocks.append(match.group(1).decode("utf-8", errors="ignore"))
-        
-        # Try xpacket as fallback if no xmpmeta found
-        if not blocks:
-            for match in re.finditer(rb"(<\?xpacket begin=.*?<\?xpacket end=.*?\?>)", combined, re.DOTALL | re.IGNORECASE):
-                blocks.append(match.group(1).decode("utf-8", errors="ignore"))
-            
-        # Try rdf:RDF directly if still nothing
-        if not blocks:
-            for match in re.finditer(rb"(<rdf:RDF.*?</rdf:RDF>)", combined, re.DOTALL | re.IGNORECASE):
-                blocks.append(match.group(1).decode("utf-8", errors="ignore"))
+        try:
+            size = file_path.stat().st_size
+            if size == 0:
+                return blocks
+                
+            with file_path.open("rb") as f:
+                with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+                    start_tags = [b"<x:xmpmeta", b"<xmpmeta", b"<?xpacket begin", b"<rdf:RDF"]
+                    end_tags = [b"</x:xmpmeta>", b"</xmpmeta>", b"<?xpacket end", b"</rdf:RDF>"]
+                    
+                    for start_tag, end_tag in zip(start_tags, end_tags):
+                        pos = 0
+                        while True:
+                            idx = mm.find(start_tag, pos)
+                            if idx == -1:
+                                break
+                            
+                            end_idx = mm.find(end_tag, idx)
+                            if end_idx != -1:
+                                block_end = end_idx + len(end_tag)
+                                if end_tag == b"<?xpacket end":
+                                    close_idx = mm.find(b"?>", block_end)
+                                    if close_idx != -1 and close_idx - block_end < 100:
+                                        block_end = close_idx + 2
+                                        
+                                raw_bytes = mm[idx:block_end]
+                                blocks.append(raw_bytes.decode("utf-8", errors="ignore"))
+                                pos = block_end
+                            else:
+                                pos = idx + len(start_tag)
+                                
+                        if blocks:
+                            break
+        except Exception as e:
+            print(f"[DEBUG] mmap scan failed for {file_path.name}: {e}")
             
         return blocks
 
@@ -346,7 +364,6 @@ class XmpScanner:
             
             root = ET.fromstring(clean_xml)
             
-            # Namespaces
             ns = {
                 "x": "adobe:ns:meta/",
                 "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
@@ -354,7 +371,9 @@ class XmpScanner:
                 "xmp": "http://ns.adobe.com/xap/1.0/",
             }
 
-            duration_seconds = self._extract_duration_seconds(root, ns)
+            # Try to get real video metadata via ffprobe for accurate fallbacks
+            real_fps, real_duration = self._get_video_metadata(video_path)
+            duration_seconds = self._extract_duration_seconds(root, ns) or real_duration
 
             # Prefer marker nodes scoped by track so we can read per-track frameRate.
             marker_nodes_with_fps: list[tuple[ET.Element, float | None]] = []
@@ -381,22 +400,23 @@ class XmpScanner:
                 if not start_time_raw:
                     continue
 
-                time_sec = self.parse_adobe_time(start_time_raw, frame_rate=fps)
+                time_sec = self.parse_adobe_time(start_time_raw, frame_rate=fps or real_fps)
                 time_sec = self._coerce_time_with_duration(
                     raw=start_time_raw,
                     parsed_seconds=time_sec,
                     duration_seconds=duration_seconds,
-                    frame_rate=fps,
+                    frame_rate=fps or real_fps,
                 )
 
+                resolved_name = name or f"Marker {len(markers) + 1}"
                 markers.append({
                     "videoPath": video_path,
                     "markerIndex": len(markers) + 1,
                     "timeSec": time_sec,
-                    "name": name or f"Marker {len(markers) + 1}",
+                    "name": resolved_name,
                     "comment": comment,
                 })
-                print(f"[DEBUG] Parsed marker: '{name}' at {time_sec}s")
+                print(f"[DEBUG] Parsed marker: '{resolved_name}' (raw: '{name}') at {time_sec:.3f}s (fps fallback: {fps or real_fps})")
 
             # Sort by time
             markers.sort(key=lambda x: x["timeSec"])
@@ -444,6 +464,16 @@ class XmpScanner:
         if not text:
             return None
         if text.startswith("f"):
+            # Adobe format: f127008000000s4237825133 or f30
+            f_s_match = re.search(r"f([0-9]+)s([0-9]+)", text)
+            if f_s_match:
+                try:
+                    num = float(f_s_match.group(1))
+                    den = float(f_s_match.group(2))
+                    if den > 0:
+                        return num / den
+                except ValueError:
+                    pass
             text = text[1:].strip()
         if not text:
             return None
@@ -474,6 +504,8 @@ class XmpScanner:
         duration_seconds: float | None,
         frame_rate: float | None,
     ) -> float:
+        if parsed_seconds is None:
+            return 0.0
         if duration_seconds is None or duration_seconds <= 0:
             return max(0.0, parsed_seconds)
         if parsed_seconds <= duration_seconds + 0.5:
@@ -488,14 +520,17 @@ class XmpScanner:
         if frame_rate and frame_rate > 0:
             try:
                 frame_based = float(text) / frame_rate
-                if frame_based <= duration_seconds + 0.5:
+                if frame_based <= duration_seconds + 0.001: # Strict check for frames
                     return max(0.0, frame_based)
+                # If slightly over (e.g. 0.5s), still consider it frames but maybe it's not.
+                # Actually, Adobe markers are almost always within duration.
             except ValueError:
                 pass
 
+        # Then try milliseconds (common in sidecars and some exports)
         try:
             ms_based = float(text) / 1000.0
-            if ms_based <= duration_seconds + 0.5:
+            if ms_based <= duration_seconds + 0.001:
                 return max(0.0, ms_based)
         except ValueError:
             pass
@@ -615,6 +650,40 @@ class XmpScanner:
 
         return max(0.0, numeric)
 
+    def _get_video_metadata(self, video_path: str) -> tuple[float | None, float | None]:
+        if not self.ffprobe_cmd:
+            return None, None
+        try:
+            cmd = [
+                self.ffprobe_cmd,
+                "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=avg_frame_rate,duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                video_path
+            ]
+            kwargs = {}
+            if os.name == "nt":
+                kwargs["creationflags"] = 0x08000000
+            
+            output = subprocess.check_output(cmd, text=True, **kwargs).strip().split("\n")
+            if len(output) < 2:
+                return None, None
+            
+            fps = None
+            avg_frame_rate = output[0].strip()
+            if "/" in avg_frame_rate:
+                n, d = avg_frame_rate.split("/")
+                if float(d) > 0:
+                    fps = float(n) / float(d)
+            elif avg_frame_rate:
+                fps = float(avg_frame_rate)
+            
+            duration = float(output[1].strip()) if output[1].strip() else None
+            return fps, duration
+        except Exception:
+            return None, None
+
     def capture_frame(self, video_path: str, timestamp_sec: float, output_path: str):
         """
         Captures a frame at a specific timestamp using FFmpeg.
@@ -630,11 +699,11 @@ class XmpScanner:
                 "-y",
                 "-hide_banner",
                 "-loglevel", "error",
-                "-ss", str(max(0.0, ts)),
                 "-i", video_path,
-                "-frames:v", "1",
-                "-update", "1",
+                "-ss", f"{ts:.4f}",
+                "-vframes", "1",
                 "-q:v", "2",
+                "-f", "image2",
                 output_path,
             ]
 
@@ -672,6 +741,8 @@ class XmpScanner:
         for ts in unique_candidates:
             ok, err = _run_capture(ts)
             if ok:
+                if ts != unique_candidates[0]:
+                    print(f"[DEBUG] FFmpeg used fallback timestamp {ts:.3f}s for {Path(video_path).name} (requested {unique_candidates[0]:.3f}s)")
                 return
             if err:
                 last_error = err

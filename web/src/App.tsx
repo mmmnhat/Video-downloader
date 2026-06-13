@@ -151,6 +151,8 @@ const SHOW_TABLE_CONTEXT = false;
 const ACTIVE_BATCH_STATUSES = new Set(["queued", "running", "cancelling"]);
 const QUALITY_OPTIONS = [
  { value: "auto", label: "Tự động / tốt nhất hiện có" },
+ { value: "2160", label: "Tối đa 4K (2160p)" },
+ { value: "1440", label: "Tối đa 2K (1440p)" },
  { value: "1080", label: "Tối đa 1080p" },
  { value: "720", label: "Tối đa 720p" },
  { value: "480", label: "Tối đa 480p" },
